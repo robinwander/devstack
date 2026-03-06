@@ -2,6 +2,9 @@
 name = "devstack"
 version = "0.1.0"
 edition = "2024"
+repository = "https://github.com/robinwander/devstack"
+description = "Local development orchestration with automatic port allocation, structured logs, and file watching"
+license = "MIT"
 
 [dependencies]
 anyhow = "1.0.100"
@@ -41,3 +44,8 @@ systemd-zbus = "5.3.2"
 
 [dev-dependencies]
 tempfile = "3.23.0"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
