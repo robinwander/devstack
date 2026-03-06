@@ -566,7 +566,7 @@ fn resolve_auto_share(
 }
 
 fn format_bracketed_paste(message: &str) -> String {
-    format!("\u{1b}[200~{message}\u{1b}[201~")
+    format!("\u{1b}[200~{message}\u{1b}[201~\n")
 }
 
 fn generate_agent_id() -> String {
@@ -741,7 +741,7 @@ mod tests {
     #[test]
     fn bracketed_paste_wraps_message() {
         let payload = format_bracketed_paste("hello world");
-        assert_eq!(payload, "\u{1b}[200~hello world\u{1b}[201~");
+        assert_eq!(payload, "\u{1b}[200~hello world\u{1b}[201~\n");
     }
 
     #[test]
