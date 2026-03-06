@@ -90,6 +90,13 @@ The dashboard provides:
 
 When no stacks are running, the dashboard shows registered projects with quick-start buttons.
 
+You can also navigate the dashboard from the CLI or scripts — useful for sharing context with teammates or AI agents:
+
+```bash
+devstack show --service api --level error          # open dashboard filtered to api errors
+devstack show --service worker --search "timeout"  # open dashboard with a search query
+```
+
 See [devstack-dash/README.md](devstack-dash/README.md) for full dashboard documentation.
 
 ### Structured Log Search
@@ -313,6 +320,7 @@ ignore = ["**/*.test.ts", "**/node_modules"]
 | `devstack run --verbose --json` | Stream task output / structured result |
 | `devstack gc` | Cleanup old runs/globals (`--older-than`, `--all`) |
 | `devstack ui` | Open dashboard in browser |
+| `devstack show` | Navigate dashboard to a filtered view (`--run`, `--service`, `--search`, `--level`, `--stream`, `--since`, `--last`) |
 | `devstack completions <shell>` | Generate shell completions |
 | `devstack openapi --out openapi.json` | Emit OpenAPI spec (`--watch` supported) |
 

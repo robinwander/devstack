@@ -62,7 +62,16 @@ Use this skill when a user asks to set up or operate devstack in a repo: create 
 8) Open dashboard
 - `devstack ui` — opens the devstack dashboard in browser at http://localhost:47832
 
-9) Stop or clean up
+9) Share a log view with the user
+- `devstack show` — opens the dashboard and navigates to a filtered log view
+- Use this to **show the user** something interesting — errors, specific service output, search results
+- `devstack show --service api --level error` — show api errors
+- `devstack show --service worker --search "timeout"` — show worker logs matching "timeout"
+- `devstack show --run <id> --service api --since 5m` — show recent api logs for a specific run
+- The dashboard updates in real-time when you send a `show` command — the user sees the view change immediately
+- **This is the preferred way to share log context with the user** instead of dumping raw log output
+
+10) Stop or clean up
 - `devstack down [--run-id <id>] [--purge]`
 - `devstack kill [--run-id <id>]` (if hung)
 - `devstack gc [--older-than 7d] [--all]`
@@ -237,6 +246,15 @@ Set `auto_restart = true` to enable live file watching + automatic service resta
 - `--older-than <duration>` — e.g., "7d", "24h"
 - `--all` — Remove all stopped runs
 
+### devstack show
+- `--run <id>` — Target run
+- `--service <name>` — Filter to a specific service
+- `--search <query>` — Full-text search query
+- `--level <all|warn|error>` — Filter by level
+- `--stream <stdout|stderr>` — Filter by stream
+- `--since <timestamp|duration>` — Time filter (e.g. "5m", "1h", RFC3339)
+- `--last <N>` — Show last N lines
+
 ### devstack init
 - `--project <path>` — Project directory
 - `--file <path>` — Custom config path
@@ -278,6 +296,7 @@ Set `auto_restart = true` to enable live file watching + automatic service resta
 - Use `--facets` to discover what's queryable before writing `--q` filters. Works with both `--source` and run-scoped logs.
 - Use `--no-health` to filter out repetitive health check requests from logs.
 - Use `--errors` as a quick alias for `--level error`.
+- **Use `devstack show` to share log views with the user.** Instead of pasting log output, send a filtered dashboard view — the user sees it live in their browser. Example: `devstack show --service api --level error --since 5m`.
 
 ## When to restart (and when not to)
 
