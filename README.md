@@ -4,13 +4,17 @@ Local development orchestration with automatic port allocation, structured logs,
 
 ## Quick Start
 
-**Option 1: Download prebuilt binary** (recommended):
+**Recommended: Use the agent skill.** If you're working with an AI coding agent (Claude, etc.), give it the [`install-devstack`](skills/install-devstack/SKILL.md) skill. It walks through installation interactively — detects your platform, asks whether you want a prebuilt binary or source build, installs the daemon, verifies health, and sets up shell completions. After installation, the [`devstack`](skills/devstack/SKILL.md) skill teaches the agent how to create configs, manage stacks, query logs, and operate the full CLI.
+
+**Manual install:**
+
+Option 1 — Download prebuilt binary:
 
 ```bash
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/robinwander/devstack/releases/latest/download/devstack-installer.sh | sh
 ```
 
-**Option 2: Build from source** (requires [Rust](https://rustup.rs/)):
+Option 2 — Build from source (requires [Rust](https://rustup.rs/)):
 
 ```bash
 git clone https://github.com/robinwander/devstack.git ~/tools/devstack
@@ -312,6 +316,15 @@ ignore = ["**/*.test.ts", "**/node_modules"]
 
 - `--pretty` is available on all commands.
 - `--run-id`, `--project`, and `--file` are command-specific (not global), mainly on lifecycle/config-sensitive commands.
+
+## Agent Skills
+
+Devstack ships with two agent skills in the [`skills/`](skills/) directory. Point your AI coding agent at these to give it full devstack knowledge:
+
+| Skill | Description |
+|-------|-------------|
+| [`install-devstack`](skills/install-devstack/SKILL.md) | Interactive installation guide — the agent walks you through platform detection, binary vs source install, daemon setup, and shell completions |
+| [`devstack`](skills/devstack/SKILL.md) | Full operational reference — config creation, stack management, log queries, task running, and all CLI flags |
 
 ## Documentation
 
