@@ -99,6 +99,27 @@ devstack show --service worker --search "timeout"  # open dashboard with a searc
 
 See [devstack-dash/README.md](devstack-dash/README.md) for full dashboard documentation.
 
+### Agent Integration
+
+`devstack agent` wraps any CLI (shell, AI coding agent, etc.) in a PTY proxy that connects it to the daemon. This enables two-way communication between the dashboard and the agent's terminal:
+
+**Dashboard → Agent:** Click the **Share** button on any log line or error in the dashboard to send it directly to the agent's terminal. The message is injected as input and auto-submitted — no copy-paste needed. When an AI agent is running, this gives it immediate context about errors without manual intervention.
+
+**Agent → Dashboard:** With `--auto-share`, the agent monitors service logs and automatically injects notifications into the terminal when new errors are detected, complete with the right `devstack logs` command to investigate.
+
+```bash
+# Wrap an AI coding agent
+devstack agent -- claude
+
+# Enable automatic error notifications
+devstack agent --auto-share error -- claude
+
+# Restrict auto-sharing to specific services
+devstack agent --auto-share error --watch api,worker -- claude
+```
+
+The wrapped process gets a `DEVSTACK_AGENT_ID` environment variable, and the dashboard automatically detects the active agent session for the current project. Any service error, log line, or diagnostic can be shared to the agent in one click.
+
 ### Structured Log Search
 
 All service output is captured as JSONL with timestamps, stream labels, and level normalization. Logs are indexed with Tantivy for instant full-text search:
@@ -297,6 +318,12 @@ ignore = ["**/*.test.ts", "**/node_modules"]
 | `devstack ls` | `--all` |
 | `devstack diagnose` | `--run-id`, `--service` |
 | `devstack logs` | `--service`, `--task`, `--all`, `--source`, `--tail`, `--q`, `--level`, `--errors`, `--stream`, `--since`, `--facets`, `--follow`, `--follow-for`, `--no-health`, `--json` |
+
+### Agent
+
+| Command | Key flags |
+|---------|-----------|
+| `devstack agent -- <command>` | `--auto-share <level>`, `--watch <services>`, `--no-auto-share`, `--run` |
 
 ### Sources & Projects
 

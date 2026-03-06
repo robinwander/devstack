@@ -558,10 +558,11 @@ fn resolve_auto_share(
         return Ok(None);
     }
 
-    match auto_share.unwrap_or("error") {
-        "error" => Ok(Some(AutoShareLevel::Error)),
-        "warn" => Ok(Some(AutoShareLevel::Warn)),
-        other => Err(anyhow!("invalid auto-share level: {other}")),
+    match auto_share {
+        Some("error") => Ok(Some(AutoShareLevel::Error)),
+        Some("warn") => Ok(Some(AutoShareLevel::Warn)),
+        Some(other) => Err(anyhow!("invalid auto-share level: {other}")),
+        None => Ok(None),
     }
 }
 
@@ -745,8 +746,25 @@ mod tests {
     }
 
     #[test]
-    fn no_auto_share_disables_monitoring() {
+    fn auto_share_off_by_default() {
+        assert_eq!(resolve_auto_share(None, false).unwrap(), None);
+    }
+
+    #[test]
+    fn no_auto_share_flag_disables_monitoring() {
         assert_eq!(resolve_auto_share(None, true).unwrap(), None);
+    }
+
+    #[test]
+    fn auto_share_flag_enables_monitoring() {
+        assert_eq!(
+            resolve_auto_share(Some("error"), false).unwrap(),
+            Some(AutoShareLevel::Error)
+        );
+        assert_eq!(
+            resolve_auto_share(Some("warn"), false).unwrap(),
+            Some(AutoShareLevel::Warn)
+        );
     }
 
     #[test]
