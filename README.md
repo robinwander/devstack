@@ -2,6 +2,8 @@
 
 Local development orchestration with automatic port allocation, structured logs, and file watching. Think docker-compose for local dev, but services never hardcode ports, dependencies start in order, and you get full-text search across all logs.
 
+![devstack dashboard](docs/assets/dashboard-overview.png)
+
 ## Quick Start
 
 **Recommended: Use the agent skill.** If you're working with an AI coding agent (Claude, etc.), give it the [`install-devstack`](skills/install-devstack/SKILL.md) skill. It walks through installation interactively — detects your platform, asks whether you want a prebuilt binary or source build, installs the daemon, verifies health, and sets up shell completions. After installation, the [`devstack`](skills/devstack/SKILL.md) skill teaches the agent how to create configs, manage stacks, query logs, and operate the full CLI.
@@ -93,6 +95,8 @@ See [devstack-dash/README.md](devstack-dash/README.md) for full dashboard docume
 ### Structured Log Search
 
 All service output is captured as JSONL with timestamps, stream labels, and level normalization. Logs are indexed with Tantivy for instant full-text search:
+
+![log search with highlighted matches](docs/assets/dashboard-search.png)
 
 ```bash
 devstack logs --service api --errors            # show only errors
@@ -329,6 +333,8 @@ Devstack ships with two agent skills in the [`skills/`](skills/) directory. Poin
 ## Documentation
 
 - **[Architecture](ARCHITECTURE.md)** — how the CLI, daemon, and shim interact; state model; log pipeline; config resolution
+
+![architecture diagram](docs/assets/architecture.png)
 - **[API Reference](API.md)** — daemon HTTP API endpoints, request/response types, socket location
 - **[Dashboard](devstack-dash/README.md)** — web UI features, keyboard shortcuts, URL state, navigation intents
 

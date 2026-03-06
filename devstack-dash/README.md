@@ -44,6 +44,8 @@ Full-text searchable, virtualized log viewer with real-time streaming.
 
 **Facets panel** — toggle with the filter icon (or press `F`). Shows field value counts (service, level, stream, and any indexed fields). Click a value to toggle it as a filter.
 
+![error filter active](../docs/assets/dashboard-errors.png)
+
 **Time range** — switch between Live (streaming), 5m, 15m, or 1h windows.
 
 **Auto-scroll** — when scrolled to the bottom, new logs stream in automatically. Scroll up to pause; a "new logs" indicator appears with a count. Click the arrow button to jump back to the latest.
