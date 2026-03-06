@@ -2,22 +2,15 @@
 
 Local development orchestration with automatic port allocation, structured logs, and file watching. Think docker-compose for local dev, but services never hardcode ports, dependencies start in order, and you get full-text search across all logs.
 
-## Features
-
-- **Daemon-managed lifecycle** — services start in dependency order, restart automatically, and are guaranteed cleanup via systemd (Linux) or LaunchAgent (macOS)
-- **Automatic port allocation** — the daemon picks free ports and injects them via env vars; services reference each other by name
-- **Readiness probes** — TCP, HTTP, log regex, custom command, fixed delay, or exit-based
-- **File watching** — incremental restarts: only services with changed files restart; powered by gitignore-style globs
-- **Structured JSONL logs** — full-text search via tantivy, facet-based filtering, multi-run aggregation
-- **External log sources** — register arbitrary JSONL files and query them alongside devstack logs
-- **Guaranteed orphan cleanup** — Linux uses systemd transient units with cgroups; macOS uses LaunchAgent
-- **Minijinja templating** — reference service URLs and ports in env vars and commands
-- **Shell completions** — bash, zsh, fish with dynamic suggestions
-- **Dual output modes** — pretty JSON on TTYs, compact JSON for scripting
-
 ## Quick Start
 
-**1. Clone and install the CLI** (requires [Rust](https://rustup.rs/)):
+**Option 1: Download prebuilt binary** (recommended):
+
+```bash
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/robinwander/devstack/releases/latest/download/devstack-installer.sh | sh
+```
+
+**Option 2: Build from source** (requires [Rust](https://rustup.rs/)):
 
 ```bash
 git clone https://github.com/robinwander/devstack.git ~/tools/devstack
@@ -25,24 +18,137 @@ cd ~/tools/devstack
 ./scripts/install-cli.sh   # builds release binary to ~/.local/bin
 ```
 
-**2. Install and start the daemon:**
+Then install and start the daemon:
 
 ```bash
 devstack install           # Linux: systemd user service; macOS: LaunchAgent
 devstack doctor            # verify everything is working
 ```
 
-**3. Initialize a config:**
+Initialize a config and start your stack:
 
 ```bash
 cd your-project
 devstack init
+devstack up
 ```
 
-**4. Start your stack:**
+## Features
+
+### Daemon-Managed Service Lifecycle
+
+Services start in dependency order, restart automatically on failure, and are guaranteed cleanup. Linux uses systemd transient units with cgroup-scoped process trees — no orphan processes. macOS uses a LaunchAgent-managed daemon with process group signaling.
 
 ```bash
-devstack up
+devstack up              # start the default stack
+devstack up --force      # restart everything, even unchanged services
+devstack status          # see what's running
+devstack down            # graceful shutdown
+```
+
+### Automatic Port Allocation
+
+The daemon picks free ports and injects them as environment variables. Services never hardcode ports and reference each other by name through templates:
+
+```toml
+[stacks.dev.services.api]
+cmd = "pnpm api"
+readiness = { http = { path = "/health" } }
+
+[stacks.dev.services.web]
+cmd = "pnpm dev"
+deps = ["api"]
+
+[stacks.dev.services.web.env]
+VITE_API_URL = "{{ services.api.url }}"
+```
+
+Every service gets `DEV_PORT_<SERVICE>` and `DEV_URL_<SERVICE>` env vars. External tools (Playwright, scripts) can read the same values from the run manifest.
+
+### Web Dashboard
+
+A real-time web UI for monitoring runs, services, and logs. Open it with:
+
+```bash
+devstack ui
+```
+
+The dashboard provides:
+
+- **Run overview** — switch between active runs, see per-service health at a glance
+- **Service panel** — view status, copy URLs, open services in browser, restart individual services
+- **Log viewer** — full-text search across all services with facet filtering, time range selection, auto-scroll, and virtualized rendering for large log volumes
+- **Command palette** — press `⌘K` for quick access to all actions
+- **Keyboard-driven** — `/` to search, `E`/`W` to filter errors/warnings, `F` for facets, number keys to switch tabs
+- **Shareable URLs** — all view state (run, service, search, filters) is reflected in URL parameters
+
+When no stacks are running, the dashboard shows registered projects with quick-start buttons.
+
+See [devstack-dash/README.md](devstack-dash/README.md) for full dashboard documentation.
+
+### Structured Log Search
+
+All service output is captured as JSONL with timestamps, stream labels, and level normalization. Logs are indexed with Tantivy for instant full-text search:
+
+```bash
+devstack logs --service api --errors            # show only errors
+devstack logs --q "connection refused" --last 50 # full-text search
+devstack logs --service api --follow             # stream in real-time
+devstack logs --facets                           # discover queryable fields
+```
+
+External JSONL files can be registered as sources and queried with the same interface:
+
+```bash
+devstack sources add app-logs /var/log/myapp/*.jsonl
+devstack logs --source app-logs --q "timeout" --since 1h
+```
+
+### Incremental Restarts & File Watching
+
+`devstack up` is incremental — it hashes each service's config, command, env, and watched files, and only restarts services that actually changed:
+
+```toml
+[stacks.dev.services.api]
+cmd = "cargo run"
+watch = ["src/**", "Cargo.toml"]
+ignore = ["**/target"]
+auto_restart = true   # live file watching + automatic restart
+```
+
+Ignore patterns stack: `.gitignore` → `.ignore` → `.devstackignore` → per-service `ignore`.
+
+### Readiness Probes
+
+Services aren't marked ready until they pass a health check. Dependent services wait automatically:
+
+| Type | Example |
+|------|---------|
+| TCP connect (default) | `readiness = { tcp = {} }` |
+| HTTP GET | `readiness = { http = { path = "/health", expect_status = [200, 399] } }` |
+| Log pattern match | `readiness = { log_regex = "listening on" }` |
+| Custom command | `readiness = { cmd = "pg_isready -h localhost -p $PORT" }` |
+| Fixed delay | `readiness = { delay_ms = 5000 }` |
+| Exit-based (one-shot) | `readiness = { exit = {} }` |
+
+### Tasks
+
+One-shot commands with optional skip-if-unchanged semantics:
+
+```toml
+[tasks.migrate]
+cmd = "prisma migrate dev"
+watch = ["prisma/schema.prisma"]
+
+[stacks.dev.services.api]
+cmd = "pnpm api"
+init = ["migrate"]   # runs before api starts
+```
+
+```bash
+devstack run migrate          # run a task
+devstack run --init           # run all init tasks
+devstack run                  # list available tasks
 ```
 
 ## Configuration
@@ -107,75 +213,16 @@ Service fields:
 | `scheme` | string | `http` | Used for generated URLs |
 | `port` | int or `"none"` | auto-allocate | Fixed port, dynamic port, or no port |
 | `port_env` | string | `PORT` | Env var receiving allocated port |
-| `readiness` | table | inferred | See readiness options below |
+| `readiness` | table | inferred | See readiness options above |
 | `env_file` | path | `<cwd>/.env` | Optional dotenv file (templated) |
 | `env` | map | `{}` | Inline env vars (templated values) |
 | `watch` | string[] | all files under cwd | Paths/patterns to hash for refresh decisions |
 | `ignore` | string[] | `[]` | Extra ignore patterns on top of ignore files |
 | `init` | string[] | none | Tasks to run before service start |
 
-### Readiness Options
-
-| Type | Description | Example |
-|------|-------------|---------|
-| `tcp` | TCP connect to allocated port (default for services with ports) | `readiness = { tcp = {} }` |
-| `http` | HTTP GET with status range check | `readiness = { http = { path = "/health", expect_status = [200, 399] } }` |
-| `log_regex` | Match pattern in stdout/stderr | `readiness = { log_regex = "listening on" }` |
-| `cmd` | Custom shell command exits 0 | `readiness = { cmd = "pg_isready -h localhost -p $PORT" }` |
-| `delay_ms` | Fixed delay (use sparingly) | `readiness = { delay_ms = 5000 }` |
-| `exit` | One-shot command exits successfully | `readiness = { exit = {} }` |
-| `timeout_ms` | Override 30s default | `readiness = { tcp = {}, timeout_ms = 60000 }` |
-
 ### Globals
 
-Services under `[globals]` are singletons shared across all stacks in a project. Useful for databases, caches, or message brokers that multiple stacks share. Globals are started on demand and stay running until explicitly stopped, and use the same env-file/env interpolation behavior as normal services.
-
-### Tasks
-
-One-shot commands defined in `[tasks]` that can be run via `devstack run <task>`. Tasks support either shorthand:
-
-```toml
-[tasks.format]
-cmd = "cargo fmt"
-```
-
-or string form:
-
-```toml
-tasks = { echo = "echo hello" }
-```
-
-Structured task fields:
-
-| Field | Type | Default |
-|------|------|---------|
-| `cmd` | string | required |
-| `cwd` | path | project dir |
-| `watch` | string[] | `[]` |
-| `env_file` | path | `<cwd>/.env` |
-| `env` | map | `{}` |
-
-Example:
-
-```toml
-[tasks.seed]
-cmd = "tsx scripts/seed.ts"
-env_file = ".env.local"
-
-[tasks.lint]
-cmd = "pnpm lint"
-watch = ["src/**", "eslint.config.js"]
-```
-
-Tasks support the same `watch` patterns as services. When watched files haven't changed since the last run, the task is skipped. Tasks can also be declared as `init` for services:
-
-```toml
-[stacks.dev.services.api]
-cmd = "pnpm api"
-init = ["migrate"]  # runs before api starts
-```
-
-Run `devstack run --init` to execute all init tasks without starting services.
+Services under `[globals]` are singletons shared across all stacks in a project. Useful for databases, caches, or message brokers that multiple stacks share. Globals are started on demand and stay running until explicitly stopped.
 
 ### Templating Variables
 
@@ -266,45 +313,13 @@ ignore = ["**/*.test.ts", "**/node_modules"]
 - `--pretty` is available on all commands.
 - `--run-id`, `--project`, and `--file` are command-specific (not global), mainly on lifecycle/config-sensitive commands.
 
-## Architecture
+## Documentation
 
-devstack has three runtime pieces:
+- **[Architecture](ARCHITECTURE.md)** — how the CLI, daemon, and shim interact; state model; log pipeline; config resolution
+- **[API Reference](API.md)** — daemon HTTP API endpoints, request/response types, socket location
+- **[Dashboard](devstack-dash/README.md)** — web UI features, keyboard shortcuts, URL state, navigation intents
 
-- **CLI** — resolves config/project context and sends local HTTP requests over a Unix socket.
-- **Daemon** (`devstack daemon`) — owns orchestration: dependency order, port allocation, readiness, health checks, run/global state, and log indexing.
-- **Shim** (`devstack __shim`) — spawned as each service entrypoint; runs the real command, captures stdout/stderr, strips ANSI, writes JSONL.
-
-Key behavior:
-
-- `devstack up` is incremental: it computes a watch hash per service and only restarts changed/failed services on refresh.
-- Logs are indexed with Tantivy for full-text queries and facets.
-- External JSONL sources are ingested into the same search pipeline.
-
-Runtime layout:
-
-```
-~/.local/share/devstack/                        # Linux
-~/Library/Application Support/devstack/         # macOS
-  daemon/
-    devstackd.sock
-    state.json
-  runs/
-    <run_id>/
-      manifest.json
-      devstack.yml.snapshot
-      logs/<service>.log
-      tasks/<task>.log
-  globals/
-    <project_hash>__<global>/
-      manifest.json
-      logs/<global>.log
-  logs_index/
-  dashboard/
-```
-
-Linux uses systemd transient units (cgroup-scoped lifecycle). macOS runs services under a LaunchAgent-managed daemon.
-
-## Known Limitations / Caveats
+## Known Limitations
 
 - External source queries (`devstack logs --source <name>`) currently return source-level labels; per-file service identity is not preserved in CLI output.
 - Change detection is hash-based (metadata + rendered config), not an always-on filesystem watcher.
@@ -325,14 +340,12 @@ For foreground daemon debugging, run:
 devstack daemon
 ```
 
-(when developing the binary itself, `cargo run -- daemon` is equivalent).
-
-Useful local checks:
+Dashboard development:
 
 ```bash
-cargo run -- status
-cargo run -- logs --service api --tail 50
-cargo run -- ui
+cd devstack-dash
+pnpm install
+pnpm dev
 ```
 
 ## Platform Notes
@@ -346,5 +359,3 @@ cargo run -- ui
 - `devstack install` configures a LaunchAgent for the daemon.
 - LaunchAgent environments often have a minimal `PATH`; prefer absolute command paths (or explicitly set PATH in env files).
 - Runtime/state paths are under `~/Library/Application Support/devstack` instead of `~/.local/share/devstack`.
-
-
