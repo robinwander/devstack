@@ -356,7 +356,7 @@ async fn run_auto_share_monitor(
                 &mut last_sent,
                 Instant::now(),
             ) {
-                let _ = tx.send(format_bracketed_paste(&message).into_bytes());
+                let _ = tx.send(format_message_for_pty(&message).into_bytes());
             }
         }
 
@@ -478,7 +478,7 @@ async fn run_proxy(
             while !poll_stop.load(Ordering::Relaxed) {
                 if let Ok(messages) = poll_client.poll_messages(&poll_agent_id).await {
                     for message in messages {
-                        let _ = poll_tx.send(format_bracketed_paste(&message).into_bytes());
+                        let _ = poll_tx.send(format_message_for_pty(&message).into_bytes());
                     }
                 }
                 tokio::time::sleep(POLL_INTERVAL).await;
@@ -565,8 +565,8 @@ fn resolve_auto_share(
     }
 }
 
-fn format_bracketed_paste(message: &str) -> String {
-    format!("\u{1b}[200~{message}\u{1b}[201~\n")
+fn format_message_for_pty(message: &str) -> String {
+    format!("{message}\r")
 }
 
 fn generate_agent_id() -> String {
@@ -739,9 +739,9 @@ mod tests {
     }
 
     #[test]
-    fn bracketed_paste_wraps_message() {
-        let payload = format_bracketed_paste("hello world");
-        assert_eq!(payload, "\u{1b}[200~hello world\u{1b}[201~\n");
+    fn format_message_appends_newline() {
+        let payload = format_message_for_pty("hello world");
+        assert_eq!(payload, "hello world\r");
     }
 
     #[test]
