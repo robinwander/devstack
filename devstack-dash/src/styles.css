@@ -1,0 +1,404 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "@fontsource-variable/outfit";
+@import "vanilla-jsoneditor/themes/jse-theme-dark.css";
+
+@custom-variant dark (&:is(.dark *));
+
+:root {
+    --background: oklch(1 0 0);
+    --foreground: oklch(0.145 0 0);
+    --card: oklch(1 0 0);
+    --card-foreground: oklch(0.145 0 0);
+    --popover: oklch(1 0 0);
+    --popover-foreground: oklch(0.145 0 0);
+    --primary: oklch(0.205 0 0);
+    --primary-foreground: oklch(0.985 0 0);
+    --secondary: oklch(0.97 0 0);
+    --secondary-foreground: oklch(0.205 0 0);
+    --muted: oklch(0.97 0 0);
+    --muted-foreground: oklch(0.556 0 0);
+    --accent: oklch(0.205 0 0);
+    --accent-foreground: oklch(0.985 0 0);
+    --destructive: oklch(0.58 0.22 27);
+    --border: oklch(0.922 0 0);
+    --input: oklch(0.922 0 0);
+    --ring: oklch(0.708 0 0);
+    --radius: 0;
+}
+
+.dark {
+    --background: oklch(0.07 0.003 260);
+    --foreground: oklch(0.92 0 0);
+    --card: oklch(0.09 0.003 260);
+    --card-foreground: oklch(0.92 0 0);
+    --popover: oklch(0.11 0.003 260);
+    --popover-foreground: oklch(0.92 0 0);
+    --primary: oklch(0.78 0.12 180);
+    --primary-foreground: oklch(0.10 0 0);
+    --secondary: oklch(0.14 0.005 260);
+    --secondary-foreground: oklch(0.92 0 0);
+    --muted: oklch(0.14 0.005 260);
+    --muted-foreground: oklch(0.50 0 0);
+    --accent: oklch(0.78 0.12 180);
+    --accent-foreground: oklch(0.10 0 0);
+    --destructive: oklch(0.65 0.2 25);
+    --border: oklch(1 0 0 / 8%);
+    --input: oklch(1 0 0 / 10%);
+    --ring: oklch(0.5 0 0);
+    --surface-1: oklch(0.10 0.004 260);
+    --surface-2: oklch(0.12 0.005 260);
+    --glow-primary: oklch(0.78 0.12 180 / 15%);
+}
+
+@theme inline {
+    --font-sans: 'Outfit Variable', 'Outfit', sans-serif;
+    --font-mono: 'JetBrains Mono', 'Fira Code', 'SF Mono', ui-monospace, monospace;
+    --color-ring: var(--ring);
+    --color-border: var(--border);
+    --color-input: var(--input);
+    --color-destructive: var(--destructive);
+    --color-accent-foreground: var(--accent-foreground);
+    --color-accent: var(--accent);
+    --color-muted-foreground: var(--muted-foreground);
+    --color-muted: var(--muted);
+    --color-secondary-foreground: var(--secondary-foreground);
+    --color-secondary: var(--secondary);
+    --color-primary-foreground: var(--primary-foreground);
+    --color-primary: var(--primary);
+    --color-popover-foreground: var(--popover-foreground);
+    --color-popover: var(--popover);
+    --color-card-foreground: var(--card-foreground);
+    --color-card: var(--card);
+    --color-foreground: var(--foreground);
+    --color-background: var(--background);
+    --color-surface-1: var(--surface-1);
+    --color-surface-2: var(--surface-2);
+    --color-glow-primary: var(--glow-primary);
+    --radius-sm: calc(var(--radius) - 4px);
+    --radius-md: calc(var(--radius) - 2px);
+    --radius-lg: var(--radius);
+    --radius-xl: calc(var(--radius) + 4px);
+    --radius-2xl: calc(var(--radius) + 8px);
+    --radius-3xl: calc(var(--radius) + 12px);
+    --radius-4xl: calc(var(--radius) + 16px);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply font-sans bg-background text-foreground;
+  }
+  html {
+    @apply font-sans;
+  }
+  code, pre, .font-mono {
+    font-family: var(--font-mono);
+  }
+}
+
+/* Scrollbar styling for the dark terminal aesthetic */
+@layer base {
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: oklch(0.3 0 0);
+    border-radius: 3px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: oklch(0.4 0 0);
+  }
+}
+
+/* Hide scrollbar for horizontal-scroll areas (tabs) */
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+.scrollbar-none {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* Log viewer line highlighting */
+.log-line:hover {
+  background: oklch(1 0 0 / 2.5%);
+}
+.log-line:hover .log-ts {
+  color: oklch(0.55 0 0);
+}
+
+/* Subtle noise texture overlay */
+.noise-bg::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  opacity: 0.02;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='1'/%3E%3C/svg%3E");
+  background-size: 256px 256px;
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* Ambient glow behind header */
+.header-glow {
+  background: linear-gradient(
+    180deg,
+    oklch(0.78 0.12 180 / 4%) 0%,
+    transparent 100%
+  );
+}
+
+/* Service row hover states */
+.service-row {
+  transition: background-color 150ms ease, border-color 150ms ease;
+}
+
+/* Smooth tab indicator */
+.tab-active {
+  position: relative;
+}
+.tab-active::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 8px;
+  right: 8px;
+  height: 2px;
+  background: oklch(0.78 0.12 180);
+  border-radius: 1px 1px 0 0;
+}
+
+/* Pulse dot animation */
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(0.85); }
+}
+.pulse-dot {
+  animation: pulse-dot 2s ease-in-out infinite;
+}
+
+/* Stagger children animation */
+@keyframes fade-up-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.stagger-in > * {
+  animation: fade-up-in 0.3s ease-out both;
+}
+.stagger-in > *:nth-child(1) { animation-delay: 0ms; }
+.stagger-in > *:nth-child(2) { animation-delay: 40ms; }
+.stagger-in > *:nth-child(3) { animation-delay: 80ms; }
+.stagger-in > *:nth-child(4) { animation-delay: 120ms; }
+.stagger-in > *:nth-child(5) { animation-delay: 160ms; }
+.stagger-in > *:nth-child(6) { animation-delay: 200ms; }
+.stagger-in > *:nth-child(7) { animation-delay: 240ms; }
+.stagger-in > *:nth-child(8) { animation-delay: 280ms; }
+.stagger-in > *:nth-child(9) { animation-delay: 320ms; }
+.stagger-in > *:nth-child(10) { animation-delay: 360ms; }
+
+/* Status dot glow */
+.status-glow-green {
+  box-shadow: 0 0 6px oklch(0.72 0.17 155 / 40%);
+}
+.status-glow-amber {
+  box-shadow: 0 0 6px oklch(0.80 0.15 85 / 40%);
+}
+.status-glow-orange {
+  box-shadow: 0 0 6px oklch(0.70 0.18 55 / 40%);
+}
+.status-glow-red {
+  box-shadow: 0 0 6px oklch(0.65 0.2 25 / 40%);
+}
+
+/* Service color strips — 3px left-edge service identity */
+.svc-strip {
+  width: 3px;
+  min-height: 100%;
+  flex-shrink: 0;
+}
+
+/* Service color palette — solid left strips and text colors */
+.svc-color-0 { --svc-color: oklch(0.72 0.12 230); } /* Sky blue */
+.svc-color-1 { --svc-color: oklch(0.68 0.14 290); } /* Violet */
+.svc-color-2 { --svc-color: oklch(0.80 0.12 85); }  /* Amber */
+.svc-color-3 { --svc-color: oklch(0.68 0.18 15); }  /* Rose */
+.svc-color-4 { --svc-color: oklch(0.72 0.12 175); } /* Teal */
+.svc-color-5 { --svc-color: oklch(0.68 0.16 320); } /* Fuchsia */
+.svc-color-6 { --svc-color: oklch(0.78 0.14 130); } /* Lime */
+.svc-color-7 { --svc-color: oklch(0.68 0.14 265); } /* Indigo */
+
+.svc-strip-bg { background: var(--svc-color); }
+.svc-text { color: var(--svc-color); }
+.svc-row-tint { background: oklch(from var(--svc-color) l c h / 4%); }
+
+/* Log level row tints */
+.log-level-warn-tint {
+  background: oklch(0.82 0.15 85 / 4%);
+}
+.log-level-error-tint {
+  background: oklch(0.65 0.22 25 / 6%);
+}
+
+/* Log level left-edge accent (overlays service strip on warn/error) */
+.log-level-warn-strip {
+  background: oklch(0.80 0.15 85) !important;
+}
+.log-level-error-strip {
+  background: oklch(0.65 0.22 25) !important;
+}
+
+/* Line numbers */
+.log-line-number {
+  width: 48px;
+  text-align: right;
+  user-select: none;
+  color: oklch(0.28 0 0);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+.log-line:hover .log-line-number {
+  color: oklch(0.42 0 0);
+}
+
+/* Long line handling — break-word not break-all */
+.log-content-text {
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  word-break: normal;
+}
+
+/* Facet proportional bars */
+.facet-bar {
+  height: 4px;
+  background: oklch(0.42 0 0 / 20%);
+  position: absolute;
+  left: 0;
+  bottom: 0;
+}
+.facet-bar-error { background: oklch(0.65 0.22 25 / 40%); }
+.facet-bar-warn { background: oklch(0.80 0.15 85 / 40%); }
+
+/* Skeleton shimmer */
+@keyframes shimmer {
+  from { background-position: -200% 0; }
+  to { background-position: 200% 0; }
+}
+.skeleton-shimmer {
+  background: linear-gradient(90deg, oklch(0.14 0.005 260) 25%, oklch(0.18 0.005 260) 50%, oklch(0.14 0.005 260) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s linear infinite;
+}
+
+/* Tab bar — stronger active state */
+.tab-active::after {
+  height: 2px;
+  left: 4px;
+  right: 4px;
+  border-radius: 1px 1px 0 0;
+}
+
+/* Focus visible — accent ring */
+:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+/* Expanded log detail — stronger surface treatment */
+.log-detail-panel {
+  background: oklch(0.09 0.003 260);
+  border: 1px solid oklch(1 0 0 / 14%);
+  box-shadow: inset 0 1px 0 oklch(1 0 0 / 3%);
+}
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  *, ::before, ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+  .pulse-dot { animation: none; }
+}
+
+/* ─── Mobile responsive base ─── */
+
+/* Mobile overlay backdrop — slides with the panel */
+.mobile-panel-backdrop {
+  position: fixed;
+  inset: 0;
+  background: oklch(0 0 0 / 60%);
+  z-index: 25;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 200ms ease;
+}
+.mobile-panel-backdrop.is-open {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Mobile slide-over panel */
+.mobile-slide-panel {
+  transition: transform 250ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Touch-friendly targets: ensure 44px minimum on mobile */
+@media (max-width: 767px) {
+  /* Boost small interactive elements */
+  .touch-target-boost {
+    min-height: 44px;
+    min-width: 44px;
+  }
+  /* Keyboard shortcut hints are useless on mobile */
+  .desktop-only-hints {
+    display: none !important;
+  }
+  /* Compact log line-numbers on mobile */
+  .log-line-number {
+    width: 32px;
+    font-size: 10px;
+    padding-right: 4px;
+  }
+  /* Hide verbose timestamp — show just HH:MM:SS on mobile (drop .ms) */
+  .log-ts {
+    font-size: 11px;
+    padding-right: 4px;
+  }
+  /* Narrower service name column on mobile */
+  .log-line .svc-strip {
+    width: 2px;
+  }
+}
+
+/* New logs toast with count */
+.new-logs-toast {
+  animation: slide-up-fade-in 200ms ease-out;
+}
+@keyframes slide-up-fade-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* vanilla-jsoneditor dark theme overrides */
+.json-editor-dark {
+  --jse-theme-color: oklch(0.78 0.12 180);
+  --jse-theme-color-highlight: oklch(0.78 0.12 180 / 15%);
+  --jse-background-color: oklch(0.07 0.003 260);
+  --jse-text-color: oklch(0.85 0 0);
+  --jse-panel-background: oklch(0.09 0.003 260);
+  --jse-panel-border: oklch(1 0 0 / 8%);
+  font-family: var(--font-mono);
+}
+
+.json-editor-dark .jse-main {
+  min-height: 0;
+  border: none;
+}

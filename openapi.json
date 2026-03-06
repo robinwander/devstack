@@ -1,0 +1,855 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "devstack",
+    "description": "",
+    "license": {
+      "name": ""
+    },
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/v1/gc": {
+      "post": {
+        "tags": [
+          "daemon"
+        ],
+        "operationId": "gc",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GcRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Garbage collection results",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GcResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/crate.api.ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/crate.api.ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/globals": {
+      "get": {
+        "tags": [
+          "daemon"
+        ],
+        "operationId": "list_globals",
+        "responses": {
+          "200": {
+            "description": "Global services",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GlobalsResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/crate.api.ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/ping": {
+      "get": {
+        "tags": [
+          "daemon"
+        ],
+        "operationId": "ping",
+        "responses": {
+          "200": {
+            "description": "Daemon is healthy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PingResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/crate.api.ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/runs": {
+      "get": {
+        "tags": [
+          "daemon"
+        ],
+        "operationId": "list_runs",
+        "responses": {
+          "200": {
+            "description": "Run list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunListResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/crate.api.ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/runs/down": {
+      "post": {
+        "tags": [
+          "daemon"
+        ],
+        "operationId": "down",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DownRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Run stopped",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunManifest"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/crate.api.ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Run not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/crate.api.ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/crate.api.ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/runs/kill": {
+      "post": {
+        "tags": [
+          "daemon"
+        ],
+        "operationId": "kill",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KillRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Run killed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunManifest"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/crate.api.ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Run not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/crate.api.ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/crate.api.ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/runs/up": {
+      "post": {
+        "tags": [
+          "daemon"
+        ],
+        "operationId": "up",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Run created or refreshed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunManifest"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/crate.api.ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/crate.api.ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/runs/{run_id}/restart-service": {
+      "post": {
+        "tags": [
+          "daemon"
+        ],
+        "operationId": "restart_service",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "description": "Run id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RestartServiceRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Service restarted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunManifest"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/crate.api.ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Run or service not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/crate.api.ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/crate.api.ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/runs/{run_id}/status": {
+      "get": {
+        "tags": [
+          "daemon"
+        ],
+        "operationId": "status",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "description": "Run id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Run status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunStatusResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Run not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/crate.api.ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/crate.api.ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "DownRequest": {
+        "type": "object",
+        "required": [
+          "run_id",
+          "purge"
+        ],
+        "properties": {
+          "purge": {
+            "type": "boolean"
+          },
+          "run_id": {
+            "type": "string"
+          }
+        }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "string"
+          }
+        }
+      },
+      "GcRequest": {
+        "type": "object",
+        "required": [
+          "all"
+        ],
+        "properties": {
+          "all": {
+            "type": "boolean"
+          },
+          "older_than": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
+      "GcResponse": {
+        "type": "object",
+        "required": [
+          "removed_runs",
+          "removed_globals"
+        ],
+        "properties": {
+          "removed_globals": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "removed_runs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "GlobalSummary": {
+        "type": "object",
+        "required": [
+          "key",
+          "name",
+          "project_dir",
+          "state"
+        ],
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "port": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true,
+            "minimum": 0
+          },
+          "project_dir": {
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/RunLifecycle"
+          },
+          "url": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
+      "GlobalsResponse": {
+        "type": "object",
+        "required": [
+          "globals"
+        ],
+        "properties": {
+          "globals": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GlobalSummary"
+            }
+          }
+        }
+      },
+      "KillRequest": {
+        "type": "object",
+        "required": [
+          "run_id"
+        ],
+        "properties": {
+          "run_id": {
+            "type": "string"
+          }
+        }
+      },
+      "PingResponse": {
+        "type": "object",
+        "required": [
+          "ok"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          }
+        }
+      },
+      "RestartServiceRequest": {
+        "type": "object",
+        "required": [
+          "service"
+        ],
+        "properties": {
+          "no_wait": {
+            "type": "boolean"
+          },
+          "service": {
+            "type": "string"
+          }
+        }
+      },
+      "RunLifecycle": {
+        "type": "string",
+        "enum": [
+          "starting",
+          "running",
+          "degraded",
+          "stopped"
+        ]
+      },
+      "RunListResponse": {
+        "type": "object",
+        "required": [
+          "runs"
+        ],
+        "properties": {
+          "runs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RunSummary"
+            }
+          }
+        }
+      },
+      "RunManifest": {
+        "type": "object",
+        "required": [
+          "run_id",
+          "project_dir",
+          "stack",
+          "manifest_path",
+          "services",
+          "env",
+          "state",
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string"
+          },
+          "env": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "manifest_path": {
+            "type": "string"
+          },
+          "project_dir": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "services": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ServiceManifest"
+            }
+          },
+          "stack": {
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/RunLifecycle"
+          },
+          "stopped_at": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
+      "RunStatusResponse": {
+        "type": "object",
+        "required": [
+          "run_id",
+          "stack",
+          "project_dir",
+          "state",
+          "services"
+        ],
+        "properties": {
+          "project_dir": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "services": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ServiceStatus"
+            }
+          },
+          "stack": {
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/RunLifecycle"
+          }
+        }
+      },
+      "RunSummary": {
+        "type": "object",
+        "required": [
+          "run_id",
+          "stack",
+          "project_dir",
+          "state",
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string"
+          },
+          "project_dir": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "stack": {
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/RunLifecycle"
+          },
+          "stopped_at": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
+      "ServiceManifest": {
+        "type": "object",
+        "required": [
+          "state"
+        ],
+        "properties": {
+          "port": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true,
+            "minimum": 0
+          },
+          "state": {
+            "$ref": "#/components/schemas/ServiceState"
+          },
+          "url": {
+            "type": "string",
+            "nullable": true
+          },
+          "watch_hash": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
+      "ServiceState": {
+        "type": "string",
+        "enum": [
+          "starting",
+          "ready",
+          "degraded",
+          "stopped",
+          "failed"
+        ]
+      },
+      "ServiceStatus": {
+        "type": "object",
+        "required": [
+          "desired",
+          "ready",
+          "state"
+        ],
+        "properties": {
+          "desired": {
+            "type": "string"
+          },
+          "last_failure": {
+            "type": "string",
+            "nullable": true
+          },
+          "ready": {
+            "type": "boolean"
+          },
+          "state": {
+            "$ref": "#/components/schemas/ServiceState"
+          },
+          "systemd": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/SystemdStatus"
+              }
+            ],
+            "nullable": true
+          },
+          "url": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
+      "SystemdStatus": {
+        "type": "object",
+        "required": [
+          "active_state",
+          "sub_state"
+        ],
+        "properties": {
+          "active_state": {
+            "type": "string"
+          },
+          "result": {
+            "type": "string",
+            "nullable": true
+          },
+          "sub_state": {
+            "type": "string"
+          }
+        }
+      },
+      "UpRequest": {
+        "type": "object",
+        "required": [
+          "stack",
+          "project_dir",
+          "no_wait"
+        ],
+        "properties": {
+          "file": {
+            "type": "string",
+            "nullable": true
+          },
+          "force": {
+            "type": "boolean"
+          },
+          "new_run": {
+            "type": "boolean"
+          },
+          "no_wait": {
+            "type": "boolean"
+          },
+          "project_dir": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string",
+            "nullable": true
+          },
+          "stack": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "daemon",
+      "description": "Devstack daemon API"
+    }
+  ]
+}
