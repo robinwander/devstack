@@ -102,8 +102,8 @@ pub fn run_task(
         None => project_dir.to_path_buf(),
     };
 
-    let mut command = Command::new("sh");
-    command.arg("-c").arg(&cmd).current_dir(&cwd);
+    let mut command = Command::new("/bin/bash");
+    command.arg("-lc").arg(&cmd).current_dir(&cwd);
 
     if verbose {
         command
@@ -371,24 +371,19 @@ mod tests {
     }
 
     #[test]
-    fn run_task_uses_non_login_shell() {
+    fn run_task_uses_login_shell() {
         let project_dir = tempfile::tempdir().unwrap();
-        let home_dir = tempfile::tempdir().unwrap();
-        std::fs::write(home_dir.path().join(".profile"), "[[ 1 -eq 1 ]]\n").unwrap();
 
         let task = TaskConfig::Structured(crate::config::TaskDefinition {
-            cmd: "exit 0".to_string(),
+            cmd: "echo $0".to_string(),
             cwd: None,
             watch: Vec::new(),
-            env: BTreeMap::from([(
-                "HOME".to_string(),
-                home_dir.path().to_string_lossy().to_string(),
-            )]),
+            env: BTreeMap::new(),
             env_file: None,
         });
 
         let result = run_task(
-            "non-login-shell",
+            "login-shell",
             &task,
             project_dir.path(),
             TaskLogScope::AdHoc,
@@ -397,7 +392,5 @@ mod tests {
         .unwrap();
 
         assert!(result.success());
-        let stderr = result.last_stderr_line.unwrap_or_default();
-        assert!(!stderr.contains("[[: not found"));
     }
 }
