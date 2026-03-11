@@ -7,6 +7,7 @@ use std::sync::Mutex;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
 use tantivy::collector::{Count, TopDocs};
 use tantivy::query::{AllQuery, BooleanQuery, Occur, Query, QueryParser, RangeQuery, TermQuery};
 use tantivy::schema::{FAST, Field, FieldType, INDEXED, STORED, STRING, TEXT, Value};
@@ -54,11 +55,17 @@ struct LogIndexFields {
     raw: Field,
 }
 
-pub(crate) struct LogIndex {
+struct LogIndexState {
     index: Index,
     reader: IndexReader,
-    writer: Mutex<IndexWriter>,
+    writer: Option<IndexWriter>,
     fields: LogIndexFields,
+    dynamic_fields: HashMap<String, Field>,
+}
+
+pub(crate) struct LogIndex {
+    index_dir: PathBuf,
+    state: Mutex<LogIndexState>,
     ingest_state_path: PathBuf,
     // Serialize ingestion + cursor persistence to avoid duplicate indexing when multiple
     // clients (UI + CLI) poll concurrently.
@@ -115,10 +122,14 @@ impl LogIndex {
         };
 
         Ok(Self {
-            index,
-            reader,
-            writer: Mutex::new(writer),
-            fields,
+            index_dir: index_dir.to_path_buf(),
+            state: Mutex::new(LogIndexState {
+                index,
+                reader,
+                writer: Some(writer),
+                fields,
+                dynamic_fields: HashMap::new(),
+            }),
             ingest_state_path: ingest_state_path.to_path_buf(),
             ingest_gate: Mutex::new(()),
             ingest: Mutex::new(ingest),
@@ -180,6 +191,149 @@ impl LogIndex {
         })
     }
 
+    fn ensure_dynamic_fields(
+        &self,
+        state: &mut LogIndexState,
+        field_names: &BTreeSet<String>,
+    ) -> Result<()> {
+        let schema = state.index.schema();
+        let mut missing = Vec::new();
+        for field_name in field_names {
+            if state.dynamic_fields.contains_key(field_name) {
+                continue;
+            }
+            if let Ok(field) = schema.get_field(field_name) {
+                state.dynamic_fields.insert(field_name.clone(), field);
+                continue;
+            }
+            missing.push(field_name.clone());
+        }
+
+        if missing.is_empty() {
+            return Ok(());
+        }
+
+        let mut schema_builder = tantivy::schema::Schema::builder();
+        for (_, field_entry) in schema.fields() {
+            schema_builder.add_field(field_entry.clone());
+        }
+        for field_name in &missing {
+            schema_builder.add_text_field(field_name, STRING | STORED);
+        }
+
+        let mut metas = state.index.load_metas()?;
+        metas.schema = schema_builder.build();
+        let bytes = serde_json::to_vec_pretty(&metas)?;
+        atomic_write(&self.index_dir.join("meta.json"), &bytes)?;
+
+        drop(state.writer.take());
+
+        let index = Index::open_in_dir(&self.index_dir)?;
+        let reader = index
+            .reader_builder()
+            .reload_policy(ReloadPolicy::OnCommitWithDelay)
+            .try_into()?;
+        let writer = index.writer(32 * 1024 * 1024)?;
+        let fields = Self::resolve_fields(&index.schema())?;
+        let cached_names: Vec<String> = state.dynamic_fields.keys().cloned().collect();
+
+        state.index = index;
+        state.reader = reader;
+        state.writer = Some(writer);
+        state.fields = fields;
+        state.dynamic_fields.clear();
+        for field_name in cached_names.into_iter().chain(missing.into_iter()) {
+            if let Ok(field) = state.index.schema().get_field(&field_name) {
+                state.dynamic_fields.insert(field_name, field);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn extract_dynamic_json_fields(line: &str) -> Vec<(String, String)> {
+        let trimmed = line.trim();
+        if !trimmed.starts_with('{') {
+            return Vec::new();
+        }
+
+        let Ok(JsonValue::Object(map)) = serde_json::from_str::<JsonValue>(trimmed) else {
+            return Vec::new();
+        };
+
+        let mut fields = HashMap::new();
+        for (field_name, value) in map {
+            let Some(field_name) = Self::normalize_dynamic_field_name(&field_name) else {
+                continue;
+            };
+            if Self::is_reserved_dynamic_field(&field_name) {
+                continue;
+            }
+            let Some(value) = Self::dynamic_value_to_string(&value) else {
+                continue;
+            };
+            fields.entry(field_name).or_insert(value);
+        }
+
+        fields.into_iter().collect()
+    }
+
+    fn normalize_dynamic_field_name(field_name: &str) -> Option<String> {
+        let mut normalized = String::with_capacity(field_name.len());
+        let mut last_was_underscore = false;
+
+        for ch in field_name.chars() {
+            if ch.is_ascii_alphanumeric() {
+                normalized.push(ch.to_ascii_lowercase());
+                last_was_underscore = false;
+            } else if !last_was_underscore {
+                normalized.push('_');
+                last_was_underscore = true;
+            }
+        }
+
+        let normalized = normalized.trim_matches('_');
+        if normalized.is_empty() {
+            None
+        } else {
+            Some(normalized.to_string())
+        }
+    }
+
+    fn is_reserved_dynamic_field(field_name: &str) -> bool {
+        matches!(
+            field_name,
+            "time"
+                | "ts"
+                | "timestamp"
+                | "msg"
+                | "message"
+                | "level"
+                | "severity"
+                | "stream"
+                | "run_id"
+                | "service"
+                | "ts_nanos"
+                | "seq"
+                | "raw"
+        )
+    }
+
+    fn dynamic_value_to_string(value: &JsonValue) -> Option<String> {
+        let value = match value {
+            JsonValue::String(value) => value.clone(),
+            JsonValue::Number(value) => value.to_string(),
+            JsonValue::Bool(value) => value.to_string(),
+            JsonValue::Array(_) | JsonValue::Object(_) | JsonValue::Null => return None,
+        };
+
+        if value.is_empty() || value.chars().count() > 256 {
+            None
+        } else {
+            Some(value)
+        }
+    }
+
     fn source_key(run_id: &str, service: &str) -> String {
         format!("{run_id}/{service}")
     }
@@ -187,12 +341,13 @@ impl LogIndex {
     pub(crate) fn delete_run(&self, run_id: &str) -> Result<()> {
         let _gate = self.ingest_gate.lock().unwrap();
         {
-            let mut writer = self.writer.lock().unwrap();
-            let term = Term::from_field_text(self.fields.run_id, run_id);
+            let mut state = self.state.lock().unwrap();
+            let term = Term::from_field_text(state.fields.run_id, run_id);
+            let writer = state.writer.as_mut().context("tantivy writer missing")?;
             writer.delete_term(term);
             writer.commit()?;
+            state.reader.reload().ok();
         }
-        self.reader.reload().ok();
         {
             let mut ingest = self.ingest.lock().unwrap();
             let prefix = format!("{run_id}/");
@@ -209,20 +364,6 @@ impl LogIndex {
             return Ok(());
         }
 
-        // Snapshot cursors first (avoid holding the lock during IO).
-        let cursors: HashMap<String, IngestCursor> = {
-            let ingest = self.ingest.lock().unwrap();
-            sources
-                .iter()
-                .map(|s| {
-                    let key = Self::source_key(&s.run_id, &s.service);
-                    let cursor = ingest.sources.get(&key).cloned().unwrap_or_default();
-                    (key, cursor)
-                })
-                .collect()
-        };
-
-        // Read + parse new log lines (no tantivy locks held).
         struct PendingUpdate {
             key: String,
             cursor: IngestCursor,
@@ -230,8 +371,37 @@ impl LogIndex {
             service: String,
             delete_from_seq: u64,
         }
-        let mut pending_updates: Vec<PendingUpdate> = Vec::new();
-        let mut pending_docs: Vec<tantivy::TantivyDocument> = Vec::new();
+
+        struct PendingDoc {
+            run_id: String,
+            service: String,
+            stream: String,
+            level: String,
+            ts_nanos: i64,
+            ts: String,
+            seq: u64,
+            message: String,
+            raw: String,
+            dynamic_fields: Vec<(String, String)>,
+        }
+
+        // Snapshot cursors first (avoid holding the lock during IO).
+        let cursors: HashMap<String, IngestCursor> = {
+            let ingest = self.ingest.lock().unwrap();
+            sources
+                .iter()
+                .map(|source| {
+                    let key = Self::source_key(&source.run_id, &source.service);
+                    let cursor = ingest.sources.get(&key).cloned().unwrap_or_default();
+                    (key, cursor)
+                })
+                .collect()
+        };
+
+        // Read + parse new log lines (no tantivy locks held).
+        let mut pending_updates = Vec::new();
+        let mut pending_docs = Vec::new();
+        let mut dynamic_field_names = BTreeSet::new();
 
         for source in sources {
             if !source.path.exists() {
@@ -242,7 +412,7 @@ impl LogIndex {
             let delete_from_seq = cursor.next_seq;
 
             let file_len = std::fs::metadata(&source.path)
-                .map(|m| m.len())
+                .map(|metadata| metadata.len())
                 .unwrap_or(0);
             if file_len < cursor.offset {
                 // Log file truncated or replaced; restart from beginning but keep seq monotonic.
@@ -259,7 +429,7 @@ impl LogIndex {
             }
 
             // Only ingest complete lines (up to last newline).
-            let Some(last_nl) = buf.iter().rposition(|&b| b == b'\n') else {
+            let Some(last_nl) = buf.iter().rposition(|&byte| byte == b'\n') else {
                 continue;
             };
             let complete_len = last_nl + 1;
@@ -281,27 +451,30 @@ impl LogIndex {
                 }
                 any_lines = true;
 
-                let ts_str = extract_timestamp_str(&line);
-                let ts_nanos = ts_str
-                    .as_deref()
-                    .and_then(parse_timestamp_nanos)
-                    .unwrap_or(0);
+                let ts = extract_timestamp_str(&line).unwrap_or_default();
+                let ts_nanos = parse_timestamp_nanos(&ts).unwrap_or(0);
                 let (stream, message) = extract_log_content(&line);
                 let level = classify_line_level(&line);
+                let dynamic_fields = Self::extract_dynamic_json_fields(&line);
                 let seq = cursor.next_seq;
                 cursor.next_seq = cursor.next_seq.saturating_add(1);
 
-                let mut doc = tantivy::TantivyDocument::default();
-                doc.add_text(self.fields.run_id, &source.run_id);
-                doc.add_text(self.fields.service, &source.service);
-                doc.add_text(self.fields.stream, &stream);
-                doc.add_text(self.fields.level, &level);
-                doc.add_i64(self.fields.ts_nanos, ts_nanos);
-                doc.add_text(self.fields.ts, ts_str.as_deref().unwrap_or(""));
-                doc.add_u64(self.fields.seq, seq);
-                doc.add_text(self.fields.message, &message);
-                doc.add_text(self.fields.raw, &line);
-                pending_docs.push(doc);
+                for (field_name, _) in &dynamic_fields {
+                    dynamic_field_names.insert(field_name.clone());
+                }
+
+                pending_docs.push(PendingDoc {
+                    run_id: source.run_id.clone(),
+                    service: source.service.clone(),
+                    stream,
+                    level,
+                    ts_nanos,
+                    ts,
+                    seq,
+                    message,
+                    raw: line,
+                    dynamic_fields,
+                });
             }
 
             if any_lines {
@@ -322,13 +495,39 @@ impl LogIndex {
 
         // Write + commit once.
         {
-            let mut writer = self.writer.lock().unwrap();
+            let mut state = self.state.lock().unwrap();
+            self.ensure_dynamic_fields(&mut state, &dynamic_field_names)?;
+            let fields = state.fields.clone();
+
+            let docs: Vec<tantivy::TantivyDocument> = pending_docs
+                .into_iter()
+                .map(|pending| {
+                    let mut doc = tantivy::TantivyDocument::default();
+                    doc.add_text(fields.run_id, &pending.run_id);
+                    doc.add_text(fields.service, &pending.service);
+                    doc.add_text(fields.stream, &pending.stream);
+                    doc.add_text(fields.level, &pending.level);
+                    doc.add_i64(fields.ts_nanos, pending.ts_nanos);
+                    doc.add_text(fields.ts, &pending.ts);
+                    doc.add_u64(fields.seq, pending.seq);
+                    doc.add_text(fields.message, &pending.message);
+                    doc.add_text(fields.raw, &pending.raw);
+                    for (field_name, value) in pending.dynamic_fields {
+                        if let Some(field) = state.dynamic_fields.get(&field_name).copied() {
+                            doc.add_text(field, &value);
+                        }
+                    }
+                    doc
+                })
+                .collect();
+
+            let writer = state.writer.as_mut().context("tantivy writer missing")?;
             // Crash-safe idempotency: if we previously committed docs but failed to persist
             // `ingest_state`, we may re-ingest overlapping seq ranges. Delete any docs in this
             // run/service with seq >= the starting seq for this ingest, then re-add.
             for update in &pending_updates {
-                let run_term = Term::from_field_text(self.fields.run_id, &update.run_id);
-                let svc_term = Term::from_field_text(self.fields.service, &update.service);
+                let run_term = Term::from_field_text(fields.run_id, &update.run_id);
+                let svc_term = Term::from_field_text(fields.service, &update.service);
                 let q = BooleanQuery::new(vec![
                     (
                         Occur::Must,
@@ -348,7 +547,7 @@ impl LogIndex {
                         Occur::Must,
                         Box::new(RangeQuery::new(
                             Bound::Included(Term::from_field_u64(
-                                self.fields.seq,
+                                fields.seq,
                                 update.delete_from_seq,
                             )),
                             Bound::Unbounded,
@@ -357,13 +556,12 @@ impl LogIndex {
                 ]);
                 writer.delete_query(Box::new(q))?;
             }
-            for doc in pending_docs {
+            for doc in docs {
                 writer.add_document(doc)?;
             }
             writer.commit()?;
+            state.reader.reload()?;
         }
-        // Make commits visible to subsequent searches in this process.
-        self.reader.reload()?;
 
         // Persist cursors.
         {
@@ -395,11 +593,14 @@ impl LogIndex {
         let tail = query.last.unwrap_or(500);
         let level_filter = query.level.as_deref().unwrap_or("all");
         let stream_filter = query.stream.as_deref();
-
         let since_nanos = query.since.as_deref().and_then(parse_timestamp_nanos);
+        let after = query.after;
+
+        let state = self.state.lock().unwrap();
 
         // Scope query: run + service (+ since/+ stream). Counts ignore search/level/after.
-        let scope_query = self.build_scope_query(
+        let scope_query = Self::build_scope_query(
+            &state.fields,
             run_id,
             Some(service),
             since_nanos,
@@ -408,11 +609,11 @@ impl LogIndex {
             None,
         )?;
 
-        let searcher = self.reader.searcher();
+        let searcher = state.reader.searcher();
         let total: usize = searcher.search(&scope_query, &Count)?;
 
         let error_count: usize = {
-            let term = Term::from_field_text(self.fields.level, "error");
+            let term = Term::from_field_text(state.fields.level, "error");
             let q = BooleanQuery::new(vec![
                 (Occur::Must, scope_query.box_clone()),
                 (
@@ -426,7 +627,7 @@ impl LogIndex {
             searcher.search(&q, &Count)?
         };
         let warn_count: usize = {
-            let term = Term::from_field_text(self.fields.level, "warn");
+            let term = Term::from_field_text(state.fields.level, "warn");
             let q = BooleanQuery::new(vec![
                 (Occur::Must, scope_query.box_clone()),
                 (
@@ -441,8 +642,8 @@ impl LogIndex {
         };
 
         // Result query: scope + (after) + (level) + (search)
-        let after = query.after;
-        let mut result_query = self.build_scope_query(
+        let mut result_query = Self::build_scope_query(
+            &state.fields,
             run_id,
             Some(service),
             since_nanos,
@@ -451,8 +652,13 @@ impl LogIndex {
             None,
         )?;
 
-        result_query = self.add_level_filter(result_query, level_filter)?;
-        result_query = self.add_text_query(result_query, query.search.as_deref())?;
+        result_query = Self::add_level_filter(state.fields.level, result_query, level_filter)?;
+        result_query = Self::add_text_query(
+            &state.index,
+            state.fields.message,
+            result_query,
+            query.search.as_deref(),
+        )?;
 
         let matched_total: usize = searcher.search(&result_query, &Count)?;
 
@@ -469,19 +675,19 @@ impl LogIndex {
                 for (_sort, addr) in top_docs {
                     let doc: tantivy::TantivyDocument = searcher.doc(addr)?;
                     let raw = doc
-                        .get_first(self.fields.raw)
+                        .get_first(state.fields.raw)
                         .and_then(|v| v.as_str())
                         .unwrap_or_default()
                         .to_string();
                     let ts = doc
-                        .get_first(self.fields.ts_nanos)
+                        .get_first(state.fields.ts_nanos)
                         .and_then(|v| v.as_i64())
                         .unwrap_or(0);
                     let seq = doc
-                        .get_first(self.fields.seq)
+                        .get_first(state.fields.seq)
                         .and_then(|v| v.as_u64())
                         .unwrap_or(0);
-                    next_after = Some(next_after.map(|a| a.max(seq)).unwrap_or(seq));
+                    next_after = Some(next_after.map(|value| value.max(seq)).unwrap_or(seq));
                     lines.push((ts, seq, raw));
                 }
                 // Already sorted by seq asc.
@@ -495,26 +701,26 @@ impl LogIndex {
                 for (_sort, addr) in top_docs {
                     let doc: tantivy::TantivyDocument = searcher.doc(addr)?;
                     let raw = doc
-                        .get_first(self.fields.raw)
+                        .get_first(state.fields.raw)
                         .and_then(|v| v.as_str())
                         .unwrap_or_default()
                         .to_string();
                     let ts = doc
-                        .get_first(self.fields.ts_nanos)
+                        .get_first(state.fields.ts_nanos)
                         .and_then(|v| v.as_i64())
                         .unwrap_or(0);
                     let seq = doc
-                        .get_first(self.fields.seq)
+                        .get_first(state.fields.seq)
                         .and_then(|v| v.as_u64())
                         .unwrap_or(0);
-                    next_after = Some(next_after.map(|a| a.max(seq)).unwrap_or(seq));
+                    next_after = Some(next_after.map(|value| value.max(seq)).unwrap_or(seq));
                     lines.push((ts, seq, raw));
                 }
                 lines.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
             }
         }
 
-        let out_lines: Vec<String> = lines.into_iter().map(|(_, _, l)| l).collect();
+        let out_lines: Vec<String> = lines.into_iter().map(|(_, _, line)| line).collect();
         Ok(LogsResponse {
             lines: out_lines,
             truncated: matched_total > tail && tail > 0,
@@ -540,7 +746,10 @@ impl LogIndex {
         let service_filter = query.service.as_deref();
         let since_nanos = query.since.as_deref().and_then(parse_timestamp_nanos);
 
-        let scope_query = self.build_scope_query(
+        let state = self.state.lock().unwrap();
+
+        let scope_query = Self::build_scope_query(
+            &state.fields,
             run_id,
             service_filter,
             since_nanos,
@@ -549,10 +758,10 @@ impl LogIndex {
             None,
         )?;
 
-        let searcher = self.reader.searcher();
+        let searcher = state.reader.searcher();
         let total: usize = searcher.search(&scope_query, &Count)?;
         let error_count: usize = {
-            let term = Term::from_field_text(self.fields.level, "error");
+            let term = Term::from_field_text(state.fields.level, "error");
             let q = BooleanQuery::new(vec![
                 (Occur::Must, scope_query.box_clone()),
                 (
@@ -566,7 +775,7 @@ impl LogIndex {
             searcher.search(&q, &Count)?
         };
         let warn_count: usize = {
-            let term = Term::from_field_text(self.fields.level, "warn");
+            let term = Term::from_field_text(state.fields.level, "warn");
             let q = BooleanQuery::new(vec![
                 (Occur::Must, scope_query.box_clone()),
                 (
@@ -580,7 +789,8 @@ impl LogIndex {
             searcher.search(&q, &Count)?
         };
 
-        let mut result_query = self.build_scope_query(
+        let mut result_query = Self::build_scope_query(
+            &state.fields,
             run_id,
             service_filter,
             since_nanos,
@@ -588,8 +798,13 @@ impl LogIndex {
             None,
             None,
         )?;
-        result_query = self.add_level_filter(result_query, level_filter)?;
-        result_query = self.add_text_query(result_query, query.search.as_deref())?;
+        result_query = Self::add_level_filter(state.fields.level, result_query, level_filter)?;
+        result_query = Self::add_text_query(
+            &state.index,
+            state.fields.message,
+            result_query,
+            query.search.as_deref(),
+        )?;
 
         let matched_total: usize = searcher.search(&result_query, &Count)?;
 
@@ -602,41 +817,41 @@ impl LogIndex {
             for (_sort, addr) in top_docs {
                 let doc: tantivy::TantivyDocument = searcher.doc(addr)?;
                 let ts = doc
-                    .get_first(self.fields.ts)
+                    .get_first(state.fields.ts)
                     .and_then(|v| v.as_str())
                     .unwrap_or_default()
                     .to_string();
                 let service = doc
-                    .get_first(self.fields.service)
+                    .get_first(state.fields.service)
                     .and_then(|v| v.as_str())
                     .unwrap_or_default()
                     .to_string();
                 let stream = doc
-                    .get_first(self.fields.stream)
+                    .get_first(state.fields.stream)
                     .and_then(|v| v.as_str())
                     .unwrap_or_default()
                     .to_string();
                 let level = doc
-                    .get_first(self.fields.level)
+                    .get_first(state.fields.level)
                     .and_then(|v| v.as_str())
                     .unwrap_or_default()
                     .to_string();
                 let message = doc
-                    .get_first(self.fields.message)
+                    .get_first(state.fields.message)
                     .and_then(|v| v.as_str())
                     .unwrap_or_default()
                     .to_string();
                 let raw = doc
-                    .get_first(self.fields.raw)
+                    .get_first(state.fields.raw)
                     .and_then(|v| v.as_str())
                     .unwrap_or_default()
                     .to_string();
                 let ts_nanos = doc
-                    .get_first(self.fields.ts_nanos)
+                    .get_first(state.fields.ts_nanos)
                     .and_then(|v| v.as_i64())
                     .unwrap_or(0);
                 let seq = doc
-                    .get_first(self.fields.seq)
+                    .get_first(state.fields.seq)
                     .and_then(|v| v.as_u64())
                     .unwrap_or(0);
 
@@ -657,7 +872,7 @@ impl LogIndex {
         }
 
         Ok(LogSearchResponse {
-            entries: entries.into_iter().map(|(_, _, e)| e).collect(),
+            entries: entries.into_iter().map(|(_, _, entry)| entry).collect(),
             truncated: matched_total > tail && tail > 0,
             total,
             error_count,
@@ -675,17 +890,19 @@ impl LogIndex {
         self.ingest_sources(sources)?;
 
         let since_nanos = query.since.as_deref().and_then(parse_timestamp_nanos);
-        let searcher = self.reader.searcher();
-
-        let total_query = self.build_scope_query(run_id, None, since_nanos, None, None, None)?;
-        let total: usize = searcher.search(&total_query, &Count)?;
-
         let service_filter = query.service.as_deref();
         let level_filter = query.level.as_deref();
         let stream_filter = query.stream.as_deref();
 
+        let state = self.state.lock().unwrap();
+        let searcher = state.reader.searcher();
+
+        let total_query =
+            Self::build_scope_query(&state.fields, run_id, None, since_nanos, None, None, None)?;
+        let total: usize = searcher.search(&total_query, &Count)?;
+
         let mut filters = Vec::new();
-        for (field_name, field_handle) in self.facet_fields() {
+        for (field_name, field_handle) in Self::facet_fields(&state.index.schema()) {
             let include_service = if field_name == "service" {
                 None
             } else {
@@ -697,7 +914,8 @@ impl LogIndex {
                 stream_filter
             };
 
-            let mut scope = self.build_scope_query(
+            let mut scope = Self::build_scope_query(
+                &state.fields,
                 run_id,
                 include_service,
                 since_nanos,
@@ -708,11 +926,11 @@ impl LogIndex {
             if field_name != "level"
                 && let Some(level) = level_filter
             {
-                scope = self.add_level_filter(scope, level)?;
+                scope = Self::add_level_filter(state.fields.level, scope, level)?;
             }
 
             let mut values = Vec::new();
-            for value in self.collect_field_terms(&searcher, field_handle)? {
+            for value in Self::collect_field_terms(&searcher, field_handle)? {
                 let term = Term::from_field_text(field_handle, &value);
                 let scoped = scope.box_clone();
                 let count_query = BooleanQuery::new(vec![
@@ -748,8 +966,7 @@ impl LogIndex {
         Ok(LogFacetsResponse { total, filters })
     }
 
-    fn facet_fields(&self) -> Vec<(String, Field)> {
-        let schema = self.index.schema();
+    fn facet_fields(schema: &tantivy::schema::Schema) -> Vec<(String, Field)> {
         schema
             .fields()
             .filter_map(|(field, entry)| {
@@ -768,11 +985,7 @@ impl LogIndex {
             .collect()
     }
 
-    fn collect_field_terms(
-        &self,
-        searcher: &tantivy::Searcher,
-        field: Field,
-    ) -> Result<Vec<String>> {
+    fn collect_field_terms(searcher: &tantivy::Searcher, field: Field) -> Result<Vec<String>> {
         let mut terms = BTreeSet::new();
         for segment in searcher.segment_readers() {
             let inverted_index = segment.inverted_index(field)?;
@@ -808,7 +1021,7 @@ impl LogIndex {
     }
 
     fn build_scope_query(
-        &self,
+        fields: &LogIndexFields,
         run_id: &str,
         service: Option<&str>,
         since_nanos: Option<i64>,
@@ -818,7 +1031,7 @@ impl LogIndex {
     ) -> Result<Box<dyn Query>> {
         let mut clauses: Vec<(Occur, Box<dyn Query>)> = Vec::new();
 
-        let run_term = Term::from_field_text(self.fields.run_id, run_id);
+        let run_term = Term::from_field_text(fields.run_id, run_id);
         clauses.push((
             Occur::Must,
             Box::new(TermQuery::new(
@@ -828,7 +1041,7 @@ impl LogIndex {
         ));
 
         if let Some(service) = service {
-            let term = Term::from_field_text(self.fields.service, service);
+            let term = Term::from_field_text(fields.service, service);
             clauses.push((
                 Occur::Must,
                 Box::new(TermQuery::new(
@@ -842,7 +1055,7 @@ impl LogIndex {
             && !stream.is_empty()
             && stream != "all"
         {
-            let term = Term::from_field_text(self.fields.stream, stream);
+            let term = Term::from_field_text(fields.stream, stream);
             clauses.push((
                 Occur::Must,
                 Box::new(TermQuery::new(
@@ -856,7 +1069,7 @@ impl LogIndex {
             clauses.push((
                 Occur::Must,
                 Box::new(RangeQuery::new(
-                    Bound::Included(Term::from_field_i64(self.fields.ts_nanos, since)),
+                    Bound::Included(Term::from_field_i64(fields.ts_nanos, since)),
                     Bound::Unbounded,
                 )),
             ));
@@ -866,7 +1079,7 @@ impl LogIndex {
             clauses.push((
                 Occur::Must,
                 Box::new(RangeQuery::new(
-                    Bound::Excluded(Term::from_field_u64(self.fields.seq, after)),
+                    Bound::Excluded(Term::from_field_u64(fields.seq, after)),
                     Bound::Unbounded,
                 )),
             ));
@@ -882,7 +1095,11 @@ impl LogIndex {
         Ok(Box::new(BooleanQuery::new(clauses)))
     }
 
-    fn add_level_filter(&self, base: Box<dyn Query>, level: &str) -> Result<Box<dyn Query>> {
+    fn add_level_filter(
+        level_field: Field,
+        base: Box<dyn Query>,
+        level: &str,
+    ) -> Result<Box<dyn Query>> {
         let level = level.trim();
         if level.is_empty() || level == "all" {
             return Ok(base);
@@ -890,7 +1107,7 @@ impl LogIndex {
         let mut clauses = vec![(Occur::Must, base)];
         match level {
             "error" => {
-                let term = Term::from_field_text(self.fields.level, "error");
+                let term = Term::from_field_text(level_field, "error");
                 clauses.push((
                     Occur::Must,
                     Box::new(TermQuery::new(
@@ -900,7 +1117,7 @@ impl LogIndex {
                 ));
             }
             "warn" => {
-                let warn = Term::from_field_text(self.fields.level, "warn");
+                let warn = Term::from_field_text(level_field, "warn");
                 clauses.push((
                     Occur::Must,
                     Box::new(TermQuery::new(
@@ -914,7 +1131,12 @@ impl LogIndex {
         Ok(Box::new(BooleanQuery::new(clauses)))
     }
 
-    fn add_text_query(&self, base: Box<dyn Query>, q: Option<&str>) -> Result<Box<dyn Query>> {
+    fn add_text_query(
+        index: &Index,
+        message_field: Field,
+        base: Box<dyn Query>,
+        q: Option<&str>,
+    ) -> Result<Box<dyn Query>> {
         let Some(q) = q else {
             return Ok(base);
         };
@@ -923,9 +1145,9 @@ impl LogIndex {
             return Ok(base);
         }
 
-        let qp = QueryParser::for_index(&self.index, vec![self.fields.message]);
+        let qp = QueryParser::for_index(index, vec![message_field]);
         let parsed = match qp.parse_query(q) {
-            Ok(q) => q,
+            Ok(query) => query,
             Err(err) => return Err(anyhow::anyhow!("bad_query: {err}")),
         };
         Ok(Box::new(BooleanQuery::new(vec![
@@ -949,6 +1171,18 @@ mod tests {
             stream: None,
             after,
         }
+    }
+
+    fn facet_values(response: &LogFacetsResponse, field: &str) -> Vec<(String, usize)> {
+        response
+            .filters
+            .iter()
+            .find(|filter| filter.field == field)
+            .unwrap()
+            .values
+            .iter()
+            .map(|value| (value.value.clone(), value.count))
+            .collect()
     }
 
     #[test]
@@ -1242,6 +1476,94 @@ mod tests {
                 .values
                 .iter()
                 .any(|value| value.value == "error")
+        );
+    }
+
+    #[test]
+    fn facets_include_dynamic_json_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let index = LogIndex::open_or_create_in(dir.path()).unwrap();
+
+        let api_log = dir.path().join("api.log");
+        let worker_log = dir.path().join("worker.log");
+        let long_value = "x".repeat(257);
+
+        let api_contents = format!(
+            concat!(
+                "{{\"time\":\"2025-01-01T00:00:00Z\",\"stream\":\"stdout\",\"level\":\"info\",\"msg\":\"GET /users\",\"method\":\"GET\",\"path\":\"/users\",\"status\":200,\"details\":{{\"skip\":true}},\"trace\":\"{}\"}}\n",
+                "{{\"time\":\"2025-01-01T00:00:01Z\",\"stream\":\"stdout\",\"level\":\"info\",\"msg\":\"GET /users\",\"method\":\"GET\",\"path\":\"/users\",\"status\":200}}\n"
+            ),
+            long_value,
+        );
+        std::fs::write(&api_log, api_contents).unwrap();
+        std::fs::write(
+            &worker_log,
+            "{\"time\":\"2025-01-01T00:00:02Z\",\"stream\":\"stderr\",\"level\":\"error\",\"msg\":\"POST /jobs failed\",\"method\":\"POST\",\"path\":\"/jobs\",\"status\":500}\n",
+        )
+        .unwrap();
+
+        let sources = vec![
+            LogSource {
+                run_id: "run-dynamic-facets".to_string(),
+                service: "api".to_string(),
+                path: api_log,
+            },
+            LogSource {
+                run_id: "run-dynamic-facets".to_string(),
+                service: "worker".to_string(),
+                path: worker_log,
+            },
+        ];
+
+        let response = index
+            .facets_run(
+                "run-dynamic-facets",
+                &sources,
+                LogFacetsQuery {
+                    since: None,
+                    service: None,
+                    level: None,
+                    stream: None,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(
+            facet_values(&response, "method"),
+            vec![("GET".to_string(), 2), ("POST".to_string(), 1)]
+        );
+        assert_eq!(
+            facet_values(&response, "path"),
+            vec![("/users".to_string(), 2), ("/jobs".to_string(), 1)]
+        );
+        assert_eq!(
+            facet_values(&response, "status"),
+            vec![("200".to_string(), 2), ("500".to_string(), 1)]
+        );
+        assert_eq!(
+            facet_values(&response, "service"),
+            vec![("api".to_string(), 2), ("worker".to_string(), 1)]
+        );
+        assert_eq!(
+            facet_values(&response, "level"),
+            vec![("info".to_string(), 2), ("error".to_string(), 1)]
+        );
+        assert_eq!(
+            facet_values(&response, "stream"),
+            vec![("stdout".to_string(), 2), ("stderr".to_string(), 1)]
+        );
+        assert!(response.filters.iter().all(|filter| filter.field != "time"));
+        assert!(
+            response
+                .filters
+                .iter()
+                .all(|filter| filter.field != "details")
+        );
+        assert!(
+            response
+                .filters
+                .iter()
+                .all(|filter| filter.field != "trace")
         );
     }
 
