@@ -320,7 +320,7 @@ export function Dashboard() {
                 </p>
               </div>
             </motion.div>
-          ) : currentRun && status ? (
+          ) : currentRun && status && !selectedSource ? (
             <motion.div
               key={currentRun.run_id}
               initial={{ opacity: 0 }}
