@@ -175,6 +175,22 @@ function tokenAtCursor(
   return { start, end, token: text.slice(start, end) }
 }
 
+type SortDirection = 'asc' | 'desc'
+
+const SORT_DIRECTION_STORAGE_KEY = 'devstack:log-viewer:sort-direction'
+const LINE_WRAP_STORAGE_KEY = 'devstack:log-viewer:line-wrap'
+
+function readSortDirection(): SortDirection {
+  if (typeof window === 'undefined') return 'desc'
+  const value = window.localStorage.getItem(SORT_DIRECTION_STORAGE_KEY)
+  return value === 'asc' ? 'asc' : 'desc'
+}
+
+function readLineWrap(): boolean {
+  if (typeof window === 'undefined') return false
+  return window.localStorage.getItem(LINE_WRAP_STORAGE_KEY) === 'true'
+}
+
 /* ═══════════════════════════════════════════════════════════════ */
 
 export function LogViewer({
@@ -191,7 +207,11 @@ export function LogViewer({
   const containerRef = useRef<HTMLDivElement>(null)
   const facetAnchorRef = useRef<HTMLDivElement>(null)
   const [autoScroll, setAutoScroll] = useState(true)
-  const [isAtBottom, setIsAtBottom] = useState(true)
+  const [isAtLatest, setIsAtLatest] = useState(true)
+  const [sortDirection, setSortDirection] = useState<SortDirection>(() =>
+    readSortDirection(),
+  )
+  const [lineWrap, setLineWrap] = useState(() => readLineWrap())
   const defaultLast = 500
   const [searchInput, setSearchInput] = useState(
     () => readUrlParam('search') ?? '',
@@ -227,6 +247,14 @@ export function LogViewer({
     const timer = setTimeout(() => setDebouncedSearch(searchInput), 150)
     return () => clearTimeout(timer)
   }, [searchInput])
+
+  useEffect(() => {
+    window.localStorage.setItem(SORT_DIRECTION_STORAGE_KEY, sortDirection)
+  }, [sortDirection])
+
+  useEffect(() => {
+    window.localStorage.setItem(LINE_WRAP_STORAGE_KEY, String(lineWrap))
+  }, [lineWrap])
 
   const selectedServiceIsValid =
     selectedService === null ||
@@ -395,7 +423,9 @@ export function LogViewer({
 
   const { logs, matchCount, truncated, matchedTotal } = useMemo(() => {
     const entries = logsQuery.data?.entries ?? []
-    const result: ParsedLog[] = entries.map((e) => ({
+    const orderedEntries =
+      sortDirection === 'desc' ? [...entries].reverse() : entries
+    const result: ParsedLog[] = orderedEntries.map((e) => ({
       timestamp: formatTimestamp(e.ts),
       rawTimestamp: e.ts,
       content: stripAnsi(e.message),
@@ -411,7 +441,7 @@ export function LogViewer({
       truncated: logsQuery.data?.truncated ?? false,
       matchedTotal: logsQuery.data?.matched_total ?? 0,
     }
-  }, [logsQuery.data, debouncedSearch])
+  }, [logsQuery.data, debouncedSearch, sortDirection])
 
   const logServiceNames = useMemo(
     () => Array.from(new Set(logs.map((log) => log.service))),
@@ -424,15 +454,15 @@ export function LogViewer({
     [services, logServiceNames],
   )
 
-  // Track new logs when not at bottom
+  // Track new logs when not at the latest edge.
   useEffect(() => {
-    if (autoScroll || isAtBottom) {
+    if (autoScroll || isAtLatest) {
       setNewLogCount(0)
       prevLogCountRef.current = logs.length
     } else if (logs.length > prevLogCountRef.current) {
       setNewLogCount(logs.length - prevLogCountRef.current)
     }
-  }, [logs.length, autoScroll, isAtBottom])
+  }, [logs.length, autoScroll, isAtLatest])
 
   // Search suggestions
   const suggestions = useMemo<SearchSuggestion[]>(() => {
@@ -525,26 +555,34 @@ export function LogViewer({
 
   useEffect(() => {
     if (autoScroll && !debouncedSearch && logs.length > 0) {
-      virtualizer.scrollToIndex(logs.length - 1, { align: 'end' })
+      virtualizer.scrollToIndex(sortDirection === 'desc' ? 0 : logs.length - 1, {
+        align: sortDirection === 'desc' ? 'start' : 'end',
+      })
     }
-  }, [logs, autoScroll, debouncedSearch, virtualizer])
+  }, [logs, autoScroll, debouncedSearch, sortDirection, virtualizer])
 
   const handleScroll = useCallback(() => {
     if (!containerRef.current) return
     const { scrollTop, scrollHeight, clientHeight } = containerRef.current
-    const atBottom = scrollHeight - scrollTop - clientHeight < 50
-    setIsAtBottom(atBottom)
-    if (atBottom && !autoScroll) setAutoScroll(true)
-    else if (!atBottom && autoScroll) setAutoScroll(false)
-  }, [autoScroll])
+    const atLatest =
+      sortDirection === 'desc'
+        ? scrollTop < 50
+        : scrollHeight - scrollTop - clientHeight < 50
+    setIsAtLatest(atLatest)
+    if (atLatest && !autoScroll) setAutoScroll(true)
+    else if (!atLatest && autoScroll) setAutoScroll(false)
+  }, [autoScroll, sortDirection])
 
-  const scrollToBottom = useCallback(() => {
-    if (logs.length > 0)
-      virtualizer.scrollToIndex(logs.length - 1, { align: 'end' })
+  const scrollToLatest = useCallback(() => {
+    if (logs.length > 0) {
+      virtualizer.scrollToIndex(sortDirection === 'desc' ? 0 : logs.length - 1, {
+        align: sortDirection === 'desc' ? 'start' : 'end',
+      })
+    }
     setAutoScroll(true)
     setNewLogCount(0)
     prevLogCountRef.current = logs.length
-  }, [logs.length, virtualizer])
+  }, [logs.length, sortDirection, virtualizer])
 
   const nextMatch = useCallback(() => {
     if (matchCount === 0) return
@@ -1043,9 +1081,43 @@ export function LogViewer({
             )}
           </div>
 
-          {/* Right: auto-scroll only */}
+          {/* Right-side view controls */}
           <button
-            onClick={scrollToBottom}
+            onClick={() =>
+              setSortDirection((current) =>
+                current === 'desc' ? 'asc' : 'desc',
+              )
+            }
+            className={cn(
+              'w-8 h-8 flex items-center justify-center rounded-md transition-colors shrink-0',
+              'text-ink-tertiary hover:text-ink hover:bg-surface-sunken/50',
+            )}
+            aria-label={
+              sortDirection === 'desc' ? 'Newest first' : 'Oldest first'
+            }
+            aria-pressed={sortDirection === 'desc'}
+            title={sortDirection === 'desc' ? 'Newest first' : 'Oldest first'}
+          >
+            <ArrowDown
+              className={cn('w-4 h-4 transition-transform', sortDirection === 'asc' && 'rotate-180')}
+            />
+          </button>
+          <button
+            onClick={() => setLineWrap((current) => !current)}
+            className={cn(
+              'w-8 h-8 flex items-center justify-center rounded-md transition-colors shrink-0 text-sm leading-none',
+              lineWrap
+                ? 'text-accent bg-accent/10'
+                : 'text-ink-tertiary hover:text-ink hover:bg-surface-sunken/50',
+            )}
+            aria-label={lineWrap ? 'Line wrap on' : 'Line wrap off'}
+            aria-pressed={lineWrap}
+            title={lineWrap ? 'Line wrap on' : 'Line wrap off'}
+          >
+            ↩
+          </button>
+          <button
+            onClick={scrollToLatest}
             className={cn(
               'w-8 h-8 flex items-center justify-center rounded-md transition-colors shrink-0',
               autoScroll
@@ -1054,7 +1126,9 @@ export function LogViewer({
             )}
             aria-label={autoScroll ? 'Auto-scroll active' : 'Scroll to latest'}
           >
-            <ArrowDown className="w-4 h-4" />
+            <ArrowDown
+              className={cn('w-4 h-4', sortDirection === 'desc' && 'rotate-180')}
+            />
           </button>
         </div>
       </div>
@@ -1268,6 +1342,7 @@ export function LogViewer({
                     highlighter={highlighter}
                     isActiveMatch={!!debouncedSearch && i === activeMatchIndex}
                     isExpanded={expandedRow === i}
+                    lineWrap={lineWrap}
                     onToggleExpand={toggleExpand}
                     hasBorderTop={showLabel && i > 0}
                   />
@@ -1281,9 +1356,10 @@ export function LogViewer({
       {/* New logs toast */}
       <LogScrollControls
         newLogCount={newLogCount}
-        isAtBottom={isAtBottom}
+        isAtLatest={isAtLatest}
         hasSearch={!!debouncedSearch}
-        onScrollToBottom={scrollToBottom}
+        newestFirst={sortDirection === 'desc'}
+        onScrollToLatest={scrollToLatest}
       />
 
       {/* Keyboard hints — desktop only */}

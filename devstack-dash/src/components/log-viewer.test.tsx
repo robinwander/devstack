@@ -1,5 +1,21 @@
 // @vitest-environment jsdom
 
+import { vi } from 'vitest'
+
+vi.mock('@tanstack/react-virtual', () => ({
+  useVirtualizer: ({ count }: { count: number }) => ({
+    getVirtualItems: () =>
+      Array.from({ length: count }, (_, index) => ({
+        index,
+        key: index,
+        start: index * 24,
+      })),
+    getTotalSize: () => count * 24,
+    scrollToIndex: vi.fn(),
+    measureElement: vi.fn(),
+  }),
+}))
+
 import type { ComponentProps } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import {
@@ -10,7 +26,7 @@ import {
   waitFor,
   within,
 } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { LogViewer } from './log-viewer'
 
 function jsonResponse(body: unknown): Response {
@@ -405,6 +421,117 @@ describe('LogViewer facets + URL params', () => {
     await waitFor(() => {
       expect(window.location.search).not.toContain('search=')
       expect(window.location.search).not.toContain('level=')
+    })
+  })
+})
+
+describe('LogViewer view toggles', () => {
+  const logEntries = {
+    entries: [
+      {
+        ts: '2025-01-01T00:00:00.000Z',
+        service: 'api',
+        stream: 'stdout',
+        level: 'info',
+        message: 'older message',
+        raw: 'older message',
+      },
+      {
+        ts: '2025-01-01T00:00:01.000Z',
+        service: 'api',
+        stream: 'stdout',
+        level: 'info',
+        message: 'newest message',
+        raw: 'newest message',
+      },
+    ],
+    truncated: false,
+    total: 2,
+    error_count: 0,
+    warn_count: 0,
+    matched_total: 0,
+  }
+
+  beforeEach(() => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url =
+        typeof input === 'string'
+          ? input
+          : input instanceof Request
+            ? input.url
+            : String(input)
+      if (url.includes('/api/v1/runs/run-1/logs/facets')) {
+        return jsonResponse(facetsResponse)
+      }
+      if (url.includes('/api/v1/runs/run-1/logs')) {
+        return jsonResponse(logEntries)
+      }
+      if (url.includes('/api/v1/agent/sessions/latest')) {
+        return jsonResponse({ session: null })
+      }
+      throw new Error(`Unhandled fetch URL: ${url}`)
+    })
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+    window.localStorage.clear()
+    window.history.replaceState({}, '', '/')
+  })
+
+  it('defaults to newest-first sorting and persists the toggle to localStorage', async () => {
+    renderViewer()
+
+    const newest = await screen.findByText('newest message')
+    const older = await screen.findByText('older message')
+    expect(newest.compareDocumentPosition(older) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0)
+    expect(window.localStorage.getItem('devstack:log-viewer:sort-direction')).toBe(
+      'desc',
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Newest first' }))
+
+    await waitFor(() => {
+      expect(
+        window.localStorage.getItem('devstack:log-viewer:sort-direction'),
+      ).toBe('asc')
+    })
+
+    cleanup()
+    renderViewer()
+
+    const oldestFirstButton = await screen.findByRole('button', {
+      name: 'Oldest first',
+    })
+    expect(oldestFirstButton.getAttribute('aria-pressed')).toBe('false')
+
+    const olderAfterRerender = await screen.findByText('older message')
+    const newestAfterRerender = await screen.findByText('newest message')
+    expect(
+      olderAfterRerender.compareDocumentPosition(newestAfterRerender) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0)
+  })
+
+  it('toggles line wrapping and persists the preference', async () => {
+    renderViewer()
+
+    const message = await screen.findByText('newest message')
+    expect(message.className).toContain('whitespace-nowrap')
+    expect(window.localStorage.getItem('devstack:log-viewer:line-wrap')).toBe(
+      'false',
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Line wrap off' }))
+
+    await waitFor(() => {
+      expect(window.localStorage.getItem('devstack:log-viewer:line-wrap')).toBe(
+        'true',
+      )
+      expect(screen.getByText('newest message').className).toContain(
+        'whitespace-pre-wrap',
+      )
     })
   })
 })
