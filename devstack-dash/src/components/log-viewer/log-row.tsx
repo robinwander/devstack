@@ -21,6 +21,7 @@ interface LogRowProps {
   isSelected: boolean
   lineWrap: boolean
   canShare: boolean
+  isMobile?: boolean
   onToggleExpand: (index: number) => void
   onSelectRow: (index: number, extendRange: boolean) => void
   onShareLog: (log: ParsedLog) => void
@@ -49,6 +50,7 @@ export const LogRow = memo(function LogRow({
   isSelected,
   lineWrap,
   canShare,
+  isMobile,
   onToggleExpand,
   onSelectRow,
   onShareLog,
@@ -127,6 +129,7 @@ export const LogRow = memo(function LogRow({
             'log-line-number py-[2px] pr-2 pl-1 shrink-0 hover:text-ink transition-colors text-right',
             isSelected && 'text-accent',
           )}
+          style={isMobile ? { width: 32 } : undefined}
           aria-label={
             isSelected
               ? `Unselect row ${lineNumber}`
@@ -139,9 +142,9 @@ export const LogRow = memo(function LogRow({
 
         <span
           className="log-ts pr-2 py-[2px] text-ink-tertiary select-none whitespace-nowrap tabular-nums text-[13px] font-mono shrink-0"
-          style={{ width: 108 }}
+          style={{ width: isMobile ? 80 : 108 }}
         >
-          {log.timestamp}
+          {isMobile ? log.timestamp.slice(0, 8) : log.timestamp}
         </span>
 
         {showServiceColumn && (
@@ -168,23 +171,24 @@ export const LogRow = memo(function LogRow({
           <LevelBadge level={level} />
         </span>
 
-        {dynamicColumns.map((col) => {
-          const value = log.attributes?.[col.field]
-          return (
-            <span
-              key={col.field}
-              className="log-attr-cell py-[2px] px-2 shrink-0 font-mono text-[13px] whitespace-nowrap overflow-hidden text-ellipsis"
-              style={{ width: col.width }}
-              title={value || undefined}
-            >
-              {value ? (
-                <span className="text-ink-secondary">{value}</span>
-              ) : (
-                <span className="text-ink-tertiary/40">—</span>
-              )}
-            </span>
-          )
-        })}
+        {!isMobile &&
+          dynamicColumns.map((col) => {
+            const value = log.attributes?.[col.field]
+            return (
+              <span
+                key={col.field}
+                className="log-attr-cell py-[2px] px-2 shrink-0 font-mono text-[13px] whitespace-nowrap overflow-hidden text-ellipsis"
+                style={{ width: col.width }}
+                title={value || undefined}
+              >
+                {value ? (
+                  <span className="text-ink-secondary">{value}</span>
+                ) : (
+                  <span className="text-ink-tertiary/40">—</span>
+                )}
+              </span>
+            )
+          })}
 
         <span
           className={cn(

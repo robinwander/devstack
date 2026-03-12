@@ -49,6 +49,7 @@ import {
   type ParsedLog,
   type TimeRange,
 } from './log-viewer/index'
+import type { ColumnSort } from './log-viewer/log-table-header'
 import {
   isoToDateTimeLocalValue,
   resolveCustomTimeRange,
@@ -328,6 +329,7 @@ export function LogViewer({
     readSortDirection(),
   )
   const [lineWrap, setLineWrap] = useState(() => readLineWrap())
+  const [columnSort, setColumnSort] = useState<ColumnSort | null>(null)
   const defaultLast = 500
   const [searchInput, setSearchInput] = useState(() => buildInitialSearch())
   const [debouncedSearch, setDebouncedSearch] = useState('')
@@ -597,8 +599,26 @@ export function LogViewer({
       upperBound === null
         ? entries
         : entries.filter((entry) => new Date(entry.ts).getTime() <= upperBound)
-    const orderedEntries =
+
+    // Primary time sort
+    const timeSorted =
       sortDirection === 'desc' ? [...filteredEntries].reverse() : filteredEntries
+
+    // Column sort overrides time sort when a dynamic column is active
+    let orderedEntries = timeSorted
+    if (columnSort) {
+      const field = columnSort.field
+      const dir = columnSort.direction === 'asc' ? 1 : -1
+      orderedEntries = [...timeSorted].sort((a, b) => {
+        const aVal = a.attributes?.[field] ?? ''
+        const bVal = b.attributes?.[field] ?? ''
+        if (aVal === bVal) return 0
+        if (aVal === '') return 1  // empty values last
+        if (bVal === '') return -1
+        return aVal < bVal ? -dir : dir
+      })
+    }
+
     const result: ParsedLog[] = orderedEntries.map((e) => ({
       timestamp: formatTimestamp(e.ts),
       rawTimestamp: e.ts,
@@ -616,7 +636,7 @@ export function LogViewer({
       truncated: logsQuery.data?.truncated ?? false,
       matchedTotal: logsQuery.data?.matched_total ?? 0,
     }
-  }, [logsQuery.data, debouncedSearch, resolvedCustomTimeRange.toIso, sortDirection])
+  }, [logsQuery.data, debouncedSearch, resolvedCustomTimeRange.toIso, sortDirection, columnSort])
 
   const logServiceNames = useMemo(
     () => Array.from(new Set(logs.map((log) => log.service))),
@@ -732,6 +752,25 @@ export function LogViewer({
       })
     },
     [columnStorageKey],
+  )
+
+  const handleColumnSort = useCallback(
+    (field: string) => {
+      if (field === '__time__') {
+        // Clicking time header toggles the primary sort direction and clears any column sort
+        setSortDirection((prev) => (prev === 'desc' ? 'asc' : 'desc'))
+        setColumnSort(null)
+        return
+      }
+      // Dynamic column: toggle direction if same field, otherwise start ascending
+      setColumnSort((prev) => {
+        if (prev?.field === field) {
+          return { field, direction: prev.direction === 'asc' ? 'desc' : 'asc' }
+        }
+        return { field, direction: 'asc' }
+      })
+    },
+    [],
   )
 
   const copyLogsToClipboard = useCallback(async (logsToCopy: ParsedLog[]) => {
@@ -1418,11 +1457,12 @@ export function LogViewer({
 
           {/* Right-side view controls */}
           <button
-            onClick={() =>
+            onClick={() => {
               setSortDirection((current) =>
                 current === 'desc' ? 'asc' : 'desc',
               )
-            }
+              setColumnSort(null)
+            }}
             className={cn(
               'w-8 h-8 flex items-center justify-center rounded-md transition-colors shrink-0',
               'text-ink-tertiary hover:text-ink hover:bg-surface-sunken/50',
@@ -1481,20 +1521,16 @@ export function LogViewer({
           </aside>
         )}
 
-        {/* ── Mobile: overlay (same as before) ── */}
+        {/* ── Mobile: slide-in sheet from the left ── */}
         {facetsOpen && isMobile && (
           <>
             <div
-              className="absolute inset-0 z-30"
+              className="absolute inset-0 z-30 bg-black/40"
               onClick={() => setFacetsOpen(false)}
               aria-hidden="true"
             />
             <aside
-              className={cn(
-                'absolute left-2 z-40 bg-surface-overlay border border-line shadow-xl rounded-lg overflow-auto',
-                'facet-popover-enter',
-                'inset-x-2 top-2 bottom-2 max-h-none',
-              )}
+              className="absolute left-0 top-0 bottom-0 z-40 w-[280px] max-w-[85vw] bg-surface-overlay border-r border-line shadow-xl overflow-auto facets-mobile-sheet-enter"
               role="complementary"
               aria-label="Log facets"
             >
@@ -1629,9 +1665,12 @@ export function LogViewer({
                 serviceColumnWidth={serviceColumnWidth}
                 lineWrap={lineWrap}
                 attributeCardinality={attributeCardinality}
+                columnSort={columnSort ?? { field: '__time__', direction: sortDirection }}
+                isMobile={isMobile}
                 onToggleColumn={handleToggleColumn}
                 onRemoveColumn={handleRemoveColumn}
                 onResizeColumn={handleResizeColumn}
+                onColumnSort={handleColumnSort}
               />
               <div
                 style={{
@@ -1666,6 +1705,7 @@ export function LogViewer({
                       isSelected={selectedRowKeySet.has(logKeys[i])}
                       lineWrap={lineWrap}
                       canShare={true}
+                      isMobile={isMobile}
                       onToggleExpand={toggleExpand}
                       onSelectRow={handleSelectRow}
                       onShareLog={handleShareLog}

@@ -4,15 +4,23 @@ import { cn } from '@/lib/utils'
 import type { ColumnConfig } from '@/lib/column-detection'
 import { ColumnPicker } from './column-picker'
 
+export interface ColumnSort {
+  field: string
+  direction: 'asc' | 'desc'
+}
+
 interface LogTableHeaderProps {
   columns: ColumnConfig[]
   showServiceColumn: boolean
   serviceColumnWidth: number
   lineWrap: boolean
   attributeCardinality: Map<string, number>
+  columnSort: ColumnSort | null
+  isMobile?: boolean
   onToggleColumn: (field: string) => void
   onRemoveColumn: (field: string) => void
   onResizeColumn: (field: string, width: number) => void
+  onColumnSort: (field: string) => void
 }
 
 export const LogTableHeader = memo(function LogTableHeader({
@@ -21,22 +29,39 @@ export const LogTableHeader = memo(function LogTableHeader({
   serviceColumnWidth,
   lineWrap,
   attributeCardinality,
+  columnSort,
+  isMobile,
   onToggleColumn,
   onRemoveColumn,
   onResizeColumn,
+  onColumnSort,
 }: LogTableHeaderProps) {
   const visibleDynamic = columns.filter((c) => c.visible && !c.builtIn)
+
+  const timeSortIndicator =
+    columnSort?.field === '__time__'
+      ? columnSort.direction === 'asc'
+        ? ' ▲'
+        : ' ▼'
+      : ''
 
   return (
     <div className="log-table-header flex items-stretch border-b border-line bg-surface-raised sticky top-0 z-20 min-w-0 select-none">
       {/* Line number */}
-      <div className="log-col-header log-line-number-header shrink-0" style={{ width: 44 }}>
+      <div className="log-col-header log-line-number-header shrink-0" style={{ width: isMobile ? 32 : 44 }}>
         <span className="text-[10px] text-ink-tertiary">#</span>
       </div>
 
       {/* Timestamp */}
-      <div className="log-col-header shrink-0" style={{ width: 108 }}>
-        <span className="log-col-label">time</span>
+      <div
+        className="log-col-header shrink-0 cursor-pointer hover:bg-surface-sunken/50 transition-colors"
+        style={{ width: isMobile ? 80 : 108 }}
+        onClick={() => onColumnSort('__time__')}
+        title="Sort by time"
+      >
+        <span className={cn('log-col-label', columnSort?.field === '__time__' && 'text-accent')}>
+          time{timeSortIndicator}
+        </span>
       </div>
 
       {/* Service */}
@@ -58,15 +83,18 @@ export const LogTableHeader = memo(function LogTableHeader({
         <span className="log-col-label">level</span>
       </div>
 
-      {/* Dynamic attribute columns */}
-      {visibleDynamic.map((col) => (
-        <ResizableColumnHeader
-          key={col.field}
-          column={col}
-          onRemove={onRemoveColumn}
-          onResize={onResizeColumn}
-        />
-      ))}
+      {/* Dynamic attribute columns — hidden on mobile */}
+      {!isMobile &&
+        visibleDynamic.map((col) => (
+          <ResizableColumnHeader
+            key={col.field}
+            column={col}
+            columnSort={columnSort}
+            onRemove={onRemoveColumn}
+            onResize={onResizeColumn}
+            onSort={onColumnSort}
+          />
+        ))}
 
       {/* Message — flex-grows */}
       <div
@@ -78,24 +106,30 @@ export const LogTableHeader = memo(function LogTableHeader({
         <span className="log-col-label">message</span>
       </div>
 
-      {/* Add column button */}
-      <ColumnPicker
-        columns={columns}
-        attributeCardinality={attributeCardinality}
-        onToggleColumn={onToggleColumn}
-      />
+      {/* Add column button — hidden on mobile */}
+      {!isMobile && (
+        <ColumnPicker
+          columns={columns}
+          attributeCardinality={attributeCardinality}
+          onToggleColumn={onToggleColumn}
+        />
+      )}
     </div>
   )
 })
 
 function ResizableColumnHeader({
   column,
+  columnSort,
   onRemove,
   onResize,
+  onSort,
 }: {
   column: ColumnConfig
+  columnSort: ColumnSort | null
   onRemove: (field: string) => void
   onResize: (field: string, width: number) => void
+  onSort: (field: string) => void
 }) {
   const [isHovered, setIsHovered] = useState(false)
   const headerRef = useRef<HTMLDivElement>(null)
@@ -103,6 +137,8 @@ function ResizableColumnHeader({
     startX: number
     startWidth: number
   } | null>(null)
+
+  const isActiveSortField = columnSort?.field === column.field
 
   const handleMouseDown = useCallback(
     (e: React.MouseEvent) => {
@@ -145,15 +181,38 @@ function ResizableColumnHeader({
     [column.field, onRemove],
   )
 
+  const handleContextMenu = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault()
+      onRemove(column.field)
+    },
+    [column.field, onRemove],
+  )
+
+  const handleClick = useCallback(() => {
+    onSort(column.field)
+  }, [column.field, onSort])
+
+  const sortIndicator = isActiveSortField
+    ? columnSort?.direction === 'asc'
+      ? ' ▲'
+      : ' ▼'
+    : ''
+
   return (
     <div
       ref={headerRef}
-      className="log-col-header shrink-0 relative group"
+      className="log-col-header shrink-0 relative group cursor-pointer hover:bg-surface-sunken/50 transition-colors"
       style={{ width: column.width }}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
+      onContextMenu={handleContextMenu}
+      onClick={handleClick}
+      title={`Click to sort by ${column.label} · Right-click to remove`}
     >
-      <span className="log-col-label truncate">{column.label}</span>
+      <span className={cn('log-col-label truncate', isActiveSortField && 'text-accent')}>
+        {column.label}{sortIndicator}
+      </span>
       {isHovered && (
         <button
           onClick={handleRemove}
