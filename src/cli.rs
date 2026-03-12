@@ -699,32 +699,20 @@ pub async fn run() -> Result<()> {
                     ));
                 }
 
-                let run_scoped_path = if let Some(explicit_run_id) = run_id.as_deref() {
-                    Some(paths::task_log_path(
-                        &crate::ids::RunId::new(explicit_run_id),
-                        &task_name,
-                    )?)
-                } else if let Some(latest_run_id) = resolve_latest_run_id(&project_dir).await? {
-                    let path =
-                        paths::task_log_path(&crate::ids::RunId::new(latest_run_id), &task_name)?;
-                    path.exists().then_some(path)
-                } else {
-                    None
-                };
+                let candidates =
+                    task_log_path_candidates(&project_dir, &task_name, run_id.as_deref()).await?;
+                let log_path = candidates.iter().find(|path| path.exists()).cloned();
 
-                let ad_hoc_path = paths::ad_hoc_task_log_path(&project_dir, &task_name)?;
-                let log_path = if let Some(path) = run_scoped_path {
-                    path
-                } else {
-                    ad_hoc_path
-                };
-
-                if !log_path.exists() {
+                let Some(log_path) = log_path else {
+                    let looked_at = candidates
+                        .iter()
+                        .map(|path| path.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ");
                     return Err(anyhow!(
-                        "task log not found for '{task_name}' (looked at {})",
-                        log_path.display()
+                        "task log not found for '{task_name}' (looked at {looked_at})"
                     ));
-                }
+                };
 
                 return stream_logs(
                     &log_path, &task_name, tail, follow, follow_for, json, no_health,
@@ -931,7 +919,7 @@ pub async fn run() -> Result<()> {
             file,
             verbose,
             json,
-        } => run_task_command(name, init, stack, project, file, verbose, json, pretty),
+        } => run_task_command_cli(name, init, stack, project, file, verbose, json, pretty).await,
         Commands::Openapi { out, watch } => {
             if watch {
                 watch_openapi(out)?;
@@ -2045,9 +2033,24 @@ async fn resolve_latest_run_id(project_dir: &Path) -> Result<Option<String>> {
     Ok(select_latest_run(&runs.runs, project_dir).map(|run| run.run_id.clone()))
 }
 
+async fn resolve_active_run_id(project_dir: &Path) -> Result<Option<String>> {
+    let (runs, _) = fetch_runs_with_fallback().await?;
+    Ok(select_latest_active_run(&runs.runs, project_dir).map(|run| run.run_id.clone()))
+}
+
 fn select_latest_run<'a>(runs: &'a [RunSummary], project_dir: &Path) -> Option<&'a RunSummary> {
     runs.iter()
         .filter(|run| same_project_dir(&run.project_dir, project_dir))
+        .max_by(|a, b| compare_run_recency(a, b))
+}
+
+fn select_latest_active_run<'a>(
+    runs: &'a [RunSummary],
+    project_dir: &Path,
+) -> Option<&'a RunSummary> {
+    runs.iter()
+        .filter(|run| same_project_dir(&run.project_dir, project_dir))
+        .filter(|run| run.state != RunLifecycle::Stopped && run.stopped_at.is_none())
         .max_by(|a, b| compare_run_recency(a, b))
 }
 
@@ -2083,6 +2086,96 @@ fn sort_runs_for_project(runs: &mut [RunSummary], project_dir: &Path) {
             _ => compare_run_recency(b, a),
         }
     });
+}
+
+#[derive(Clone, Debug)]
+enum TaskExecutionTarget {
+    Run(crate::ids::RunId),
+    AdHoc,
+}
+
+impl TaskExecutionTarget {
+    fn scope(&self) -> crate::tasks::TaskLogScope<'_> {
+        match self {
+            Self::Run(run_id) => crate::tasks::TaskLogScope::Run(run_id),
+            Self::AdHoc => crate::tasks::TaskLogScope::AdHoc,
+        }
+    }
+
+    fn history_path(&self, project_dir: &Path) -> Result<PathBuf> {
+        match self {
+            Self::Run(run_id) => paths::task_history_path(run_id),
+            Self::AdHoc => paths::ad_hoc_task_history_path(project_dir),
+        }
+    }
+}
+
+async fn resolve_task_execution_target(project_dir: &Path) -> Result<TaskExecutionTarget> {
+    Ok(match resolve_active_run_id(project_dir).await? {
+        Some(run_id) => TaskExecutionTarget::Run(crate::ids::RunId::new(run_id)),
+        None => TaskExecutionTarget::AdHoc,
+    })
+}
+
+fn task_log_path_candidates_for(
+    project_dir: &Path,
+    task_name: &str,
+    explicit_run_id: Option<&str>,
+    active_run_id: Option<&str>,
+    latest_run_id: Option<&str>,
+) -> Result<Vec<PathBuf>> {
+    fn push_unique(paths: &mut Vec<PathBuf>, path: PathBuf) {
+        if !paths.iter().any(|candidate| candidate == &path) {
+            paths.push(path);
+        }
+    }
+
+    let mut candidates = Vec::new();
+    if let Some(run_id) = explicit_run_id {
+        push_unique(
+            &mut candidates,
+            paths::task_log_path(&crate::ids::RunId::new(run_id), task_name)?,
+        );
+        return Ok(candidates);
+    }
+
+    if let Some(run_id) = active_run_id {
+        push_unique(
+            &mut candidates,
+            paths::task_log_path(&crate::ids::RunId::new(run_id), task_name)?,
+        );
+    }
+    if let Some(run_id) = latest_run_id {
+        push_unique(
+            &mut candidates,
+            paths::task_log_path(&crate::ids::RunId::new(run_id), task_name)?,
+        );
+    }
+    push_unique(
+        &mut candidates,
+        paths::ad_hoc_task_log_path(project_dir, task_name)?,
+    );
+    Ok(candidates)
+}
+
+async fn task_log_path_candidates(
+    project_dir: &Path,
+    task_name: &str,
+    explicit_run_id: Option<&str>,
+) -> Result<Vec<PathBuf>> {
+    if explicit_run_id.is_some() {
+        return task_log_path_candidates_for(project_dir, task_name, explicit_run_id, None, None);
+    }
+
+    let active_run_id = resolve_active_run_id(project_dir).await?;
+    let latest_run_id = resolve_latest_run_id(project_dir).await?;
+    task_log_path_candidates_for(
+        project_dir,
+        task_name,
+        None,
+        active_run_id.as_deref(),
+        latest_run_id.as_deref(),
+    )
 }
 
 async fn complete(cword: usize, mut words: Vec<String>) -> Result<()> {
@@ -2669,7 +2762,7 @@ fn exec_command(run_id: &str, command: &[String]) -> Result<()> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run_task_command(
+async fn run_task_command_cli(
     name: Option<String>,
     init: bool,
     stack: Option<String>,
@@ -2691,6 +2784,7 @@ fn run_task_command(
     }
     let config = ConfigFile::load_from_path(&config_path)?;
     let project_dir = context.project_dir;
+    let task_target = resolve_task_execution_target(&project_dir).await?;
 
     let tasks_map = config
         .tasks
@@ -2705,7 +2799,7 @@ fn run_task_command(
             .stack_plan(&stack_name)
             .map_err(|err| anyhow!("{err}"))?;
 
-        let history_path = paths::ad_hoc_task_history_path(&project_dir)?;
+        let history_path = task_target.history_path(&project_dir)?;
         let mut ran_any = false;
         for svc_name in &stack_plan.order {
             let svc = &stack_plan.services[svc_name];
@@ -2716,7 +2810,7 @@ fn run_task_command(
                     &tasks_map,
                     init_tasks,
                     &project_dir,
-                    crate::tasks::TaskLogScope::AdHoc,
+                    task_target.scope(),
                     &history_path,
                     verbose,
                 )?;
@@ -2762,12 +2856,12 @@ fn run_task_command(
         .get(&task_name)
         .ok_or_else(|| anyhow!("unknown task '{task_name}'"))?;
 
-    let history_path = paths::ad_hoc_task_history_path(&project_dir)?;
+    let history_path = task_target.history_path(&project_dir)?;
     let result = crate::tasks::run_task(
         &task_name,
         task,
         &project_dir,
-        crate::tasks::TaskLogScope::AdHoc,
+        task_target.scope(),
         &history_path,
         verbose,
     )?;
@@ -3128,6 +3222,47 @@ mod tests {
         ];
         let latest = select_latest_run(&runs, Path::new("/tmp/project-a")).unwrap();
         assert_eq!(latest.run_id, "run-a");
+    }
+
+    #[test]
+    fn select_latest_active_run_skips_stopped_runs() {
+        let runs = vec![
+            summary("run-old", "/tmp/project", "2025-01-01T00:00:00Z"),
+            RunSummary {
+                run_id: "run-stopped".to_string(),
+                stack: "app".to_string(),
+                project_dir: "/tmp/project".to_string(),
+                state: RunLifecycle::Stopped,
+                created_at: "2025-01-03T00:00:00Z".to_string(),
+                stopped_at: Some("2025-01-03T01:00:00Z".to_string()),
+            },
+            summary("run-active", "/tmp/project", "2025-01-02T00:00:00Z"),
+        ];
+
+        let latest = select_latest_active_run(&runs, Path::new("/tmp/project")).unwrap();
+        assert_eq!(latest.run_id, "run-active");
+    }
+
+    #[test]
+    fn task_log_path_candidates_prioritize_run_logs() {
+        let dir = tempfile::tempdir().unwrap();
+        let candidates = task_log_path_candidates_for(
+            dir.path(),
+            "lint",
+            None,
+            Some("run-active"),
+            Some("run-latest"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            candidates,
+            vec![
+                paths::task_log_path(&crate::ids::RunId::new("run-active"), "lint").unwrap(),
+                paths::task_log_path(&crate::ids::RunId::new("run-latest"), "lint").unwrap(),
+                paths::ad_hoc_task_log_path(dir.path(), "lint").unwrap(),
+            ]
+        );
     }
 
     #[test]
