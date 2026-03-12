@@ -323,6 +323,8 @@ pub struct LogEntry {
     pub level: String,
     pub message: String,
     pub raw: String,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub attributes: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]

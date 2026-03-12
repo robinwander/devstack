@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::ops::Bound;
@@ -855,6 +855,15 @@ impl LogIndex {
                     .and_then(|v| v.as_u64())
                     .unwrap_or(0);
 
+                let mut attributes = BTreeMap::new();
+                for (field_name, field_handle) in &state.dynamic_fields {
+                    if let Some(value) = doc.get_first(*field_handle).and_then(|v| v.as_str()) {
+                        if !value.is_empty() {
+                            attributes.insert(field_name.clone(), value.to_string());
+                        }
+                    }
+                }
+
                 entries.push((
                     ts_nanos,
                     seq,
@@ -865,6 +874,7 @@ impl LogIndex {
                         level,
                         message,
                         raw,
+                        attributes,
                     },
                 ));
             }
@@ -950,11 +960,13 @@ impl LogIndex {
             }
             values.sort_by(|a, b| b.count.cmp(&a.count).then(a.value.cmp(&b.value)));
 
-            filters.push(FacetFilter {
-                field: field_name.clone(),
-                kind: Self::facet_kind_for(&field_name).to_string(),
-                values,
-            });
+            if !values.is_empty() {
+                filters.push(FacetFilter {
+                    field: field_name.clone(),
+                    kind: Self::facet_kind_for(&field_name).to_string(),
+                    values,
+                });
+            }
         }
 
         filters.sort_by(|a, b| {

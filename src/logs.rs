@@ -242,6 +242,7 @@ mod tests {
             level: "info".to_string(),
             message: "server ready".to_string(),
             raw: "[2025-01-01T00:00:00Z] [stdout] server ready".to_string(),
+            attributes: Default::default(),
         };
 
         let parsed = structured_log_from_entry(&entry);

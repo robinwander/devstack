@@ -1280,6 +1280,7 @@ async fn query_source_logs(
                     level: s.level.unwrap_or_else(|| "info".to_string()),
                     message: s.message,
                     raw: line.clone(),
+                    attributes: Default::default(),
                 }
             })
             .collect();
