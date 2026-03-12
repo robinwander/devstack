@@ -16,6 +16,12 @@ vi.mock('@tanstack/react-virtual', () => ({
   }),
 }))
 
+vi.mock('@/components/json-editor', () => ({
+  JsonEditorView: ({ content }: { content: { json: unknown } }) => (
+    <pre aria-label="Rendered JSON">{JSON.stringify(content.json, null, 2)}</pre>
+  ),
+}))
+
 import type { ComponentProps } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import {
@@ -186,12 +192,8 @@ describe('LogViewer dynamic field facets', () => {
     const facetToggle = await screen.findByTitle(/facets/i)
     fireEvent.click(facetToggle)
 
-    // Dynamic fields should appear with underscores replaced by spaces
     expect(await screen.findByText('method')).toBeTruthy()
     expect(screen.getByText('status code')).toBeTruthy()
-
-    // Values should be rendered as bar-chart items (kind=select) — use title since
-    // the accessible name includes both the value text and the count (e.g. "GET25")
     expect(screen.getByTitle('GET')).toBeTruthy()
     expect(screen.getByTitle('POST')).toBeTruthy()
     expect(screen.getByTitle('200')).toBeTruthy()
@@ -204,30 +206,22 @@ describe('LogViewer dynamic field facets', () => {
     fireEvent.click(facetToggle)
 
     await screen.findByText('method')
-
-    // Click a dynamic facet value (bar-chart style, use title to find)
     fireEvent.click(screen.getByTitle('GET'))
 
-    // Should add the token to the search input
     const search = screen.getByLabelText('Search log lines') as HTMLInputElement
     expect(search.value).toContain('method:GET')
   })
 
   it('clicking an active dynamic facet value removes the token from search', async () => {
-    // Start with a search token already set
     window.history.replaceState({}, '', '/?search=method:GET')
 
     renderViewer()
 
-    // Wait for facets to load so facetFieldSet includes "method"
     const facetToggle = await screen.findByTitle(/facets/i)
     fireEvent.click(facetToggle)
     await screen.findByText('method')
-
-    // Click the already-active GET facet to toggle it off
     fireEvent.click(screen.getByTitle('GET'))
 
-    // Search should be cleared
     const search = screen.getByLabelText('Search log lines') as HTMLInputElement
     expect(search.value.trim()).toBe('')
   })
@@ -242,11 +236,9 @@ describe('LogViewer dynamic field facets', () => {
 
     await screen.findByText('method')
 
-    // The GET button should be marked as active (aria-pressed=true)
     const getButton = screen.getByTitle('GET')
     expect(getButton.getAttribute('aria-pressed')).toBe('true')
 
-    // POST should not be active
     const postButton = screen.getByTitle('POST')
     expect(postButton.getAttribute('aria-pressed')).toBe('false')
   })
@@ -334,7 +326,6 @@ describe('LogViewer facets + URL params', () => {
   it('renders filters from API metadata and styles unknown values neutrally', async () => {
     renderViewer()
 
-    // Open facets popover (defaults to closed)
     const facetToggle = await screen.findByTitle(/facets/i)
     fireEvent.click(facetToggle)
 
@@ -366,19 +357,16 @@ describe('LogViewer facets + URL params', () => {
 
     renderViewer()
 
-    // Open facets sidebar
     const facetToggle = await screen.findByTitle(/facets/i)
     fireEvent.click(facetToggle)
 
     await screen.findByText('level')
 
-    // Legacy level/stream params are migrated into the search string
     const search = screen.getByLabelText('Search log lines') as HTMLInputElement
     expect(search.value).toContain('panic')
     expect(search.value).toContain('level:error')
     expect(search.value).toContain('stream:stderr')
 
-    // Level error should be active in facets
     expect(
       screen
         .getByRole('button', { name: 'error' })
@@ -394,7 +382,6 @@ describe('LogViewer facets + URL params', () => {
   it('updates URL when filters change and removes params when cleared', async () => {
     renderViewer()
 
-    // Open facets sidebar
     const facetToggle = await screen.findByTitle(/facets/i)
     fireEvent.click(facetToggle)
 
@@ -403,17 +390,14 @@ describe('LogViewer facets + URL params', () => {
     const search = screen.getByLabelText('Search log lines') as HTMLInputElement
     fireEvent.change(search, { target: { value: 'timeout' } })
 
-    // Click level:error in facets — adds token to search string
     fireEvent.click(screen.getByRole('button', { name: 'error' }))
 
     await waitFor(() => {
-      // Both the text and the level token should be in the search URL param
       expect(window.location.search).toContain('search=')
       const searchParam = new URLSearchParams(window.location.search).get('search')
       expect(searchParam).toContain('level:error')
     })
 
-    // Clear search
     fireEvent.click(screen.getByRole('button', { name: /clear search/i }))
 
     await waitFor(() => {
@@ -530,5 +514,153 @@ describe('LogViewer view toggles', () => {
         'whitespace-pre-wrap',
       )
     })
+  })
+})
+
+describe('LogViewer detail actions, selection, and custom time range', () => {
+  const detailEntries = {
+    entries: [
+      {
+        ts: '2025-01-01T10:00:00.000Z',
+        service: 'api',
+        stream: 'stdout',
+        level: 'info',
+        message: 'first message',
+        raw: 'first message',
+        attributes: {
+          event: 'extract_tool_result',
+          toolname: 'bash',
+        },
+      },
+      {
+        ts: '2025-01-01T11:00:00.000Z',
+        service: 'api',
+        stream: 'stderr',
+        level: 'error',
+        message: 'second message',
+        raw: 'second message',
+        attributes: {
+          event: 'task_failed',
+          toolname: 'grep',
+        },
+      },
+      {
+        ts: '2025-01-01T12:00:00.000Z',
+        service: 'worker',
+        stream: 'stdout',
+        level: 'warn',
+        message: 'third message',
+        raw: 'third message',
+        attributes: {
+          event: 'task_retried',
+          toolname: 'bash',
+        },
+      },
+    ],
+    truncated: false,
+    total: 3,
+    error_count: 1,
+    warn_count: 1,
+    matched_total: 0,
+  }
+
+  beforeEach(() => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url =
+        typeof input === 'string'
+          ? input
+          : input instanceof Request
+            ? input.url
+            : String(input)
+      if (url.includes('/api/v1/runs/run-1/logs/facets')) {
+        return jsonResponse(dynamicFacetsResponse)
+      }
+      if (url.includes('/api/v1/runs/run-1/logs')) {
+        return jsonResponse(detailEntries)
+      }
+      if (url.includes('/api/v1/agent/sessions/latest')) {
+        return jsonResponse({ session: null })
+      }
+      throw new Error(`Unhandled fetch URL: ${url}`)
+    })
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText: vi.fn().mockResolvedValue(undefined) },
+      configurable: true,
+    })
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+    window.history.replaceState({}, '', '/')
+  })
+
+  it('applies filter, exclude, and only actions from the detail panel into the search bar', async () => {
+    renderViewer()
+
+    fireEvent.click(await screen.findByText('third message'))
+
+    fireEvent.click(await screen.findByRole('button', {
+      name: 'Filter to event: task_retried',
+    }))
+    expect((screen.getByLabelText('Search log lines') as HTMLInputElement).value).toBe(
+      'event:task_retried',
+    )
+
+    fireEvent.click(screen.getByRole('button', {
+      name: 'Exclude toolname: bash',
+    }))
+    expect((screen.getByLabelText('Search log lines') as HTMLInputElement).value).toBe(
+      'event:task_retried -toolname:bash',
+    )
+
+    fireEvent.click(screen.getByRole('button', {
+      name: 'Only stream: stdout',
+    }))
+    expect((screen.getByLabelText('Search log lines') as HTMLInputElement).value).toBe(
+      'stream:stdout',
+    )
+  })
+
+  it('supports selecting rows, shift-selecting ranges, and clearing the selection bar', async () => {
+    renderViewer()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Select row 1' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Select row 3' }), {
+      shiftKey: true,
+    })
+
+    expect(await screen.findByText('3 selected')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Copy selected rows' }))
+    expect(navigator.clipboard.writeText).toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear selected rows' }))
+    await waitFor(() => {
+      expect(screen.queryByText('3 selected')).toBeNull()
+    })
+  })
+
+  it('stores custom time ranges in the URL and applies the upper bound client-side', async () => {
+    renderViewer()
+
+    fireEvent.click(await screen.findByRole('radio', { name: 'Custom time range' }))
+
+    fireEvent.change(screen.getByLabelText('Custom time from'), {
+      target: { value: '2025-01-01T10:30:00Z' },
+    })
+    fireEvent.change(screen.getByLabelText('Custom time to'), {
+      target: { value: '2025-01-01T11:30:00Z' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Apply' }))
+
+    await waitFor(() => {
+      const params = new URLSearchParams(window.location.search)
+      expect(params.get('since')).toBe('2025-01-01T10:30:00Z')
+      expect(params.get('until')).toBe('2025-01-01T11:30:00Z')
+    })
+
+    expect(screen.queryByText('third message')).toBeNull()
+    expect(await screen.findByText('second message')).toBeTruthy()
   })
 })

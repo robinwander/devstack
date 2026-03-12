@@ -10,6 +10,7 @@ import {
   ListFilter,
   Share2,
   Clock,
+  Copy,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import {
@@ -29,7 +30,14 @@ import {
   saveColumnConfig,
   type ColumnConfig,
 } from '@/lib/column-detection'
-import { parseSearch, addToken, removeToken, replaceAllTokens } from '@/lib/search-parser'
+import {
+  parseSearch,
+  addToken,
+  removeToken,
+  replaceAllTokens,
+  serializeSearch,
+  type SearchToken,
+} from '@/lib/search-parser'
 import {
   LogRow,
   FacetSection,
@@ -41,6 +49,12 @@ import {
   type ParsedLog,
   type TimeRange,
 } from './log-viewer/index'
+import {
+  isoToDateTimeLocalValue,
+  resolveCustomTimeRange,
+  type CustomTimeRangeDraft,
+} from '@/lib/time-range'
+import type { DetailFilterAction } from './log-viewer/log-detail'
 
 interface LogViewerProps {
   runId: string
@@ -109,15 +123,26 @@ function timeRangeToSince(
   return new Date(Date.now() - ms).toISOString()
 }
 
-function parseSinceParam(value: string | null): {
+function parseTimeRangeParams(
+  since: string | null,
+  until: string | null,
+): {
   range: TimeRange
-  customSince?: string
+  customRange: CustomTimeRangeDraft
 } {
-  if (value === '5m' || value === '15m' || value === '1h')
-    return { range: value }
-  if (value && value.trim().length > 0)
-    return { range: 'custom', customSince: value }
-  return { range: 'live' }
+  if ((since === '5m' || since === '15m' || since === '1h') && !until) {
+    return { range: since, customRange: { fromInput: '', toInput: '' } }
+  }
+  if ((since && since.trim().length > 0) || (until && until.trim().length > 0)) {
+    return {
+      range: 'custom',
+      customRange: {
+        fromInput: since?.trim() ?? '',
+        toInput: until?.trim() ?? '',
+      },
+    }
+  }
+  return { range: 'live', customRange: { fromInput: '', toInput: '' } }
 }
 
 function parseLastParam(value: string | null, fallback: number): number {
@@ -190,6 +215,97 @@ function buildInitialSearch(): string {
   return search
 }
 
+const SINGLE_VALUE_SEARCH_FIELDS = new Set(['level', 'stream', 'service'])
+
+function buildLogKey(log: ParsedLog): string {
+  return [log.rawTimestamp, log.service, log.stream, log.raw].join('\u0000')
+}
+
+function cloneToken(token: SearchToken): SearchToken {
+  return { ...token }
+}
+
+function applySearchToken(
+  input: string,
+  field: string,
+  value: string,
+  action: DetailFilterAction,
+): string {
+  const normalizedField = field.toLowerCase()
+  const parsed = parseSearch(input)
+  const nextTokens = parsed.tokens.map(cloneToken)
+  const isSingleValueField = SINGLE_VALUE_SEARCH_FIELDS.has(normalizedField)
+
+  if (action === 'only') {
+    return serializeSearch({
+      tokens: [
+        {
+          field: normalizedField,
+          value,
+          negated: false,
+          raw: '',
+          start: 0,
+          end: 0,
+        },
+      ],
+      freeText: '',
+    })
+  }
+
+  const hasExactToken = nextTokens.some(
+    (token) =>
+      token.field === normalizedField &&
+      token.value === value &&
+      token.negated === (action === 'exclude'),
+  )
+
+  const filteredTokens = nextTokens.filter((token) => {
+    if (token.field !== normalizedField) return true
+    if (isSingleValueField) return false
+    if (action === 'include') {
+      return !(token.negated && token.value === value)
+    }
+    return !token.negated || token.value !== value
+  })
+
+  if (hasExactToken && !isSingleValueField) {
+    return serializeSearch({
+      tokens: filteredTokens,
+      freeText: parsed.freeText,
+    })
+  }
+
+  filteredTokens.push({
+    field: normalizedField,
+    value,
+    negated: action === 'exclude',
+    raw: '',
+    start: 0,
+    end: 0,
+  })
+
+  return serializeSearch({
+    tokens: filteredTokens,
+    freeText: parsed.freeText,
+  })
+}
+
+function buildSharePayload(logs: ParsedLog[]): string {
+  if (logs.length === 0) return ''
+  if (logs.length === 1) {
+    const log = logs[0]
+    return log.json ? JSON.stringify(log.json, null, 2) : log.raw
+  }
+  if (logs.every((log) => !!log.json)) {
+    return JSON.stringify(
+      logs.map((log) => log.json),
+      null,
+      2,
+    )
+  }
+  return logs.map((log) => log.raw).join('\n')
+}
+
 /* ═══════════════════════════════════════════════════════════════ */
 
 export function LogViewer({
@@ -204,6 +320,8 @@ export function LogViewer({
   isMobile,
 }: LogViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null)
+  const customTimeButtonRef = useRef<HTMLButtonElement>(null)
+  const customTimePanelRef = useRef<HTMLDivElement>(null)
   const [autoScroll, setAutoScroll] = useState(true)
   const [isAtLatest, setIsAtLatest] = useState(true)
   const [sortDirection, setSortDirection] = useState<SortDirection>(() =>
@@ -215,20 +333,41 @@ export function LogViewer({
   const [debouncedSearch, setDebouncedSearch] = useState('')
   const [isAdvancedQuery, setIsAdvancedQuery] = useState(false)
   const [facetsOpen, setFacetsOpen] = useState(false)
-  const parsedSince = useMemo(() => parseSinceParam(readUrlParam('since')), [])
-  const [timeRange, setTimeRange] = useState<TimeRange>(parsedSince.range)
-  const [customSince] = useState<string | undefined>(parsedSince.customSince)
+  const initialTimeRange = useMemo(
+    () => parseTimeRangeParams(readUrlParam('since'), readUrlParam('until')),
+    [],
+  )
+  const [timeRange, setTimeRange] = useState<TimeRange>(initialTimeRange.range)
+  const [customTimeRange, setCustomTimeRange] = useState<CustomTimeRangeDraft>(
+    initialTimeRange.customRange,
+  )
+  const [customTimeDraft, setCustomTimeDraft] = useState<CustomTimeRangeDraft>(
+    initialTimeRange.customRange,
+  )
+  const [customTimeOpen, setCustomTimeOpen] = useState(false)
   const last = useMemo(
     () => parseLastParam(readUrlParam('last'), defaultLast),
     [],
   )
   const [expandedRow, setExpandedRow] = useState<number | null>(null)
+  const [selectedRowKeys, setSelectedRowKeys] = useState<string[]>([])
+  const [selectionAnchorIndex, setSelectionAnchorIndex] = useState<number | null>(
+    null,
+  )
   const [activeMatchIndex, setActiveMatchIndex] = useState(0)
   const searchInputRef = useRef<HTMLInputElement>(null)
   const [newLogCount, setNewLogCount] = useState(0)
   const prevLogCountRef = useRef(0)
   const activeSourceName = sourceName ?? selectedSource ?? null
   const isSourceView = !!activeSourceName
+  const resolvedCustomTimeRange = useMemo(
+    () => resolveCustomTimeRange(customTimeRange),
+    [customTimeRange],
+  )
+  const resolvedCustomTimeDraft = useMemo(
+    () => resolveCustomTimeRange(customTimeDraft),
+    [customTimeDraft],
+  )
 
   // ── Derive level/stream from search tokens (search string is the single source of truth) ──
   const parsedSearchTokens = useMemo(() => parseSearch(searchInput), [searchInput])
@@ -263,6 +402,23 @@ export function LogViewer({
     }
   }, [])
 
+  useEffect(() => {
+    if (!customTimeOpen) return
+    const handlePointerDown = (event: MouseEvent) => {
+      const target = event.target as Node
+      if (
+        customTimePanelRef.current?.contains(target) ||
+        customTimeButtonRef.current?.contains(target)
+      ) {
+        return
+      }
+      setCustomTimeOpen(false)
+    }
+
+    document.addEventListener('mousedown', handlePointerDown)
+    return () => document.removeEventListener('mousedown', handlePointerDown)
+  }, [customTimeOpen])
+
   const selectedServiceIsValid =
     selectedService === null ||
     isSourceView ||
@@ -283,24 +439,34 @@ export function LogViewer({
       search: searchInput || undefined,
       since:
         timeRange === 'custom'
-          ? customSince
+          ? customTimeRange.fromInput || undefined
           : timeRange !== 'live'
             ? timeRange
             : undefined,
+      until:
+        timeRange === 'custom'
+          ? customTimeRange.toInput || undefined
+          : undefined,
       last: last !== defaultLast ? last : undefined,
     })
-  }, [searchInput, timeRange, customSince, last, defaultLast])
+  }, [searchInput, timeRange, customTimeRange, last, defaultLast])
 
   // Facet/filter params — level and stream derived from search tokens
   const facetFilters: Omit<LogFilterParams, 'last' | 'search'> = useMemo(() => {
     const p: Omit<LogFilterParams, 'last' | 'search'> = {}
-    const since = timeRangeToSince(timeRange, customSince)
+    const since = timeRangeToSince(timeRange, resolvedCustomTimeRange.fromIso)
     if (since) p.since = since
     if (activeTab !== '__all__') p.service = activeTab
     if (derivedLevel) p.level = derivedLevel
     if (derivedStream) p.stream = derivedStream
     return p
-  }, [timeRange, customSince, activeTab, derivedLevel, derivedStream])
+  }, [
+    timeRange,
+    resolvedCustomTimeRange.fromIso,
+    activeTab,
+    derivedLevel,
+    derivedStream,
+  ])
 
   const facetsQuery = useQuery({
     queryKey: isSourceView
@@ -336,11 +502,19 @@ export function LogViewer({
     if (serverQuery) p.search = serverQuery
     if (derivedLevel) p.level = derivedLevel
     if (derivedStream) p.stream = derivedStream
-    const since = timeRangeToSince(timeRange, customSince)
+    const since = timeRangeToSince(timeRange, resolvedCustomTimeRange.fromIso)
     if (since) p.since = since
     if (activeTab !== '__all__') p.service = activeTab
     return p
-  }, [last, serverQuery, derivedLevel, timeRange, customSince, derivedStream, activeTab])
+  }, [
+    last,
+    serverQuery,
+    derivedLevel,
+    timeRange,
+    resolvedCustomTimeRange.fromIso,
+    derivedStream,
+    activeTab,
+  ])
 
   const logsQuery = useQuery({
     queryKey: isSourceView
@@ -371,16 +545,49 @@ export function LogViewer({
     if (activeTab !== '__all__') args.push('--service', activeTab)
     if (searchInput.trim()) args.push('--search', searchInput.trim())
     if (timeRange === 'custom') {
-      if (customSince?.trim()) args.push('--since', customSince.trim())
+      if (resolvedCustomTimeRange.fromIso) {
+        args.push('--since', resolvedCustomTimeRange.fromIso)
+      }
     } else if (timeRange !== 'live') args.push('--since', timeRange)
     if (last !== defaultLast) args.push('--last', String(last))
     return args
       .map((arg) => (arg.includes(' ') ? JSON.stringify(arg) : arg))
       .join(' ')
-  }, [activeTab, customSince, defaultLast, isSourceView, last, runId, searchInput, timeRange])
+  }, [
+    activeTab,
+    defaultLast,
+    isSourceView,
+    last,
+    resolvedCustomTimeRange.fromIso,
+    runId,
+    searchInput,
+    timeRange,
+  ])
 
   const canShare =
     !isSourceView && Boolean(latestAgentSessionQuery.data?.session)
+
+  const buildShareMessage = useCallback(
+    (logsToShare: ParsedLog[], subject: string) => {
+      const context: string[] = []
+      if (activeTab !== '__all__') context.push(`service:${activeTab}`)
+      if (searchInput.trim()) context.push(`search:${searchInput.trim()}`)
+      if (timeRange === 'custom') {
+        if (customTimeRange.fromInput) {
+          context.push(`from:${customTimeRange.fromInput}`)
+        }
+        if (customTimeRange.toInput) {
+          context.push(`to:${customTimeRange.toInput}`)
+        }
+      } else if (timeRange !== 'live') {
+        context.push(`since:${timeRange}`)
+      }
+      const contextLine =
+        context.length > 0 ? `\nCurrent view: ${context.join(' · ')}` : ''
+      return `${subject}${contextLine}\n\n${buildSharePayload(logsToShare)}`
+    },
+    [activeTab, customTimeRange.fromInput, customTimeRange.toInput, searchInput, timeRange],
+  )
 
   const shareCurrentView = useCallback(async () => {
     if (!canShare) return
@@ -397,10 +604,35 @@ export function LogViewer({
     }
   }, [canShare, projectDir, shareCommand])
 
+  const shareLogsWithAgent = useCallback(
+    async (logsToShare: ParsedLog[], subject: string, successMessage: string) => {
+      if (!canShare || logsToShare.length === 0) return
+      try {
+        await api.shareToAgent(
+          projectDir,
+          shareCommand,
+          buildShareMessage(logsToShare, subject),
+        )
+        toast.success(successMessage)
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error'
+        toast.error(`Failed to share logs: ${message}`)
+      }
+    },
+    [buildShareMessage, canShare, projectDir, shareCommand],
+  )
+
   const { logs, matchCount, truncated, matchedTotal } = useMemo(() => {
     const entries = logsQuery.data?.entries ?? []
+    const upperBound = resolvedCustomTimeRange.toIso
+      ? new Date(resolvedCustomTimeRange.toIso).getTime()
+      : null
+    const filteredEntries =
+      upperBound === null
+        ? entries
+        : entries.filter((entry) => new Date(entry.ts).getTime() <= upperBound)
     const orderedEntries =
-      sortDirection === 'desc' ? [...entries].reverse() : entries
+      sortDirection === 'desc' ? [...filteredEntries].reverse() : filteredEntries
     const result: ParsedLog[] = orderedEntries.map((e) => ({
       timestamp: formatTimestamp(e.ts),
       rawTimestamp: e.ts,
@@ -418,12 +650,26 @@ export function LogViewer({
       truncated: logsQuery.data?.truncated ?? false,
       matchedTotal: logsQuery.data?.matched_total ?? 0,
     }
-  }, [logsQuery.data, debouncedSearch, sortDirection])
+  }, [logsQuery.data, debouncedSearch, resolvedCustomTimeRange.toIso, sortDirection])
 
   const logServiceNames = useMemo(
     () => Array.from(new Set(logs.map((log) => log.service))),
     [logs],
   )
+  const logKeys = useMemo(() => logs.map((log) => buildLogKey(log)), [logs])
+  const logKeySet = useMemo(() => new Set(logKeys), [logKeys])
+  const selectedRowKeySet = useMemo(
+    () => new Set(selectedRowKeys),
+    [selectedRowKeys],
+  )
+  const selectedLogs = useMemo(
+    () => logs.filter((log) => selectedRowKeySet.has(buildLogKey(log))),
+    [logs, selectedRowKeySet],
+  )
+
+  useEffect(() => {
+    setSelectedRowKeys((prev) => prev.filter((key) => logKeySet.has(key)))
+  }, [logKeySet])
 
   // Service color mapping — deterministic via hash
   const colorIndexMap = useMemo(
@@ -522,6 +768,76 @@ export function LogViewer({
     [columnStorageKey],
   )
 
+  const copyLogsToClipboard = useCallback(async (logsToCopy: ParsedLog[]) => {
+    if (logsToCopy.length === 0) return
+    try {
+      await navigator.clipboard.writeText(buildSharePayload(logsToCopy))
+      toast.success(
+        logsToCopy.length === 1 ? 'Copied log entry' : `Copied ${logsToCopy.length} selected rows`,
+      )
+    } catch {
+      toast.error('Failed to copy to clipboard')
+    }
+  }, [])
+
+  const handleShareLog = useCallback(
+    (log: ParsedLog) => {
+      void shareLogsWithAgent(
+        [log],
+        'Can you inspect this log entry?',
+        'Shared log entry with active agent',
+      )
+    },
+    [shareLogsWithAgent],
+  )
+
+  const handleShareSelection = useCallback(() => {
+    void shareLogsWithAgent(
+      selectedLogs,
+      `Can you inspect these ${selectedLogs.length} selected log entries?`,
+      `Shared ${selectedLogs.length} selected rows with active agent`,
+    )
+  }, [selectedLogs, shareLogsWithAgent])
+
+  const handleFilterAction = useCallback(
+    (field: string, value: string, action: DetailFilterAction) => {
+      if (field === 'service') {
+        onSelectService(null)
+      }
+      setSearchInput((current) => applySearchToken(current, field, value, action))
+      setActiveMatchIndex(0)
+    },
+    [onSelectService],
+  )
+
+  const handleSelectRow = useCallback(
+    (index: number, extendRange: boolean) => {
+      const key = logKeys[index]
+      if (!key) return
+
+      if (extendRange && selectionAnchorIndex !== null) {
+        const start = Math.min(selectionAnchorIndex, index)
+        const end = Math.max(selectionAnchorIndex, index)
+        const rangeKeys = logKeys.slice(start, end + 1)
+        setSelectedRowKeys((prev) => Array.from(new Set([...prev, ...rangeKeys])))
+        return
+      }
+
+      setSelectedRowKeys((prev) =>
+        prev.includes(key)
+          ? prev.filter((selectedKey) => selectedKey !== key)
+          : [...prev, key],
+      )
+      setSelectionAnchorIndex(index)
+    },
+    [logKeys, selectionAnchorIndex],
+  )
+
+  const clearSelection = useCallback(() => {
+    setSelectedRowKeys([])
+    setSelectionAnchorIndex(null)
+  }, [])
+
   // Track new logs when not at the latest edge.
   useEffect(() => {
     if (autoScroll || isAtLatest) {
@@ -601,6 +917,34 @@ export function LogViewer({
     setActiveMatchIndex(0)
   }, [])
 
+  const openCustomTimeRange = useCallback(() => {
+    setCustomTimeDraft(customTimeRange)
+    setTimeRange('custom')
+    setCustomTimeOpen(true)
+  }, [customTimeRange])
+
+  const cancelCustomTimeRange = useCallback(() => {
+    setCustomTimeDraft(customTimeRange)
+    setCustomTimeOpen(false)
+  }, [customTimeRange])
+
+  const applyCustomTimeRange = useCallback(() => {
+    if (
+      !resolvedCustomTimeDraft.hasValue ||
+      resolvedCustomTimeDraft.fromError ||
+      resolvedCustomTimeDraft.toError ||
+      resolvedCustomTimeDraft.rangeError
+    ) {
+      return
+    }
+    setCustomTimeRange({
+      fromInput: resolvedCustomTimeDraft.fromInput,
+      toInput: resolvedCustomTimeDraft.toInput,
+    })
+    setTimeRange('custom')
+    setCustomTimeOpen(false)
+  }, [resolvedCustomTimeDraft])
+
   // ── Keyboard shortcuts ──
   // E/W now toggle level:error / level:warn tokens in the search string
   useEffect(() => {
@@ -615,6 +959,10 @@ export function LogViewer({
         searchInputRef.current?.select()
       }
       if (e.key === 'Escape') {
+        if (customTimeOpen) {
+          setCustomTimeOpen(false)
+          return
+        }
         if (searchInput) {
           setSearchInput('')
           setExpandedRow(null)
@@ -670,7 +1018,16 @@ export function LogViewer({
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [searchInput, debouncedSearch, matchCount, nextMatch, prevMatch, onSelectService, services])
+  }, [
+    customTimeOpen,
+    searchInput,
+    debouncedSearch,
+    matchCount,
+    nextMatch,
+    prevMatch,
+    onSelectService,
+    services,
+  ])
 
   const showServiceColumn =
     activeTab === '__all__' &&
@@ -714,7 +1071,9 @@ export function LogViewer({
 
   const isFacetValueActive = useCallback(
     (field: string, value: string) => {
-      if (field === 'service') return activeTab === value
+      if (field === 'service') {
+        return activeTab === value || tokenParts.includes(facetToken(field, value))
+      }
       // For level, stream, and all other fields: check search tokens
       return tokenParts.includes(facetToken(field, value))
     },
@@ -850,43 +1209,211 @@ export function LogViewer({
         <div className="flex items-center gap-1.5 px-2 md:px-3 py-1.5 border-t border-line-subtle min-w-0 w-full overflow-hidden">
           {/* Left group: time range + facets toggle */}
           <div className="flex items-center gap-1.5 shrink-0">
-            {/* Time range pills */}
-            <div
-              className="flex items-center border border-line rounded-md overflow-hidden shrink-0"
-              role="radiogroup"
-              aria-label="Time range"
-            >
-              {timeRangeOptions.map(({ key, label }) => (
+            <div className="relative">
+              <div
+                className="flex items-center border border-line rounded-md overflow-hidden shrink-0"
+                role="radiogroup"
+                aria-label="Time range"
+              >
+                {timeRangeOptions.map(({ key, label }) => (
+                  <button
+                    key={key}
+                    role="radio"
+                    aria-checked={timeRange === key}
+                    onClick={() => {
+                      setTimeRange(key)
+                      setCustomTimeOpen(false)
+                    }}
+                    className={cn(
+                      'px-2 h-8 text-xs font-medium transition-colors flex items-center gap-1 justify-center',
+                      timeRange === key
+                        ? key === 'live'
+                          ? 'bg-accent/10 text-accent'
+                          : 'bg-surface-sunken text-ink'
+                        : 'text-ink-tertiary hover:text-ink hover:bg-surface-sunken/50',
+                    )}
+                  >
+                    {key === 'live' && (
+                      <span
+                        className={cn(
+                          'w-1.5 h-1.5 rounded-full',
+                          timeRange === 'live'
+                            ? 'bg-status-green pulse-dot'
+                            : 'bg-ink-tertiary',
+                        )}
+                      />
+                    )}
+                    {key !== 'live' && (
+                      <Clock className="w-3 h-3 hidden md:block" />
+                    )}
+                    {label}
+                  </button>
+                ))}
                 <button
-                  key={key}
+                  ref={customTimeButtonRef}
                   role="radio"
-                  aria-checked={timeRange === key}
-                  onClick={() => setTimeRange(key)}
+                  aria-checked={timeRange === 'custom'}
+                  aria-expanded={customTimeOpen}
+                  onClick={() => {
+                    if (timeRange === 'custom' && customTimeOpen) {
+                      setCustomTimeOpen(false)
+                      return
+                    }
+                    openCustomTimeRange()
+                  }}
                   className={cn(
-                    'px-2 h-8 text-xs font-medium transition-colors flex items-center gap-1 justify-center',
-                    timeRange === key
-                      ? key === 'live'
-                        ? 'bg-accent/10 text-accent'
-                        : 'bg-surface-sunken text-ink'
+                    'px-2 h-8 text-xs font-medium transition-colors flex items-center gap-1 justify-center border-l border-line-subtle',
+                    timeRange === 'custom'
+                      ? 'bg-surface-sunken text-ink'
                       : 'text-ink-tertiary hover:text-ink hover:bg-surface-sunken/50',
                   )}
+                  aria-label="Custom time range"
                 >
-                  {key === 'live' && (
-                    <span
-                      className={cn(
-                        'w-1.5 h-1.5 rounded-full',
-                        timeRange === 'live'
-                          ? 'bg-status-green pulse-dot'
-                          : 'bg-ink-tertiary',
-                      )}
-                    />
-                  )}
-                  {key !== 'live' && (
-                    <Clock className="w-3 h-3 hidden md:block" />
-                  )}
-                  {label}
+                  <Clock className="w-3 h-3 hidden md:block" />
+                  Custom
                 </button>
-              ))}
+              </div>
+
+              {customTimeOpen && (
+                <div
+                  ref={customTimePanelRef}
+                  className="absolute left-0 top-full mt-2 w-[320px] max-w-[calc(100vw-1rem)] bg-surface-overlay border border-line shadow-xl rounded-md p-3 z-40 custom-time-range-enter"
+                  onKeyDown={(event) => {
+                    if (event.key === 'Escape') {
+                      event.stopPropagation()
+                      cancelCustomTimeRange()
+                    }
+                  }}
+                >
+                  <div className="flex items-center justify-between gap-3 mb-3">
+                    <div>
+                      <div className="text-xs font-semibold text-ink">Custom range</div>
+                      <p className="text-[11px] text-ink-tertiary mt-0.5">
+                        Use RFC3339, datetime-local, or relative values like 2h ago.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={cancelCustomTimeRange}
+                      className="w-6 h-6 inline-flex items-center justify-center rounded-sm text-ink-tertiary hover:text-ink hover:bg-surface-sunken"
+                      aria-label="Close custom time range"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+
+                  <div className="grid gap-3">
+                    <label className="grid gap-1">
+                      <span className="text-[11px] font-medium text-ink-secondary">From</span>
+                      <input
+                        type="text"
+                        value={customTimeDraft.fromInput}
+                        onChange={(event) =>
+                          setCustomTimeDraft((current) => ({
+                            ...current,
+                            fromInput: event.target.value,
+                          }))
+                        }
+                        placeholder="2h ago or 2025-01-01T10:00:00Z"
+                        className="h-8 px-2 rounded-md border border-line bg-surface-base text-xs text-ink font-mono outline-none"
+                        aria-label="Custom time from"
+                      />
+                      <input
+                        type="datetime-local"
+                        value={isoToDateTimeLocalValue(
+                          resolvedCustomTimeDraft.fromIso,
+                        )}
+                        onChange={(event) =>
+                          setCustomTimeDraft((current) => ({
+                            ...current,
+                            fromInput: event.target.value,
+                          }))
+                        }
+                        className="h-8 px-2 rounded-md border border-line bg-surface-base text-xs text-ink outline-none"
+                        aria-label="Pick custom time from"
+                      />
+                      {resolvedCustomTimeDraft.fromError && (
+                        <span className="text-[11px] text-status-red-text">
+                          {resolvedCustomTimeDraft.fromError}
+                        </span>
+                      )}
+                    </label>
+
+                    <label className="grid gap-1">
+                      <span className="text-[11px] font-medium text-ink-secondary">To</span>
+                      <input
+                        type="text"
+                        value={customTimeDraft.toInput}
+                        onChange={(event) =>
+                          setCustomTimeDraft((current) => ({
+                            ...current,
+                            toInput: event.target.value,
+                          }))
+                        }
+                        placeholder="30m ago or 2025-01-01T11:30:00Z"
+                        className="h-8 px-2 rounded-md border border-line bg-surface-base text-xs text-ink font-mono outline-none"
+                        aria-label="Custom time to"
+                      />
+                      <input
+                        type="datetime-local"
+                        value={isoToDateTimeLocalValue(
+                          resolvedCustomTimeDraft.toIso,
+                        )}
+                        onChange={(event) =>
+                          setCustomTimeDraft((current) => ({
+                            ...current,
+                            toInput: event.target.value,
+                          }))
+                        }
+                        className="h-8 px-2 rounded-md border border-line bg-surface-base text-xs text-ink outline-none"
+                        aria-label="Pick custom time to"
+                      />
+                      {resolvedCustomTimeDraft.toError && (
+                        <span className="text-[11px] text-status-red-text">
+                          {resolvedCustomTimeDraft.toError}
+                        </span>
+                      )}
+                    </label>
+                  </div>
+
+                  {resolvedCustomTimeDraft.rangeError && (
+                    <p className="mt-2 text-[11px] text-status-red-text">
+                      {resolvedCustomTimeDraft.rangeError}
+                    </p>
+                  )}
+
+                  <div className="flex items-center justify-end gap-2 mt-3">
+                    <button
+                      type="button"
+                      onClick={cancelCustomTimeRange}
+                      className="h-8 px-2.5 rounded-md text-xs text-ink-tertiary hover:text-ink hover:bg-surface-sunken/50 transition-colors"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={applyCustomTimeRange}
+                      className={cn(
+                        'h-8 px-2.5 rounded-md text-xs font-medium transition-colors',
+                        resolvedCustomTimeDraft.hasValue &&
+                          !resolvedCustomTimeDraft.fromError &&
+                          !resolvedCustomTimeDraft.toError &&
+                          !resolvedCustomTimeDraft.rangeError
+                          ? 'bg-accent text-white hover:bg-accent/90'
+                          : 'bg-surface-sunken text-ink-tertiary cursor-not-allowed',
+                      )}
+                      disabled={
+                        !resolvedCustomTimeDraft.hasValue ||
+                        !!resolvedCustomTimeDraft.fromError ||
+                        !!resolvedCustomTimeDraft.toError ||
+                        !!resolvedCustomTimeDraft.rangeError
+                      }
+                    >
+                      Apply
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Facets toggle */}
@@ -1172,8 +1699,13 @@ export function LogViewer({
                       highlighter={highlighter}
                       isActiveMatch={!!debouncedSearch && i === activeMatchIndex}
                       isExpanded={expandedRow === i}
+                      isSelected={selectedRowKeySet.has(logKeys[i])}
                       lineWrap={lineWrap}
+                      canShare={canShare}
                       onToggleExpand={toggleExpand}
+                      onSelectRow={handleSelectRow}
+                      onShareLog={handleShareLog}
+                      onFilterAction={handleFilterAction}
                       hasBorderTop={showLabel && i > 0}
                       dynamicColumns={visibleDynamicColumns}
                     />
@@ -1184,6 +1716,44 @@ export function LogViewer({
           )}
         </div>
       </div>
+
+      {selectedLogs.length > 0 && (
+        <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-30 flex items-center gap-2 rounded-full border border-line bg-surface-overlay shadow-xl px-3 py-2 selection-action-bar-enter">
+          <span className="text-xs font-medium text-ink">
+            {selectedLogs.length} selected
+          </span>
+          <button
+            type="button"
+            onClick={() => {
+              void copyLogsToClipboard(selectedLogs)
+            }}
+            className="h-8 px-2.5 rounded-full text-xs text-ink-tertiary hover:text-ink hover:bg-surface-sunken/60 transition-colors inline-flex items-center gap-1"
+            aria-label="Copy selected rows"
+          >
+            <Copy className="w-3.5 h-3.5" />
+            Copy
+          </button>
+          {canShare && (
+            <button
+              type="button"
+              onClick={handleShareSelection}
+              className="h-8 px-2.5 rounded-full text-xs text-ink-tertiary hover:text-ink hover:bg-surface-sunken/60 transition-colors inline-flex items-center gap-1"
+              aria-label="Share selected rows with agent"
+            >
+              <Share2 className="w-3.5 h-3.5" />
+              Share
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={clearSelection}
+            className="h-8 px-2.5 rounded-full text-xs text-ink-tertiary hover:text-ink hover:bg-surface-sunken/60 transition-colors"
+            aria-label="Clear selected rows"
+          >
+            Clear
+          </button>
+        </div>
+      )}
 
       {/* New logs toast */}
       <LogScrollControls

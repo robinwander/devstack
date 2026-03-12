@@ -1,7 +1,7 @@
 import { memo, useCallback } from 'react'
 import { cn } from '@/lib/utils'
 import { highlightAll } from './highlight'
-import { LogDetail } from './log-detail'
+import { LogDetail, type DetailFilterAction } from './log-detail'
 import type { ParsedLog } from './types'
 import type { ColumnConfig } from '@/lib/column-detection'
 
@@ -9,7 +9,7 @@ interface LogRowProps {
   log: ParsedLog
   index: number
   lineNumber: number
-  virtualRow: { index: number; start: number }
+  virtualRow: { index: number; start: number; key?: string | number | bigint }
   measureElement: (el: Element | null) => void
   showLabel: boolean
   showServiceColumn: boolean
@@ -18,8 +18,17 @@ interface LogRowProps {
   highlighter: string | RegExp | null
   isActiveMatch: boolean
   isExpanded: boolean
+  isSelected: boolean
   lineWrap: boolean
+  canShare: boolean
   onToggleExpand: (index: number) => void
+  onSelectRow: (index: number, extendRange: boolean) => void
+  onShareLog: (log: ParsedLog) => void
+  onFilterAction: (
+    field: string,
+    value: string,
+    action: DetailFilterAction,
+  ) => void
   hasBorderTop: boolean
   dynamicColumns: ColumnConfig[]
 }
@@ -37,8 +46,13 @@ export const LogRow = memo(function LogRow({
   highlighter,
   isActiveMatch,
   isExpanded,
+  isSelected,
   lineWrap,
+  canShare,
   onToggleExpand,
+  onSelectRow,
+  onShareLog,
+  onFilterAction,
   hasBorderTop,
   dynamicColumns,
 }: LogRowProps) {
@@ -46,8 +60,24 @@ export const LogRow = memo(function LogRow({
   const svcColorClass = `svc-color-${svcColorIndex}`
 
   const handleClick = useCallback(
-    () => onToggleExpand(index),
-    [onToggleExpand, index],
+    (event: React.MouseEvent<HTMLDivElement>) => {
+      if (event.shiftKey) {
+        event.preventDefault()
+        onSelectRow(index, true)
+        return
+      }
+      onToggleExpand(index)
+    },
+    [index, onSelectRow, onToggleExpand],
+  )
+
+  const handleLineNumberClick = useCallback(
+    (event: React.MouseEvent<HTMLButtonElement>) => {
+      event.preventDefault()
+      event.stopPropagation()
+      onSelectRow(index, event.shiftKey)
+    },
+    [index, onSelectRow],
   )
 
   const levelTint =
@@ -84,26 +114,42 @@ export const LogRow = memo(function LogRow({
           hasBorderTop && 'border-t border-line-subtle',
           isActiveMatch && '!bg-accent/8',
           isExpanded && '!bg-surface-sunken',
+          isSelected && '!bg-accent/10 ring-1 ring-inset ring-accent/20',
           showServiceColumn && !levelTint && 'svc-row-tint',
           levelTint,
         )}
+        aria-selected={isSelected}
       >
-        {/* Line number */}
-        <span className="log-line-number py-[2px] pr-2 pl-1 shrink-0">
+        <button
+          type="button"
+          onClick={handleLineNumberClick}
+          className={cn(
+            'log-line-number py-[2px] pr-2 pl-1 shrink-0 hover:text-ink transition-colors text-right',
+            isSelected && 'text-accent',
+          )}
+          aria-label={
+            isSelected
+              ? `Unselect row ${lineNumber}`
+              : `Select row ${lineNumber}`
+          }
+          aria-pressed={isSelected}
+        >
           {lineNumber}
-        </span>
+        </button>
 
-        {/* Timestamp */}
-        <span className="log-ts pr-2 py-[2px] text-ink-tertiary select-none whitespace-nowrap tabular-nums text-[13px] font-mono shrink-0" style={{ width: 108 }}>
+        <span
+          className="log-ts pr-2 py-[2px] text-ink-tertiary select-none whitespace-nowrap tabular-nums text-[13px] font-mono shrink-0"
+          style={{ width: 108 }}
+        >
           {log.timestamp}
         </span>
 
-        {/* Service color strip */}
         {showServiceColumn && (
-          <span className={cn('w-[3px] min-h-full shrink-0', levelStrip || 'svc-strip-bg')} />
+          <span
+            className={cn('w-[3px] min-h-full shrink-0', levelStrip || 'svc-strip-bg')}
+          />
         )}
 
-        {/* Service name */}
         {showServiceColumn && (
           <span
             className={cn(
@@ -118,12 +164,10 @@ export const LogRow = memo(function LogRow({
           </span>
         )}
 
-        {/* Level badge */}
         <span className="py-[2px] px-1 shrink-0 flex items-center" style={{ width: 56 }}>
           <LevelBadge level={level} />
         </span>
 
-        {/* Dynamic attribute columns */}
         {dynamicColumns.map((col) => {
           const value = log.attributes?.[col.field]
           return (
@@ -142,7 +186,6 @@ export const LogRow = memo(function LogRow({
           )
         })}
 
-        {/* Log content / message */}
         <span
           className={cn(
             'py-[2px] pl-2 pr-4 log-content-text min-w-0 flex-1 font-mono text-[13px]',
@@ -158,7 +201,15 @@ export const LogRow = memo(function LogRow({
         </span>
       </div>
 
-      {isExpanded && <LogDetail log={log} svcColorClass={svcColorClass} />}
+      {isExpanded && (
+        <LogDetail
+          log={log}
+          svcColorClass={svcColorClass}
+          canShare={canShare}
+          onShare={onShareLog}
+          onFilterAction={onFilterAction}
+        />
+      )}
     </div>
   )
 })

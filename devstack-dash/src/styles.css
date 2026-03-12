@@ -501,6 +501,18 @@
 .new-logs-toast {
   animation: slide-up-fade-in var(--duration-normal) var(--ease-out);
 }
+.selection-action-bar-enter {
+  animation: slide-up-fade-in var(--duration-normal) var(--ease-out);
+}
+
+@keyframes custom-time-range-in {
+  from { opacity: 0; transform: translateY(-4px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+.custom-time-range-enter {
+  animation: custom-time-range-in var(--duration-fast) var(--ease-out) both;
+  transform-origin: top left;
+}
 
 /* Focus rings */
 :focus-visible {
