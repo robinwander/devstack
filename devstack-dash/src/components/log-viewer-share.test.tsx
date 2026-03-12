@@ -124,7 +124,7 @@ describe("LogViewer share button", () => {
       expect(sharePayload).toEqual({
         project_dir: "/tmp/project",
         command:
-          'devstack show --run run-1 --service api --search "panic mode" --level error --stream stderr --since 15m --last 100',
+          'devstack show --run run-1 --service api --search "panic mode level:error stream:stderr" --since 15m --last 100',
         message: "Can you take a look at this?",
       });
     });

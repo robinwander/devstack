@@ -197,7 +197,7 @@ describe('LogViewer dynamic field facets', () => {
     expect(screen.getByTitle('200')).toBeTruthy()
   })
 
-  it('clicking a dynamic facet value adds it as a search token and shows a chip', async () => {
+  it('clicking a dynamic facet value adds it as a search token', async () => {
     renderViewer()
 
     const facetToggle = await screen.findByTitle(/facets/i)
@@ -211,15 +211,9 @@ describe('LogViewer dynamic field facets', () => {
     // Should add the token to the search input
     const search = screen.getByLabelText('Search log lines') as HTMLInputElement
     expect(search.value).toContain('method:GET')
-
-    // Should show a removable filter chip
-    const chip = screen.getByRole('button', {
-      name: 'Remove method:GET filter',
-    })
-    expect(chip).toBeTruthy()
   })
 
-  it('removing a dynamic filter chip removes the token from search', async () => {
+  it('clicking an active dynamic facet value removes the token from search', async () => {
     // Start with a search token already set
     window.history.replaceState({}, '', '/?search=method:GET')
 
@@ -229,13 +223,9 @@ describe('LogViewer dynamic field facets', () => {
     const facetToggle = await screen.findByTitle(/facets/i)
     fireEvent.click(facetToggle)
     await screen.findByText('method')
-    fireEvent.click(facetToggle) // close facets
 
-    // Chip should be present
-    const chip = await screen.findByRole('button', {
-      name: 'Remove method:GET filter',
-    })
-    fireEvent.click(chip)
+    // Click the already-active GET facet to toggle it off
+    fireEvent.click(screen.getByTitle('GET'))
 
     // Search should be cleared
     const search = screen.getByLabelText('Search log lines') as HTMLInputElement
@@ -367,7 +357,7 @@ describe('LogViewer facets + URL params', () => {
     expect(within(suggestions).getAllByRole('option')).toHaveLength(4)
   })
 
-  it('initializes filter state from URL params', async () => {
+  it('initializes filter state from URL params (migrating legacy level/stream)', async () => {
     window.history.replaceState(
       {},
       '',
@@ -376,14 +366,19 @@ describe('LogViewer facets + URL params', () => {
 
     renderViewer()
 
-    // Open facets popover
+    // Open facets sidebar
     const facetToggle = await screen.findByTitle(/facets/i)
     fireEvent.click(facetToggle)
 
     await screen.findByText('level')
 
+    // Legacy level/stream params are migrated into the search string
     const search = screen.getByLabelText('Search log lines') as HTMLInputElement
-    expect(search.value).toBe('panic')
+    expect(search.value).toContain('panic')
+    expect(search.value).toContain('level:error')
+    expect(search.value).toContain('stream:stderr')
+
+    // Level error should be active in facets
     expect(
       screen
         .getByRole('button', { name: 'error' })
@@ -399,7 +394,7 @@ describe('LogViewer facets + URL params', () => {
   it('updates URL when filters change and removes params when cleared', async () => {
     renderViewer()
 
-    // Open facets popover
+    // Open facets sidebar
     const facetToggle = await screen.findByTitle(/facets/i)
     fireEvent.click(facetToggle)
 
@@ -408,19 +403,21 @@ describe('LogViewer facets + URL params', () => {
     const search = screen.getByLabelText('Search log lines') as HTMLInputElement
     fireEvent.change(search, { target: { value: 'timeout' } })
 
+    // Click level:error in facets — adds token to search string
     fireEvent.click(screen.getByRole('button', { name: 'error' }))
 
     await waitFor(() => {
-      expect(window.location.search).toContain('search=timeout')
-      expect(window.location.search).toContain('level=error')
+      // Both the text and the level token should be in the search URL param
+      expect(window.location.search).toContain('search=')
+      const searchParam = new URLSearchParams(window.location.search).get('search')
+      expect(searchParam).toContain('level:error')
     })
 
-    fireEvent.click(screen.getByRole('button', { name: /show all logs/i }))
+    // Clear search
     fireEvent.click(screen.getByRole('button', { name: /clear search/i }))
 
     await waitFor(() => {
       expect(window.location.search).not.toContain('search=')
-      expect(window.location.search).not.toContain('level=')
     })
   })
 })

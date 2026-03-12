@@ -4,11 +4,8 @@ import { useVirtualizer } from '@tanstack/react-virtual'
 import { toast } from 'sonner'
 import {
   ArrowDown,
-  Search,
   X,
   AlertTriangle,
-  ChevronUp,
-  ChevronDown,
   Regex,
   ListFilter,
   Share2,
@@ -32,6 +29,7 @@ import {
   saveColumnConfig,
   type ColumnConfig,
 } from '@/lib/column-detection'
+import { parseSearch, addToken, removeToken, replaceAllTokens } from '@/lib/search-parser'
 import {
   LogRow,
   FacetSection,
@@ -39,6 +37,7 @@ import {
   LogTableHeader,
   LogScrollControls,
   LogSkeleton,
+  SearchBar,
   type ParsedLog,
   type TimeRange,
 } from './log-viewer/index'
@@ -161,27 +160,6 @@ function facetToken(field: string, value: string): string {
   return `${field}:${escapeTantivyPhrase(value)}`
 }
 
-type SuggestionKind = 'facet' | 'facetValue'
-type SearchSuggestion = {
-  id: string
-  kind: SuggestionKind
-  label: string
-  description?: string
-  insertText: string
-}
-
-function tokenAtCursor(
-  text: string,
-  cursor: number,
-): { start: number; end: number; token: string } {
-  const isWs = (c: string) => c === ' ' || c === '\n' || c === '\t'
-  let start = cursor
-  while (start > 0 && !isWs(text[start - 1])) start--
-  let end = cursor
-  while (end < text.length && !isWs(text[end])) end++
-  return { start, end, token: text.slice(start, end) }
-}
-
 type SortDirection = 'asc' | 'desc'
 
 const SORT_DIRECTION_STORAGE_KEY = 'devstack:log-viewer:sort-direction'
@@ -198,6 +176,20 @@ function readLineWrap(): boolean {
   return window.localStorage.getItem(LINE_WRAP_STORAGE_KEY) === 'true'
 }
 
+/** Migrate legacy ?level=X and ?stream=X URL params into the search string */
+function buildInitialSearch(): string {
+  let search = readUrlParam('search') ?? ''
+  const legacyLevel = readUrlParam('level')
+  const legacyStream = readUrlParam('stream')
+  if (legacyLevel && legacyLevel !== 'all') {
+    search = addToken(search, 'level', legacyLevel)
+  }
+  if (legacyStream && legacyStream !== 'all') {
+    search = addToken(search, 'stream', legacyStream)
+  }
+  return search
+}
+
 /* ═══════════════════════════════════════════════════════════════ */
 
 export function LogViewer({
@@ -212,7 +204,6 @@ export function LogViewer({
   isMobile,
 }: LogViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null)
-  const facetAnchorRef = useRef<HTMLDivElement>(null)
   const [autoScroll, setAutoScroll] = useState(true)
   const [isAtLatest, setIsAtLatest] = useState(true)
   const [sortDirection, setSortDirection] = useState<SortDirection>(() =>
@@ -220,23 +211,13 @@ export function LogViewer({
   )
   const [lineWrap, setLineWrap] = useState(() => readLineWrap())
   const defaultLast = 500
-  const [searchInput, setSearchInput] = useState(
-    () => readUrlParam('search') ?? '',
-  )
+  const [searchInput, setSearchInput] = useState(() => buildInitialSearch())
   const [debouncedSearch, setDebouncedSearch] = useState('')
   const [isAdvancedQuery, setIsAdvancedQuery] = useState(false)
-  const [isSearchFocused, setIsSearchFocused] = useState(false)
-  const [suggestionIndex, setSuggestionIndex] = useState(0)
   const [facetsOpen, setFacetsOpen] = useState(false)
-  const [levelFilter, setLevelFilter] = useState(
-    () => readUrlParam('level') ?? 'all',
-  )
   const parsedSince = useMemo(() => parseSinceParam(readUrlParam('since')), [])
   const [timeRange, setTimeRange] = useState<TimeRange>(parsedSince.range)
   const [customSince] = useState<string | undefined>(parsedSince.customSince)
-  const [streamFilter, setStreamFilter] = useState(
-    () => readUrlParam('stream') ?? 'all',
-  )
   const last = useMemo(
     () => parseLastParam(readUrlParam('last'), defaultLast),
     [],
@@ -248,6 +229,17 @@ export function LogViewer({
   const prevLogCountRef = useRef(0)
   const activeSourceName = sourceName ?? selectedSource ?? null
   const isSourceView = !!activeSourceName
+
+  // ── Derive level/stream from search tokens (search string is the single source of truth) ──
+  const parsedSearchTokens = useMemo(() => parseSearch(searchInput), [searchInput])
+  const derivedLevel = useMemo(() => {
+    const tok = parsedSearchTokens.tokens.find((t) => t.field === 'level' && !t.negated)
+    return tok?.value
+  }, [parsedSearchTokens])
+  const derivedStream = useMemo(() => {
+    const tok = parsedSearchTokens.tokens.find((t) => t.field === 'stream' && !t.negated)
+    return tok?.value
+  }, [parsedSearchTokens])
 
   // Debounce search
   useEffect(() => {
@@ -262,6 +254,14 @@ export function LogViewer({
   useEffect(() => {
     window.localStorage.setItem(LINE_WRAP_STORAGE_KEY, String(lineWrap))
   }, [lineWrap])
+
+  // Clean up legacy URL params on mount
+  useEffect(() => {
+    const hasLegacy = readUrlParam('level') || readUrlParam('stream')
+    if (hasLegacy) {
+      patchUrlParams({ level: undefined, stream: undefined })
+    }
+  }, [])
 
   const selectedServiceIsValid =
     selectedService === null ||
@@ -281,8 +281,6 @@ export function LogViewer({
   useEffect(() => {
     patchUrlParams({
       search: searchInput || undefined,
-      level: levelFilter !== 'all' ? levelFilter : undefined,
-      stream: streamFilter !== 'all' ? streamFilter : undefined,
       since:
         timeRange === 'custom'
           ? customSince
@@ -291,26 +289,18 @@ export function LogViewer({
             : undefined,
       last: last !== defaultLast ? last : undefined,
     })
-  }, [
-    searchInput,
-    levelFilter,
-    streamFilter,
-    timeRange,
-    customSince,
-    last,
-    defaultLast,
-  ])
+  }, [searchInput, timeRange, customSince, last, defaultLast])
 
-  // Facet/filter params
+  // Facet/filter params — level and stream derived from search tokens
   const facetFilters: Omit<LogFilterParams, 'last' | 'search'> = useMemo(() => {
     const p: Omit<LogFilterParams, 'last' | 'search'> = {}
     const since = timeRangeToSince(timeRange, customSince)
     if (since) p.since = since
     if (activeTab !== '__all__') p.service = activeTab
-    if (levelFilter !== 'all') p.level = levelFilter
-    if (streamFilter !== 'all') p.stream = streamFilter
+    if (derivedLevel) p.level = derivedLevel
+    if (derivedStream) p.stream = derivedStream
     return p
-  }, [timeRange, customSince, activeTab, levelFilter, streamFilter])
+  }, [timeRange, customSince, activeTab, derivedLevel, derivedStream])
 
   const facetsQuery = useQuery({
     queryKey: isSourceView
@@ -344,21 +334,13 @@ export function LogViewer({
   const filterParams: LogFilterParams = useMemo(() => {
     const p: LogFilterParams = { last }
     if (serverQuery) p.search = serverQuery
-    if (levelFilter !== 'all') p.level = levelFilter
-    if (streamFilter !== 'all') p.stream = streamFilter
+    if (derivedLevel) p.level = derivedLevel
+    if (derivedStream) p.stream = derivedStream
     const since = timeRangeToSince(timeRange, customSince)
     if (since) p.since = since
     if (activeTab !== '__all__') p.service = activeTab
     return p
-  }, [
-    last,
-    serverQuery,
-    levelFilter,
-    timeRange,
-    customSince,
-    streamFilter,
-    activeTab,
-  ])
+  }, [last, serverQuery, derivedLevel, timeRange, customSince, derivedStream, activeTab])
 
   const logsQuery = useQuery({
     queryKey: isSourceView
@@ -388,8 +370,6 @@ export function LogViewer({
     const args = ['devstack', 'show', '--run', runId]
     if (activeTab !== '__all__') args.push('--service', activeTab)
     if (searchInput.trim()) args.push('--search', searchInput.trim())
-    if (levelFilter !== 'all') args.push('--level', levelFilter)
-    if (streamFilter !== 'all') args.push('--stream', streamFilter)
     if (timeRange === 'custom') {
       if (customSince?.trim()) args.push('--since', customSince.trim())
     } else if (timeRange !== 'live') args.push('--since', timeRange)
@@ -397,18 +377,7 @@ export function LogViewer({
     return args
       .map((arg) => (arg.includes(' ') ? JSON.stringify(arg) : arg))
       .join(' ')
-  }, [
-    activeTab,
-    customSince,
-    defaultLast,
-    isSourceView,
-    last,
-    levelFilter,
-    runId,
-    searchInput,
-    streamFilter,
-    timeRange,
-  ])
+  }, [activeTab, customSince, defaultLast, isSourceView, last, runId, searchInput, timeRange])
 
   const canShare =
     !isSourceView && Boolean(latestAgentSessionQuery.data?.session)
@@ -563,75 +532,6 @@ export function LogViewer({
     }
   }, [logs.length, autoScroll, isAtLatest])
 
-  // Search suggestions
-  const suggestions = useMemo<SearchSuggestion[]>(() => {
-    if (!isSearchFocused) return []
-    const el = searchInputRef.current
-    const cursor = el?.selectionStart ?? searchInput.length
-    const { token } = tokenAtCursor(searchInput, cursor)
-    const neg = token.startsWith('-')
-    const raw = neg ? token.slice(1) : token
-    const lower = raw.toLowerCase()
-    const out: SearchSuggestion[] = []
-    const add = (s: Omit<SearchSuggestion, 'id'>) => {
-      out.push({ id: `${s.kind}:${s.label}:${s.insertText}`, ...s })
-    }
-
-    const filters = facetsQuery.data?.filters ?? []
-    const filterByField = new Map(
-      filters.map((filter) => [filter.field, filter]),
-    )
-
-    const colon = raw.indexOf(':')
-    if (colon >= 0) {
-      const field = raw.slice(0, colon).toLowerCase()
-      const valuePrefix = raw.slice(colon + 1)
-      const filter = filterByField.get(field)
-      if (filter) {
-        const prefixLower = valuePrefix.toLowerCase()
-        const filtered = filter.values.filter((v) =>
-          v.value.toLowerCase().startsWith(prefixLower),
-        )
-        for (const v of filtered) {
-          add({
-            kind: 'facetValue',
-            label: `${neg ? '-' : ''}${field}:${v.value}`,
-            description: `${v.count}×`,
-            insertText: `${neg ? '-' : ''}${field}:${v.value} `,
-          })
-        }
-        return out.slice(0, 12)
-      }
-    }
-
-    const facetKeys = Array.from(new Set(filters.map((filter) => filter.field)))
-    if (token.length === 0) {
-      for (const field of facetKeys) {
-        add({
-          kind: 'facet',
-          label: `${field}:`,
-          description: 'Filter',
-          insertText: `${field}:`,
-        })
-      }
-    } else {
-      const facetMatches = facetKeys.filter((field) => field.startsWith(lower))
-      for (const field of facetMatches) {
-        add({
-          kind: 'facet',
-          label: `${neg ? '-' : ''}${field}:`,
-          description: 'Filter',
-          insertText: `${neg ? '-' : ''}${field}:`,
-        })
-      }
-    }
-    return out.slice(0, 8)
-  }, [isSearchFocused, searchInput, facetsQuery.data])
-
-  useEffect(() => {
-    if (suggestionIndex >= suggestions.length) setSuggestionIndex(0)
-  }, [suggestions, suggestionIndex])
-
   // Virtualizer
   const virtualizer = useVirtualizer({
     count: logs.length,
@@ -697,7 +597,12 @@ export function LogViewer({
     setExpandedRow((prev) => (prev === index ? null : index))
   }, [])
 
-  // Keyboard shortcuts
+  const resetActiveMatchIndex = useCallback(() => {
+    setActiveMatchIndex(0)
+  }, [])
+
+  // ── Keyboard shortcuts ──
+  // E/W now toggle level:error / level:warn tokens in the search string
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const isInput =
@@ -732,11 +637,25 @@ export function LogViewer({
       if (!isInput && !e.ctrlKey && !e.metaKey) {
         if (e.key === 'e' || e.key === 'E') {
           e.preventDefault()
-          setLevelFilter((c) => (c === 'error' ? 'all' : 'error'))
+          setSearchInput((current) => {
+            const parsed = parseSearch(current)
+            const existing = parsed.tokens.find(
+              (t) => t.field === 'level' && t.value === 'error' && !t.negated,
+            )
+            if (existing) return removeToken(current, existing.raw)
+            return replaceAllTokens(current, 'level', 'error')
+          })
         }
         if (e.key === 'w' || e.key === 'W') {
           e.preventDefault()
-          setLevelFilter((c) => (c === 'warn' ? 'all' : 'warn'))
+          setSearchInput((current) => {
+            const parsed = parseSearch(current)
+            const existing = parsed.tokens.find(
+              (t) => t.field === 'level' && t.value === 'warn' && !t.negated,
+            )
+            if (existing) return removeToken(current, existing.raw)
+            return replaceAllTokens(current, 'level', 'warn')
+          })
         }
         if (e.key === 'f' && !e.shiftKey) {
           e.preventDefault()
@@ -751,15 +670,7 @@ export function LogViewer({
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [
-    searchInput,
-    debouncedSearch,
-    matchCount,
-    nextMatch,
-    prevMatch,
-    onSelectService,
-    services,
-  ])
+  }, [searchInput, debouncedSearch, matchCount, nextMatch, prevMatch, onSelectService, services])
 
   const showServiceColumn =
     activeTab === '__all__' &&
@@ -793,80 +704,21 @@ export function LogViewer({
     }
   }, [debouncedSearch, isAdvancedQuery])
 
-  const applySuggestion = useCallback(
-    (s: SearchSuggestion) => {
-      const el = searchInputRef.current
-      const cursor = el?.selectionStart ?? searchInput.length
-      const { start, end } = tokenAtCursor(searchInput, cursor)
-      const next = `${searchInput.slice(0, start)}${s.insertText}${searchInput.slice(end)}`
-      setSearchInput(next)
-      setActiveMatchIndex(0)
-      setSuggestionIndex(0)
-      requestAnimationFrame(() => {
-        const pos = start + s.insertText.length
-        el?.focus()
-        el?.setSelectionRange(pos, pos)
-      })
-    },
-    [searchInput],
-  )
-
   const tokenParts = useMemo(
     () => searchInput.trim().split(/\s+/).filter(Boolean),
     [searchInput],
   )
 
-  // Extract dynamic field:value tokens from search for filter chips
-  const dynamicFilterTokens = useMemo(() => {
-    if (!searchInput.trim() || facetFieldSet.size === 0) return []
-    const tokens: {
-      field: string
-      value: string
-      raw: string
-      negated: boolean
-    }[] = []
-    for (const part of tokenParts) {
-      const neg = part.startsWith('-')
-      const raw = neg ? part.slice(1) : part
-      const colon = raw.indexOf(':')
-      if (colon > 0) {
-        const field = raw.slice(0, colon).toLowerCase()
-        const rest = raw.slice(colon + 1)
-        if (
-          facetFieldSet.has(field) &&
-          field !== 'service' &&
-          field !== 'level' &&
-          field !== 'stream'
-        ) {
-          const displayValue = rest.replace(/^"|"$/g, '').replace(/\\"/g, '"')
-          tokens.push({ field, value: displayValue, raw: part, negated: neg })
-        }
-      }
-    }
-    return tokens
-  }, [searchInput, tokenParts, facetFieldSet])
-
-  const removeDynamicFilter = useCallback(
-    (rawToken: string) => {
-      const parts = searchInput.trim().split(/\s+/).filter(Boolean)
-      const idx = parts.indexOf(rawToken)
-      if (idx >= 0) {
-        parts.splice(idx, 1)
-        setSearchInput(parts.join(' '))
-        setActiveMatchIndex(0)
-      }
-    },
-    [searchInput],
-  )
+  // ── Facet interaction ──
+  // All facet clicks modify the search string — the single source of truth.
 
   const isFacetValueActive = useCallback(
     (field: string, value: string) => {
       if (field === 'service') return activeTab === value
-      if (field === 'level') return levelFilter === value
-      if (field === 'stream') return streamFilter === value
+      // For level, stream, and all other fields: check search tokens
       return tokenParts.includes(facetToken(field, value))
     },
-    [activeTab, levelFilter, streamFilter, tokenParts],
+    [activeTab, tokenParts],
   )
 
   const toggleFacet = useCallback(
@@ -875,32 +727,28 @@ export function LogViewer({
         onSelectService(activeTab === value ? null : value)
         return
       }
-      if (field === 'level') {
-        setLevelFilter((current) => (current === value ? 'all' : value))
-        return
-      }
-      if (field === 'stream') {
-        setStreamFilter((current) => (current === value ? 'all' : value))
-        return
-      }
+      // For level/stream and all dynamic fields: toggle token in search string
       const token = facetToken(field, value)
       const parts = searchInput.trim().split(/\s+/).filter(Boolean)
       const idx = parts.indexOf(token)
       if (idx >= 0) {
+        // Remove the token
         parts.splice(idx, 1)
         setSearchInput(parts.join(' '))
         setActiveMatchIndex(0)
-        requestAnimationFrame(() => searchInputRef.current?.focus())
         return
       }
-      applySuggestion({
-        id: `facet:${token}`,
-        kind: 'facetValue',
-        label: token,
-        insertText: `${token} `,
-      })
+      // For level and stream: replace any existing token of the same field
+      if (field === 'level' || field === 'stream') {
+        setSearchInput(replaceAllTokens(searchInput, field, value))
+        setActiveMatchIndex(0)
+        return
+      }
+      // Add as a new token
+      setSearchInput(addToken(searchInput, field, value))
+      setActiveMatchIndex(0)
     },
-    [activeTab, applySuggestion, onSelectService, searchInput],
+    [activeTab, onSelectService, searchInput],
   )
 
   const hasEverLoadedRef = useRef(false)
@@ -915,6 +763,54 @@ export function LogViewer({
     { key: '15m' as const, label: '15m' },
     { key: '1h' as const, label: '1h' },
   ]
+
+  /* ─── Facets panel content (reused for both sidebar and overlay) ─── */
+  const facetPanelContent = (
+    <>
+      <div className="px-3 py-2.5 border-b border-line-subtle sticky top-0 bg-surface-raised z-10">
+        <div className="flex items-center justify-between">
+          <span className="text-[11px] font-semibold tracking-wider uppercase text-ink-tertiary">
+            Facets
+          </span>
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] text-ink-tertiary tabular-nums">
+              {facetsQuery.data
+                ? facetsQuery.data.total
+                : facetsQuery.isLoading
+                  ? '…'
+                  : 0}
+            </span>
+            {/* Close button — only on mobile overlay */}
+            {isMobile && (
+              <button
+                onClick={() => setFacetsOpen(false)}
+                className="w-6 h-6 flex items-center justify-center text-ink-tertiary hover:text-ink transition-colors rounded-sm"
+                aria-label="Close facets"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+        </div>
+        {facetsQuery.isError && (
+          <div className="mt-1.5 text-[11px] text-status-red-text">
+            Facets unavailable
+          </div>
+        )}
+      </div>
+      {(facetsQuery.data?.filters ?? []).map((filter: FacetFilter) => (
+        <FacetSection
+          key={filter.field}
+          filter={filter}
+          loading={facetsQuery.isLoading && !facetsQuery.data}
+          onPick={(value: string) => toggleFacet(filter.field, value)}
+          isActive={(value: string) =>
+            isFacetValueActive(filter.field, value)
+          }
+        />
+      ))}
+    </>
+  )
 
   return (
     <div className="flex-1 flex flex-col min-h-0 relative min-w-0">
@@ -952,7 +848,7 @@ export function LogViewer({
 
         {/* Search + filters row */}
         <div className="flex items-center gap-1.5 px-2 md:px-3 py-1.5 border-t border-line-subtle min-w-0 w-full overflow-hidden">
-          {/* Left group: time range + facets + filter chips */}
+          {/* Left group: time range + facets toggle */}
           <div className="flex items-center gap-1.5 shrink-0">
             {/* Time range pills */}
             <div
@@ -994,191 +890,40 @@ export function LogViewer({
             </div>
 
             {/* Facets toggle */}
-            <div className="relative" ref={facetAnchorRef}>
-              <button
-                onClick={() => setFacetsOpen((v) => !v)}
-                className={cn(
-                  'h-8 px-2.5 flex items-center gap-1.5 border rounded-md transition-colors',
-                  facetsOpen
-                    ? 'bg-surface-sunken text-ink border-line'
-                    : 'text-ink-tertiary hover:text-ink hover:bg-surface-sunken/50 border-transparent',
-                )}
-                aria-pressed={facetsOpen}
-                aria-expanded={facetsOpen}
-                aria-haspopup="true"
-                title={facetsOpen ? 'Hide facets (F)' : 'Show facets (F)'}
-              >
-                <ListFilter className="w-3.5 h-3.5" />
-              </button>
-            </div>
-
-            {/* Active filter chips */}
-            {levelFilter !== 'all' && (
-              <FilterChip
-                label={`level:${levelFilter}`}
-                tone={
-                  levelFilter === 'error'
-                    ? 'red'
-                    : levelFilter === 'warn'
-                      ? 'amber'
-                      : 'default'
-                }
-                onRemove={() => setLevelFilter('all')}
-              />
-            )}
-            {streamFilter !== 'all' && (
-              <FilterChip
-                label={`stream:${streamFilter}`}
-                onRemove={() => setStreamFilter('all')}
-              />
-            )}
-            {dynamicFilterTokens.map(({ field, value, raw, negated }) => (
-              <FilterChip
-                key={raw}
-                label={`${negated ? '−' : ''}${field}:${value}`}
-                onRemove={() => removeDynamicFilter(raw)}
-              />
-            ))}
-          </div>
-
-          {/* Search input — fills remaining space */}
-          <div
-            className={cn(
-              'relative flex items-center gap-2 flex-1 min-w-0 bg-surface-base border px-2.5 h-9 rounded-md transition-colors',
-              'border-line focus-within:border-accent/40 focus-within:bg-surface-raised',
-            )}
-          >
-            <Search className="w-3.5 h-3.5 text-ink-tertiary shrink-0" />
-            <input
-              ref={searchInputRef}
-              type="text"
-              value={searchInput}
-              onChange={(e) => {
-                setSearchInput(e.target.value)
-                setActiveMatchIndex(0)
-              }}
-              onFocus={() => setIsSearchFocused(true)}
-              onBlur={() => {
-                setTimeout(() => setIsSearchFocused(false), 100)
-              }}
-              onKeyDown={(e) => {
-                if (!isSearchFocused || suggestions.length === 0) return
-                if (e.key === 'ArrowDown') {
-                  e.preventDefault()
-                  e.stopPropagation()
-                  setSuggestionIndex((i) =>
-                    Math.min(i + 1, suggestions.length - 1),
-                  )
-                } else if (e.key === 'ArrowUp') {
-                  e.preventDefault()
-                  e.stopPropagation()
-                  setSuggestionIndex((i) => Math.max(i - 1, 0))
-                } else if (e.key === 'Enter' || e.key === 'Tab') {
-                  e.preventDefault()
-                  e.stopPropagation()
-                  const s = suggestions[suggestionIndex]
-                  if (s) applySuggestion(s)
-                } else if (e.key === 'Escape') {
-                  e.stopPropagation()
-                  setIsSearchFocused(false)
-                }
-              }}
-              placeholder={
-                isMobile ? 'Search logs…' : 'Search logs…  / to focus'
-              }
-              className="bg-transparent text-[13px] text-ink placeholder:text-ink-tertiary outline-none flex-1 min-w-0"
-              aria-label="Search log lines"
-              spellCheck={false}
-            />
-            {/* Regex toggle inside search */}
             <button
-              onClick={() => setIsAdvancedQuery(!isAdvancedQuery)}
+              onClick={() => setFacetsOpen((v) => !v)}
               className={cn(
-                'w-6 h-6 flex items-center justify-center rounded-sm transition-colors shrink-0',
-                isAdvancedQuery
-                  ? 'bg-accent/15 text-accent'
-                  : 'text-ink-tertiary hover:text-ink-secondary',
+                'h-8 px-2.5 flex items-center gap-1.5 border rounded-md transition-colors',
+                facetsOpen
+                  ? 'bg-surface-sunken text-ink border-line'
+                  : 'text-ink-tertiary hover:text-ink hover:bg-surface-sunken/50 border-transparent',
               )}
-              aria-pressed={isAdvancedQuery}
-              title="Toggle advanced query"
+              aria-pressed={facetsOpen}
+              aria-expanded={facetsOpen}
+              aria-haspopup="true"
+              title={facetsOpen ? 'Hide facets (F)' : 'Show facets (F)'}
             >
-              <Regex className="w-3 h-3" />
+              <ListFilter className="w-3.5 h-3.5" />
             </button>
-            {searchInput && (
-              <>
-                <div className="flex items-center gap-0.5 shrink-0 border-l border-line-subtle pl-1.5 ml-0.5">
-                  <span className="text-[11px] text-ink-tertiary tabular-nums mr-0.5">
-                    {matchCount > 0
-                      ? `${activeMatchIndex + 1}/${matchCount}`
-                      : '0'}
-                    {truncated && matchedTotal > matchCount
-                      ? ` of ${matchedTotal}`
-                      : ''}
-                  </span>
-                  <button
-                    onClick={prevMatch}
-                    disabled={matchCount === 0}
-                    className="w-6 h-6 flex items-center justify-center text-ink-tertiary hover:text-ink disabled:opacity-20 transition-colors"
-                    aria-label="Previous match"
-                  >
-                    <ChevronUp className="w-3 h-3" />
-                  </button>
-                  <button
-                    onClick={nextMatch}
-                    disabled={matchCount === 0}
-                    className="w-6 h-6 flex items-center justify-center text-ink-tertiary hover:text-ink disabled:opacity-20 transition-colors"
-                    aria-label="Next match"
-                  >
-                    <ChevronDown className="w-3 h-3" />
-                  </button>
-                </div>
-                <button
-                  onClick={() => {
-                    setSearchInput('')
-                    setActiveMatchIndex(0)
-                  }}
-                  className="w-6 h-6 flex items-center justify-center text-ink-tertiary hover:text-ink transition-colors shrink-0"
-                  aria-label="Clear search"
-                >
-                  <X className="w-3 h-3" />
-                </button>
-              </>
-            )}
-
-            {/* Suggestions dropdown */}
-            {isSearchFocused && suggestions.length > 0 && (
-              <div
-                className="absolute left-0 right-0 top-full mt-1 bg-surface-overlay border border-line shadow-xl rounded-md z-50 max-h-56 overflow-auto"
-                onMouseDown={(e) => e.preventDefault()}
-                role="listbox"
-                aria-label="Search suggestions"
-              >
-                {suggestions.map((s, i) => (
-                  <button
-                    key={s.id}
-                    type="button"
-                    onClick={() => applySuggestion(s)}
-                    className={cn(
-                      'w-full text-left px-3 py-1.5 flex items-center justify-between gap-4',
-                      'text-xs font-mono transition-colors',
-                      i === suggestionIndex
-                        ? 'bg-surface-sunken text-ink'
-                        : 'hover:bg-surface-sunken/50 text-ink-secondary',
-                    )}
-                    role="option"
-                    aria-selected={i === suggestionIndex}
-                  >
-                    <span className="truncate">{s.label}</span>
-                    {s.description && (
-                      <span className="text-[11px] text-ink-tertiary truncate">
-                        {s.description}
-                      </span>
-                    )}
-                  </button>
-                ))}
-              </div>
-            )}
           </div>
+
+          {/* Rich search bar — fills remaining space */}
+          <SearchBar
+            value={searchInput}
+            onChange={setSearchInput}
+            onActiveMatchIndexReset={resetActiveMatchIndex}
+            facetData={facetsQuery.data?.filters ?? []}
+            isAdvancedQuery={isAdvancedQuery}
+            onToggleAdvancedQuery={() => setIsAdvancedQuery((v) => !v)}
+            matchCount={matchCount}
+            activeMatchIndex={activeMatchIndex}
+            truncated={truncated}
+            matchedTotal={matchedTotal}
+            onNextMatch={nextMatch}
+            onPrevMatch={prevMatch}
+            isMobile={isMobile}
+            inputRef={searchInputRef}
+          />
 
           {/* Right-side view controls */}
           <button
@@ -1232,12 +977,22 @@ export function LogViewer({
         </div>
       </div>
 
-      {/* ═══ Log content ═══ */}
+      {/* ═══ Log content area with facets sidebar ═══ */}
       <div className="flex-1 min-h-0 flex relative">
-        {/* Facets popover — overlays log content, doesn't consume layout space */}
-        {facetsOpen && (
+        {/* ── Desktop: persistent sidebar alongside log content ── */}
+        {facetsOpen && !isMobile && (
+          <aside
+            className="facets-sidebar facets-sidebar-enter"
+            role="complementary"
+            aria-label="Log facets"
+          >
+            {facetPanelContent}
+          </aside>
+        )}
+
+        {/* ── Mobile: overlay (same as before) ── */}
+        {facetsOpen && isMobile && (
           <>
-            {/* Click-outside detection — positioned within the log area only */}
             <div
               className="absolute inset-0 z-30"
               onClick={() => setFacetsOpen(false)}
@@ -1247,52 +1002,12 @@ export function LogViewer({
               className={cn(
                 'absolute left-2 z-40 bg-surface-overlay border border-line shadow-xl rounded-lg overflow-auto',
                 'facet-popover-enter',
-                isMobile
-                  ? 'inset-x-2 top-2 bottom-2 max-h-none'
-                  : 'top-2 w-72 max-h-[min(520px,calc(100%-16px))]',
+                'inset-x-2 top-2 bottom-2 max-h-none',
               )}
               role="complementary"
               aria-label="Log facets"
             >
-              <div className="px-3 py-2.5 border-b border-line-subtle sticky top-0 bg-surface-overlay z-10">
-                <div className="flex items-center justify-between">
-                  <span className="text-[11px] font-semibold tracking-wider uppercase text-ink-tertiary">
-                    Facets
-                  </span>
-                  <div className="flex items-center gap-2">
-                    <span className="text-[11px] text-ink-tertiary tabular-nums">
-                      {facetsQuery.data
-                        ? facetsQuery.data.total
-                        : facetsQuery.isLoading
-                          ? '…'
-                          : 0}
-                    </span>
-                    <button
-                      onClick={() => setFacetsOpen(false)}
-                      className="w-6 h-6 flex items-center justify-center text-ink-tertiary hover:text-ink transition-colors rounded-sm"
-                      aria-label="Close facets"
-                    >
-                      <X className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                </div>
-                {facetsQuery.isError && (
-                  <div className="mt-1.5 text-[11px] text-status-red-text">
-                    Facets unavailable
-                  </div>
-                )}
-              </div>
-              {(facetsQuery.data?.filters ?? []).map((filter: FacetFilter) => (
-                <FacetSection
-                  key={filter.field}
-                  filter={filter}
-                  loading={facetsQuery.isLoading && !facetsQuery.data}
-                  onPick={(value: string) => toggleFacet(filter.field, value)}
-                  isActive={(value: string) =>
-                    isFacetValueActive(filter.field, value)
-                  }
-                />
-              ))}
+              {facetPanelContent}
             </aside>
           </>
         )}
@@ -1359,13 +1074,18 @@ export function LogViewer({
             </div>
           ) : logs.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full text-ink-secondary gap-3">
-              {levelFilter !== 'all' ? (
+              {derivedLevel ? (
                 <>
                   <span className="text-sm text-ink">
-                    No {levelFilter === 'error' ? 'errors' : 'warnings'}
+                    No {derivedLevel === 'error' ? 'errors' : 'warnings'}
                   </span>
                   <button
-                    onClick={() => setLevelFilter('all')}
+                    onClick={() => {
+                      const tok = parsedSearchTokens.tokens.find(
+                        (t) => t.field === 'level' && !t.negated,
+                      )
+                      if (tok) setSearchInput(removeToken(searchInput, tok.raw))
+                    }}
                     className="text-xs text-accent hover:underline px-3 py-1.5"
                   >
                     Show all logs
@@ -1498,38 +1218,5 @@ function Kbd({ children }: { children: React.ReactNode }) {
     <kbd className="inline-flex items-center justify-center h-4 min-w-[16px] px-1 bg-surface-sunken border border-line-subtle rounded-sm text-[10px] font-mono">
       {children}
     </kbd>
-  )
-}
-
-function FilterChip({
-  label,
-  tone = 'default',
-  onRemove,
-}: {
-  label: string
-  tone?: 'default' | 'red' | 'amber'
-  onRemove: () => void
-}) {
-  return (
-    <span
-      className={cn(
-        'inline-flex items-center gap-1 h-6 px-2 text-[11px] font-medium rounded-full border transition-colors',
-        tone === 'red' &&
-          'bg-status-red-tint border-status-red/20 text-status-red-text',
-        tone === 'amber' &&
-          'bg-status-amber-tint border-status-amber/20 text-status-amber-text',
-        tone === 'default' &&
-          'bg-surface-sunken border-line text-ink-secondary',
-      )}
-    >
-      <span className="font-mono">{label}</span>
-      <button
-        onClick={onRemove}
-        className="w-3.5 h-3.5 flex items-center justify-center rounded-full hover:bg-black/10 transition-colors"
-        aria-label={`Remove ${label} filter`}
-      >
-        <X className="w-2.5 h-2.5" />
-      </button>
-    </span>
   )
 }

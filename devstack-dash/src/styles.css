@@ -359,6 +359,48 @@
   border-left: 1px solid oklch(from var(--border-subtle) l c h / 50%);
 }
 
+/* ── Search bar token highlights ── */
+.search-overlay {
+  line-height: 1;
+}
+.search-token {
+  border-radius: 3px;
+  padding: 2px 0;
+}
+.search-token-accent {
+  background: oklch(from var(--accent) l c h / 12%);
+  color: var(--accent);
+}
+.search-token-red {
+  background: oklch(from var(--status-red) l c h / 12%);
+  color: var(--status-red-text);
+}
+.search-token-amber {
+  background: oklch(from var(--status-amber) l c h / 12%);
+  color: var(--status-amber-text);
+}
+.search-token-muted {
+  background: oklch(from var(--text-tertiary) l c h / 10%);
+  color: var(--text-secondary);
+}
+
+/* ── Facets sidebar ── */
+.facets-sidebar {
+  width: 256px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--border-default);
+  background: var(--surface-raised);
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+@keyframes facets-sidebar-in {
+  from { opacity: 0; transform: translateX(-8px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+.facets-sidebar-enter {
+  animation: facets-sidebar-in var(--duration-fast) var(--ease-out) both;
+}
+
 /* ── Column picker ── */
 @keyframes column-picker-in {
   from { opacity: 0; transform: scale(0.97) translateY(-4px); }

@@ -6,5 +6,6 @@ export { LogScrollControls } from "./log-scroll-controls";
 export { LogSkeleton } from "./log-skeleton";
 export { LogTableHeader } from "./log-table-header";
 export { ColumnPicker } from "./column-picker";
+export { SearchBar } from "./search-bar";
 export { highlightAll } from "./highlight";
 export type { ParsedLog, TimeRange } from "./types";
