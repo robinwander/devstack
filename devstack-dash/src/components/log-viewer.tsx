@@ -475,16 +475,7 @@ export function LogViewer({
       }
     }
 
-    const facetKeys = filters.map((filter) => filter.field)
-    const facetMatches = facetKeys.filter((field) => field.startsWith(lower))
-    for (const field of facetMatches) {
-      add({
-        kind: 'facet',
-        label: `${neg ? '-' : ''}${field}:`,
-        description: 'Filter',
-        insertText: `${neg ? '-' : ''}${field}:`,
-      })
-    }
+    const facetKeys = Array.from(new Set(filters.map((filter) => filter.field)))
     if (token.length === 0) {
       for (const field of facetKeys) {
         add({
@@ -492,6 +483,16 @@ export function LogViewer({
           label: `${field}:`,
           description: 'Filter',
           insertText: `${field}:`,
+        })
+      }
+    } else {
+      const facetMatches = facetKeys.filter((field) => field.startsWith(lower))
+      for (const field of facetMatches) {
+        add({
+          kind: 'facet',
+          label: `${neg ? '-' : ''}${field}:`,
+          description: 'Filter',
+          insertText: `${neg ? '-' : ''}${field}:`,
         })
       }
     }

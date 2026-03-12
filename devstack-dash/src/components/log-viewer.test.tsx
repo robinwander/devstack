@@ -8,6 +8,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { LogViewer } from './log-viewer'
@@ -336,6 +337,18 @@ describe('LogViewer facets + URL params', () => {
     const debugButton = screen.getByRole('button', { name: 'debug' })
     expect(debugButton.className).not.toContain('text-red')
     expect(debugButton.className).not.toContain('text-amber')
+  })
+
+  it('shows each facet suggestion only once for an empty search token', async () => {
+    renderViewer()
+
+    const search = await screen.findByLabelText('Search log lines')
+    fireEvent.focus(search)
+
+    const suggestions = await screen.findByRole('listbox', {
+      name: 'Search suggestions',
+    })
+    expect(within(suggestions).getAllByRole('option')).toHaveLength(4)
   })
 
   it('initializes filter state from URL params', async () => {
