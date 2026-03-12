@@ -4,9 +4,9 @@ import type { FacetFilter } from "@/lib/api";
 
 function facetValueTone(value: string): string {
   const lower = value.toLowerCase();
-  if (lower === "error") return "text-red-400";
-  if (lower === "warn" || lower === "warning") return "text-amber-400";
-  return "text-foreground/70";
+  if (lower === "error") return "text-status-red-text";
+  if (lower === "warn" || lower === "warning") return "text-status-amber-text";
+  return "text-ink-secondary";
 }
 
 function facetBarTone(value: string): string {
@@ -34,35 +34,33 @@ export function FacetSection({
   const isToggle = filter.kind === "toggle";
   const maxCount = values.length > 0 ? Math.max(...values.map((v) => v.count)) : 0;
 
+  const displayName = filter.field.replace(/_/g, " ");
+
   return (
-    <section className="px-3 py-2.5 border-b border-border/15" aria-label={`${filter.field} filter`}>
-      {/* Group label — uppercase tracking-wider (14.14) */}
+    <section className="px-3 py-2.5 border-b border-line-subtle" aria-label={`${displayName} filter`}>
       <div className="flex items-center justify-between mb-1.5">
-        <span className="text-[11px] font-semibold tracking-wider uppercase text-muted-foreground/50">
-          {filter.field}
+        <span className="text-[11px] font-semibold tracking-wider uppercase text-ink-tertiary">
+          {displayName}
         </span>
         {!isToggle && values.length > limit && (
           <button
             type="button"
             onClick={() => setExpanded((v) => !v)}
-            className="text-[11px] text-muted-foreground/35 hover:text-foreground transition-colors"
+            className="text-[11px] text-ink-tertiary hover:text-ink transition-colors"
           >
             {expanded ? "Less" : "More"}
           </button>
         )}
       </div>
 
-      {/* Empty state fix (13.2): show skeleton when loading, em dash when empty */}
       {values.length === 0 ? (
-        <div className="text-[11px] text-muted-foreground/35">
+        <div className="text-[11px] text-ink-tertiary">
           {loading ? (
             <div className="space-y-1.5">
               <div className="h-3 w-20 skeleton-shimmer" />
               <div className="h-3 w-14 skeleton-shimmer" />
             </div>
-          ) : (
-            "—"
-          )}
+          ) : "—"}
         </div>
       ) : isToggle ? (
         <div className="flex flex-wrap gap-1.5">
@@ -75,10 +73,10 @@ export function FacetSection({
                 onClick={() => onPick(value.value)}
                 aria-pressed={active}
                 className={cn(
-                  "px-2 h-7 text-xs font-mono border transition-colors min-w-[32px]",
+                  "px-2 h-7 text-xs font-mono border rounded-sm transition-colors min-w-[32px]",
                   active
-                    ? "bg-secondary border-border"
-                    : "border-border/40 hover:bg-secondary/40",
+                    ? "bg-surface-sunken border-line"
+                    : "border-line-subtle hover:bg-surface-sunken/50",
                 )}
               >
                 <span className={facetValueTone(value.value)}>{value.value}</span>
@@ -99,12 +97,11 @@ export function FacetSection({
                 aria-pressed={active}
                 className={cn(
                   "w-full flex items-center justify-between gap-3 px-2 py-1 relative",
-                  "text-xs font-mono transition-colors",
-                  active ? "bg-secondary/60" : "hover:bg-secondary/40",
+                  "text-xs font-mono rounded-sm transition-colors",
+                  active ? "bg-surface-sunken" : "hover:bg-surface-sunken/50",
                 )}
                 title={value.value}
               >
-                {/* Proportional bar (14.11) */}
                 <div
                   className={cn("facet-bar", facetBarTone(value.value))}
                   style={{ width: `${barWidth}%` }}
@@ -113,7 +110,7 @@ export function FacetSection({
                 <span className={cn("truncate relative", facetValueTone(value.value))}>
                   {value.value}
                 </span>
-                <span className="tabular-nums text-[11px] text-muted-foreground/45 shrink-0 relative">
+                <span className="tabular-nums text-[11px] text-ink-tertiary shrink-0 relative">
                   {value.count}
                 </span>
               </button>

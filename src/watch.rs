@@ -5,9 +5,9 @@ use std::time::UNIX_EPOCH;
 
 use anyhow::{Context, Result};
 use blake3::Hasher;
+use ignore::WalkBuilder;
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use ignore::overrides::OverrideBuilder;
-use ignore::WalkBuilder;
 
 pub fn compute_watch_hash(
     root: &Path,
@@ -40,12 +40,10 @@ pub fn compute_watch_hash(
             continue;
         }
         if let Some(ignore) = &ignore_matcher
-            && ignore
-                .matched_path_or_any_parents(path, is_dir)
-                .is_ignore()
-            {
-                continue;
-            }
+            && ignore.matched_path_or_any_parents(path, is_dir).is_ignore()
+        {
+            continue;
+        }
         files.insert(path.to_path_buf());
     }
 
@@ -70,7 +68,12 @@ fn build_overrides(
     watch: Option<&[String]>,
 ) -> Result<Option<ignore::overrides::Override>> {
     let watch = watch
-        .map(|patterns| patterns.iter().filter(|p| !p.trim().is_empty()).collect::<Vec<_>>())
+        .map(|patterns| {
+            patterns
+                .iter()
+                .filter(|p| !p.trim().is_empty())
+                .collect::<Vec<_>>()
+        })
         .filter(|patterns| !patterns.is_empty());
     let mut builder = OverrideBuilder::new(root);
     let mut any = false;
@@ -113,10 +116,11 @@ fn hash_path_metadata(hasher: &mut Hasher, display: &Path, path: &Path) -> Resul
         Ok(meta) => {
             hasher.update(&meta.len().to_le_bytes());
             if let Ok(modified) = meta.modified()
-                && let Ok(duration) = modified.duration_since(UNIX_EPOCH) {
-                    hasher.update(&duration.as_secs().to_le_bytes());
-                    hasher.update(&duration.subsec_nanos().to_le_bytes());
-                }
+                && let Ok(duration) = modified.duration_since(UNIX_EPOCH)
+            {
+                hasher.update(&duration.as_secs().to_le_bytes());
+                hasher.update(&duration.subsec_nanos().to_le_bytes());
+            }
             hash_file_contents(hasher, path)?;
         }
         Err(err) => {
@@ -158,12 +162,10 @@ mod tests {
         let file = root.join("file.txt");
         write_file(&file, "one");
 
-        let hash_a = compute_watch_hash(&root, None, &[], &[], b"config")
-        .unwrap();
+        let hash_a = compute_watch_hash(&root, None, &[], &[], b"config").unwrap();
 
         write_file(&file, "two");
-        let hash_b = compute_watch_hash(&root, None, &[], &[], b"config")
-        .unwrap();
+        let hash_b = compute_watch_hash(&root, None, &[], &[], b"config").unwrap();
         assert_ne!(hash_a, hash_b);
     }
 
@@ -217,11 +219,9 @@ mod tests {
 
         let ignored = root.join("ignored.txt");
         write_file(&ignored, "one");
-        let hash_a = compute_watch_hash(&root, None, &[], &[], b"config")
-        .unwrap();
+        let hash_a = compute_watch_hash(&root, None, &[], &[], b"config").unwrap();
         write_file(&ignored, "two");
-        let hash_b = compute_watch_hash(&root, None, &[], &[], b"config")
-        .unwrap();
+        let hash_b = compute_watch_hash(&root, None, &[], &[], b"config").unwrap();
         assert_eq!(hash_a, hash_b);
     }
 
@@ -233,24 +233,12 @@ mod tests {
         write_file(&root.join("src").join("lib.rs"), "one");
         write_file(&root.join("Cargo.toml"), "one");
 
-        let hash_a = compute_watch_hash(
-            &root,
-            Some(&["src/**".to_string()]),
-            &[],
-            &[],
-            b"config",
-        )
-        .unwrap();
+        let hash_a =
+            compute_watch_hash(&root, Some(&["src/**".to_string()]), &[], &[], b"config").unwrap();
 
         write_file(&root.join("Cargo.toml"), "two");
-        let hash_b = compute_watch_hash(
-            &root,
-            Some(&["src/**".to_string()]),
-            &[],
-            &[],
-            b"config",
-        )
-        .unwrap();
+        let hash_b =
+            compute_watch_hash(&root, Some(&["src/**".to_string()]), &[], &[], b"config").unwrap();
         assert_eq!(hash_a, hash_b);
     }
 

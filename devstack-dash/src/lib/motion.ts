@@ -1,18 +1,39 @@
-import type { Variants } from "framer-motion";
+import type { Variants, Transition } from "framer-motion";
+
+/** Motion durations — use consistently */
+export const duration = {
+  instant: 0.1,
+  fast: 0.15,
+  normal: 0.2,
+  slow: 0.3,
+} as const;
+
+/** Standard easing curves */
+export const easing = {
+  out: [0.16, 1, 0.3, 1] as [number, number, number, number],
+  in: [0.7, 0, 0.84, 0] as [number, number, number, number],
+  inOut: [0.65, 0, 0.35, 1] as [number, number, number, number],
+};
 
 export const springs = {
   snappy: { type: "spring" as const, stiffness: 400, damping: 25, mass: 0.5 },
   default: { type: "spring" as const, stiffness: 300, damping: 30, mass: 1 },
-  gentle: { type: "spring" as const, stiffness: 120, damping: 14, mass: 1 },
-  bouncy: { type: "spring" as const, stiffness: 600, damping: 15, mass: 1 },
+};
+
+export const fadeIn: Variants = {
+  hidden: { opacity: 0 },
+  visible: {
+    opacity: 1,
+    transition: { duration: duration.normal, ease: easing.out } as Transition,
+  },
 };
 
 export const fadeInUp: Variants = {
-  hidden: { opacity: 0, y: 12 },
+  hidden: { opacity: 0, y: 8 },
   visible: {
     opacity: 1,
     y: 0,
-    transition: { duration: 0.3, ease: "easeOut" },
+    transition: { duration: duration.slow, ease: easing.out } as Transition,
   },
 };
 
@@ -21,60 +42,26 @@ export const staggerContainer: Variants = {
   visible: {
     opacity: 1,
     transition: {
-      staggerChildren: 0.06,
-      delayChildren: 0.1,
+      staggerChildren: 0.04,
+      delayChildren: 0.05,
     },
   },
 };
 
 export const staggerItem: Variants = {
-  hidden: { opacity: 0, y: 8 },
+  hidden: { opacity: 0, y: 6 },
   visible: {
     opacity: 1,
     y: 0,
-    transition: { duration: 0.25, ease: "easeOut" },
+    transition: { duration: duration.normal, ease: easing.out } as Transition,
   },
 };
 
 export const scaleIn: Variants = {
-  hidden: { opacity: 0, scale: 0.9 },
+  hidden: { opacity: 0, scale: 0.97 },
   visible: {
     opacity: 1,
     scale: 1,
-    transition: springs.snappy,
-  },
-};
-
-export const pulse: Variants = {
-  pulse: {
-    scale: [1, 1.15, 1],
-    opacity: [1, 0.8, 1],
-    transition: {
-      duration: 2,
-      repeat: Infinity,
-      ease: "easeInOut",
-    },
-  },
-};
-
-export const spin: Variants = {
-  spin: {
-    rotate: 360,
-    transition: {
-      duration: 1.2,
-      repeat: Infinity,
-      ease: "linear",
-    },
-  },
-};
-
-export const blink: Variants = {
-  blink: {
-    opacity: [1, 0.3, 1],
-    transition: {
-      duration: 1,
-      repeat: Infinity,
-      ease: "easeInOut",
-    },
+    transition: { duration: duration.fast, ease: easing.out } as Transition,
   },
 };

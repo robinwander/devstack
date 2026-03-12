@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use serde::de::{self, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 
@@ -52,10 +52,7 @@ where
                 let mut values = BTreeMap::new();
                 while let Some((key, value)) = map.next_entry::<K, V>()? {
                     if values.contains_key(&key) {
-                        return Err(de::Error::custom(format!(
-                            "duplicate key {:?}",
-                            key
-                        )));
+                        return Err(de::Error::custom(format!("duplicate key {:?}", key)));
                     }
                     values.insert(key, value);
                 }
@@ -192,8 +189,7 @@ impl ConfigFile {
                 match serde_yaml::from_slice(&raw) {
                     Ok(cfg) => cfg,
                     Err(_) => {
-                        let text = std::str::from_utf8(&raw)
-                            .context("read toml as utf-8")?;
+                        let text = std::str::from_utf8(&raw).context("read toml as utf-8")?;
                         toml::from_str(text).context("parse toml")?
                     }
                 }
@@ -266,16 +262,18 @@ impl ConfigFile {
 
     fn validate(&self) -> Result<()> {
         if let Some(default_stack) = &self.default_stack
-            && !self.stacks.as_map().contains_key(default_stack) {
-                return Err(anyhow!(
-                    "default_stack '{default_stack}' not found in stacks"
-                ));
-            }
+            && !self.stacks.as_map().contains_key(default_stack)
+        {
+            return Err(anyhow!(
+                "default_stack '{default_stack}' not found in stacks"
+            ));
+        }
         for (stack_name, stack) in self.stacks.as_map() {
             let services = stack.services.as_map();
             for (svc_name, svc) in services {
-                validate_name_for_path_component("service", svc_name)
-                    .map_err(|err| anyhow!("invalid service name in stack '{stack_name}': {err}"))?;
+                validate_name_for_path_component("service", svc_name).map_err(|err| {
+                    anyhow!("invalid service name in stack '{stack_name}': {err}")
+                })?;
                 validate_service_port(stack_name, svc_name, svc)?;
                 validate_service_readiness(stack_name, svc_name, svc)?;
                 validate_service_init_tasks(stack_name, svc_name, svc, self.tasks.as_ref())?;
@@ -291,8 +289,7 @@ impl ConfigFile {
                 }
             }
             // Validate no circular dependencies via topological sort.
-            topo_sort(services)
-                .map_err(|err| anyhow!("stack '{stack_name}': {err}"))?;
+            topo_sort(services).map_err(|err| anyhow!("stack '{stack_name}': {err}"))?;
         }
         if let Some(globals) = &self.globals {
             for (svc_name, svc) in globals.as_map() {
@@ -315,12 +312,13 @@ impl ConfigFile {
 
 fn validate_service_port(stack: &str, service: &str, svc: &ServiceConfig) -> Result<()> {
     if let Some(PortConfig::None(value)) = &svc.port
-        && value != "none" {
-            return Err(anyhow!(
-                "invalid port value '{}' for {stack}.{service} (use integer or 'none')",
-                value
-            ));
-        }
+        && value != "none"
+    {
+        return Err(anyhow!(
+            "invalid port value '{}' for {stack}.{service} (use integer or 'none')",
+            value
+        ));
+    }
     Ok(())
 }
 
@@ -375,10 +373,7 @@ pub fn topo_sort(services: &BTreeMap<String, ServiceConfig>) -> Result<Vec<Strin
                 return Err(anyhow!("service {name} depends on missing {dep}"));
             }
             dep_set.insert(dep.clone());
-            reverse
-                .entry(dep.clone())
-                .or_default()
-                .insert(name.clone());
+            reverse.entry(dep.clone()).or_default().insert(name.clone());
         }
         deps.insert(name.clone(), dep_set);
     }
@@ -422,7 +417,9 @@ impl ServiceConfig {
     }
 
     pub fn cwd_or(&self, project_dir: &Path) -> PathBuf {
-        self.cwd.clone().unwrap_or_else(|| project_dir.to_path_buf())
+        self.cwd
+            .clone()
+            .unwrap_or_else(|| project_dir.to_path_buf())
     }
 
     pub fn readiness_kind(&self, has_port: bool) -> Result<ReadinessKind> {
@@ -478,7 +475,9 @@ impl ServiceConfig {
                     found.push("exit");
                 }
                 if found.is_empty() {
-                    return Err(anyhow!("readiness must specify exactly one check (found none)"));
+                    return Err(anyhow!(
+                        "readiness must specify exactly one check (found none)"
+                    ));
                 }
                 return Err(anyhow!(
                     "readiness must specify exactly one check (found: {})",
@@ -953,7 +952,11 @@ cmd = "echo task"
         let nested = root.join("a").join("b");
         fs::create_dir_all(&nested).unwrap();
         let config = root.join("devstack.toml");
-        fs::write(&config, "version = 1\n[stacks.app.services.api]\ncmd = \"echo\"").unwrap();
+        fs::write(
+            &config,
+            "version = 1\n[stacks.app.services.api]\ncmd = \"echo\"",
+        )
+        .unwrap();
         let found = ConfigFile::find_nearest_path(&nested).unwrap();
         assert_eq!(found, config);
     }
@@ -965,7 +968,11 @@ cmd = "echo task"
         let yaml = root.join("devstack.yml");
         let toml = root.join("devstack.toml");
         fs::write(&yaml, "version: 1\nstacks: {}").unwrap();
-        fs::write(&toml, "version = 1\n[stacks.app.services.api]\ncmd = \"echo\"").unwrap();
+        fs::write(
+            &toml,
+            "version = 1\n[stacks.app.services.api]\ncmd = \"echo\"",
+        )
+        .unwrap();
         let found = ConfigFile::find_nearest_path(root).unwrap();
         assert_eq!(found, toml);
     }

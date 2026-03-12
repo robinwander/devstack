@@ -6,16 +6,16 @@ use std::time::SystemTime;
 use anyhow::{Context, Result};
 use regex::Regex;
 use std::sync::LazyLock;
-use time::{format_description::well_known::Rfc3339, OffsetDateTime};
+use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
 static ANSI_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(concat!(
-        r"\x1b",       // ESC
+        r"\x1b", // ESC
         r"(?:",
-        r"\[[0-9;?]*[A-Za-z]",   // CSI sequences: ESC [ ... letter (colors, cursor, etc.)
-        r"|\][^\x07\x1b]*(?:\x07|\x1b\\)",  // OSC sequences: ESC ] ... BEL or ESC \
-        r"|\([A-B]",              // charset selection: ESC ( A/B
-        r"|[=>NOMDEHcZ78]",      // simple escape codes
+        r"\[[0-9;?]*[A-Za-z]", // CSI sequences: ESC [ ... letter (colors, cursor, etc.)
+        r"|\][^\x07\x1b]*(?:\x07|\x1b\\)", // OSC sequences: ESC ] ... BEL or ESC \
+        r"|\([A-B]",           // charset selection: ESC ( A/B
+        r"|[=>NOMDEHcZ78]",    // simple escape codes
         r")",
     ))
     .unwrap()
@@ -76,25 +76,23 @@ pub fn now_rfc3339() -> String {
 
 pub fn format_rfc3339(ts: SystemTime) -> String {
     let dt: OffsetDateTime = ts.into();
-    dt.format(&Rfc3339).unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
+    dt.format(&Rfc3339)
+        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
 }
 
 pub fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
-    let dir = path
-        .parent()
-        .context("atomic_write requires parent dir")?;
+    let dir = path.parent().context("atomic_write requires parent dir")?;
     fs::create_dir_all(dir).with_context(|| format!("create dir {dir:?}"))?;
 
     let tmp_path = path.with_extension("tmp");
     {
-        let mut file = File::create(&tmp_path)
-            .with_context(|| format!("create tmp file {tmp_path:?}"))?;
+        let mut file =
+            File::create(&tmp_path).with_context(|| format!("create tmp file {tmp_path:?}"))?;
         file.write_all(data)
             .with_context(|| format!("write tmp file {tmp_path:?}"))?;
         file.sync_all().ok();
     }
-    fs::rename(&tmp_path, path)
-        .with_context(|| format!("rename tmp to {path:?}"))?;
+    fs::rename(&tmp_path, path).with_context(|| format!("rename tmp to {path:?}"))?;
     // Best-effort fsync on directory to persist rename.
     if let Ok(dir_file) = File::open(dir) {
         let _ = dir_file.sync_all();
@@ -115,9 +113,10 @@ pub fn ensure_dir(path: &Path) -> io::Result<()> {
 
 pub fn expand_home(path: &Path) -> PathBuf {
     if let Ok(stripped) = path.strip_prefix("~")
-        && let Ok(home) = std::env::var("HOME") {
-            return PathBuf::from(home).join(stripped);
-        }
+        && let Ok(home) = std::env::var("HOME")
+    {
+        return PathBuf::from(home).join(stripped);
+    }
     path.to_path_buf()
 }
 
@@ -127,7 +126,10 @@ mod tests {
 
     #[test]
     fn strip_ansi_removes_color_codes() {
-        assert_eq!(strip_ansi("\x1b[31mERROR\x1b[0m: something failed"), "ERROR: something failed");
+        assert_eq!(
+            strip_ansi("\x1b[31mERROR\x1b[0m: something failed"),
+            "ERROR: something failed"
+        );
         assert_eq!(strip_ansi("\x1b[1;32m✓\x1b[0m ready"), "✓ ready");
     }
 
@@ -146,7 +148,10 @@ mod tests {
     #[test]
     fn strip_ansi_handles_osc_sequences() {
         assert_eq!(strip_ansi("\x1b]0;window title\x07text"), "text");
-        assert_eq!(strip_ansi("\x1b]8;;https://example.com\x1b\\link\x1b]8;;\x1b\\"), "link");
+        assert_eq!(
+            strip_ansi("\x1b]8;;https://example.com\x1b\\link\x1b]8;;\x1b\\"),
+            "link"
+        );
     }
 
     #[test]

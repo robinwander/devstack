@@ -5,8 +5,7 @@ use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
 static BRACKET_LEVEL_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)^\s*\[(error|fatal|panic|warn(?:ing)?|info|debug|trace)\](?:\s|$)")
-        .unwrap()
+    Regex::new(r"(?i)^\s*\[(error|fatal|panic|warn(?:ing)?|info|debug|trace)\](?:\s|$)").unwrap()
 });
 
 static PREFIX_LEVEL_RE: LazyLock<Regex> = LazyLock::new(|| {
@@ -248,10 +247,7 @@ pub(crate) fn classify_line_level(line: &str) -> String {
         // No explicit level — detect from msg content and stream.
         // This handles devstack's own wrapper format where the service output
         // (which may contain level indicators) is captured in the "msg" field.
-        let msg = map
-            .get("msg")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let msg = map.get("msg").and_then(|v| v.as_str()).unwrap_or("");
         let stream = map
             .get("stream")
             .and_then(|v| v.as_str())
@@ -315,11 +311,11 @@ fn contains_request_for_endpoint(message_lower: &str, method: &str, endpoint: &s
     let mut offset = 0;
     while let Some(found) = message_lower[offset..].find(&needle) {
         let start = offset + found;
-        let boundary = message_lower
-            .as_bytes()
-            .get(start + needle.len())
-            .copied();
-        if matches!(boundary, None | Some(b' ') | Some(b'?') | Some(b'/') | Some(b'\"') | Some(b'\'')) {
+        let boundary = message_lower.as_bytes().get(start + needle.len()).copied();
+        if matches!(
+            boundary,
+            None | Some(b' ') | Some(b'?') | Some(b'/') | Some(b'\"') | Some(b'\'')
+        ) {
             return true;
         }
         offset = start.saturating_add(1);
@@ -333,9 +329,16 @@ mod tests {
 
     #[test]
     fn json_time_level_and_msg_are_extracted() {
-        let line = r#"{"time":"2025-01-01T00:00:00Z","stream":"stderr","level":"error","msg":"boom"}"#;
-        assert_eq!(extract_timestamp_str(line).as_deref(), Some("2025-01-01T00:00:00Z"));
-        assert_eq!(extract_log_content(line), ("stderr".to_string(), "boom".to_string()));
+        let line =
+            r#"{"time":"2025-01-01T00:00:00Z","stream":"stderr","level":"error","msg":"boom"}"#;
+        assert_eq!(
+            extract_timestamp_str(line).as_deref(),
+            Some("2025-01-01T00:00:00Z")
+        );
+        assert_eq!(
+            extract_log_content(line),
+            ("stderr".to_string(), "boom".to_string())
+        );
         assert_eq!(classify_line_level(line), "error");
     }
 
@@ -343,7 +346,10 @@ mod tests {
     fn json_extracts_ts_aliases() {
         let line_ts = r#"{"ts":"2025-01-01T00:00:01Z","msg":"hello"}"#;
         let line_timestamp = r#"{"timestamp":"2025-01-01T00:00:02Z","msg":"hello"}"#;
-        assert_eq!(extract_timestamp_str(line_ts).as_deref(), Some("2025-01-01T00:00:01Z"));
+        assert_eq!(
+            extract_timestamp_str(line_ts).as_deref(),
+            Some("2025-01-01T00:00:01Z")
+        );
         assert_eq!(
             extract_timestamp_str(line_timestamp).as_deref(),
             Some("2025-01-01T00:00:02Z")
@@ -402,15 +408,18 @@ mod tests {
         let error_line = r#"{"msg":"[ERROR] Something went wrong!","stream":"stderr","time":"2025-01-01T00:00:00Z"}"#;
         assert_eq!(classify_line_level(error_line), "error");
 
-        let warn_line = r#"{"msg":"[WARN] Disk space low","stream":"stderr","time":"2025-01-01T00:00:00Z"}"#;
+        let warn_line =
+            r#"{"msg":"[WARN] Disk space low","stream":"stderr","time":"2025-01-01T00:00:00Z"}"#;
         assert_eq!(classify_line_level(warn_line), "warn");
 
         // stderr with no level indicators in msg → "warn"
-        let stderr_info = r#"{"msg":"some output","stream":"stderr","time":"2025-01-01T00:00:00Z"}"#;
+        let stderr_info =
+            r#"{"msg":"some output","stream":"stderr","time":"2025-01-01T00:00:00Z"}"#;
         assert_eq!(classify_line_level(stderr_info), "warn");
 
         // stdout with no level indicators → "info"
-        let stdout_info = r#"{"msg":"server started","stream":"stdout","time":"2025-01-01T00:00:00Z"}"#;
+        let stdout_info =
+            r#"{"msg":"server started","stream":"stdout","time":"2025-01-01T00:00:00Z"}"#;
         assert_eq!(classify_line_level(stdout_info), "info");
 
         // Traceback pattern in msg
@@ -421,7 +430,10 @@ mod tests {
     #[test]
     fn bracket_format_still_parses() {
         let line = "[2025-01-01T00:00:00Z] [stderr] Warning: old format";
-        assert_eq!(extract_timestamp_str(line).as_deref(), Some("2025-01-01T00:00:00Z"));
+        assert_eq!(
+            extract_timestamp_str(line).as_deref(),
+            Some("2025-01-01T00:00:00Z")
+        );
         assert_eq!(
             extract_log_content(line),
             ("stderr".to_string(), "Warning: old format".to_string())

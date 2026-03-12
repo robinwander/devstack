@@ -28,7 +28,12 @@ pub struct UnitProperties {
 }
 
 impl UnitProperties {
-    pub fn new(description: String, working_directory: &Path, environment: Vec<String>, exec_start: ExecStart) -> Self {
+    pub fn new(
+        description: String,
+        working_directory: &Path,
+        environment: Vec<String>,
+        exec_start: ExecStart,
+    ) -> Self {
         Self {
             description,
             working_directory: working_directory.to_string_lossy().to_string(),
@@ -74,9 +79,9 @@ pub trait SystemdManager: Send + Sync {
 }
 
 #[cfg(target_os = "linux")]
-use systemd_zbus::{ManagerProxy, Mode, ServiceProxy, UnitProxy};
-#[cfg(target_os = "linux")]
 use systemd_zbus::zbus::{Connection, zvariant::Value};
+#[cfg(target_os = "linux")]
+use systemd_zbus::{ManagerProxy, Mode, ServiceProxy, UnitProxy};
 
 #[cfg(target_os = "linux")]
 #[derive(Clone)]
@@ -123,7 +128,10 @@ impl SystemdManager for RealSystemd {
             ("RemainAfterExit", Value::new(props.remain_after_exit)),
             ("Restart", Value::new(props.restart)),
             ("RestartUSec", Value::new(props.restart_usec)),
-            ("StartLimitIntervalUSec", Value::new(props.start_limit_interval_usec)),
+            (
+                "StartLimitIntervalUSec",
+                Value::new(props.start_limit_interval_usec),
+            ),
             ("StartLimitBurst", Value::new(props.start_limit_burst)),
         ];
 

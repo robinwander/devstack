@@ -1,11 +1,13 @@
 use std::collections::{BTreeMap, HashSet};
 use std::net::TcpListener;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 
 use crate::config::{PortConfig, ServiceConfig};
 
-pub fn allocate_ports(services: &BTreeMap<String, ServiceConfig>) -> Result<BTreeMap<String, Option<u16>>> {
+pub fn allocate_ports(
+    services: &BTreeMap<String, ServiceConfig>,
+) -> Result<BTreeMap<String, Option<u16>>> {
     let mut allocated = BTreeMap::new();
     let mut used = HashSet::new();
 

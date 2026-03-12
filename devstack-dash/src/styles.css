@@ -1,95 +1,273 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "@fontsource-variable/outfit";
-@import "vanilla-jsoneditor/themes/jse-theme-dark.css";
 
 @custom-variant dark (&:is(.dark *));
 
+/* ═══════════════════════════════════════════════════════════════════
+   DESIGN TOKENS — Light Mode (default)
+   All colors, spacing, typography defined here.
+   Dark mode overrides only the CSS custom properties.
+   ═══════════════════════════════════════════════════════════════════ */
+
 :root {
-    --background: oklch(1 0 0);
-    --foreground: oklch(0.145 0 0);
-    --card: oklch(1 0 0);
-    --card-foreground: oklch(0.145 0 0);
-    --popover: oklch(1 0 0);
-    --popover-foreground: oklch(0.145 0 0);
-    --primary: oklch(0.205 0 0);
-    --primary-foreground: oklch(0.985 0 0);
-    --secondary: oklch(0.97 0 0);
-    --secondary-foreground: oklch(0.205 0 0);
-    --muted: oklch(0.97 0 0);
-    --muted-foreground: oklch(0.556 0 0);
-    --accent: oklch(0.205 0 0);
-    --accent-foreground: oklch(0.985 0 0);
-    --destructive: oklch(0.58 0.22 27);
-    --border: oklch(0.922 0 0);
-    --input: oklch(0.922 0 0);
-    --ring: oklch(0.708 0 0);
-    --radius: 0;
+  /* ── Surfaces ── */
+  --surface-base:     oklch(0.975 0.004 70);
+  --surface-raised:   oklch(1.000 0.000 0);
+  --surface-sunken:   oklch(0.955 0.005 70);
+  --surface-overlay:  oklch(1.000 0.000 0);
+
+  /* ── Text hierarchy: 3 levels, no opacity ── */
+  --text-primary:     oklch(0.18 0.005 260);
+  --text-secondary:   oklch(0.42 0.008 260);
+  --text-tertiary:    oklch(0.50 0.006 260);
+
+  /* ── Borders ── */
+  --border-default:   oklch(0.88 0.006 70);
+  --border-subtle:    oklch(0.92 0.004 70);
+
+  /* ── Semantic: status + log levels ── */
+  --status-green:        oklch(0.50 0.14 155);
+  --status-green-tint:   oklch(0.50 0.14 155 / 8%);
+  --status-green-text:   oklch(0.38 0.10 155);
+
+  --status-amber:        oklch(0.55 0.14 75);
+  --status-amber-tint:   oklch(0.55 0.14 75 / 8%);
+  --status-amber-text:   oklch(0.44 0.12 75);
+
+  --status-red:          oklch(0.50 0.18 25);
+  --status-red-tint:     oklch(0.50 0.18 25 / 7%);
+  --status-red-text:     oklch(0.44 0.16 25);
+
+  --status-blue:         oklch(0.52 0.12 255);
+  --status-blue-tint:    oklch(0.52 0.12 255 / 8%);
+
+  /* ── Interactive accent ── */
+  --accent:            oklch(0.50 0.10 255);
+  --accent-hover:      oklch(0.44 0.12 255);
+  --accent-ring:       oklch(0.50 0.10 255 / 35%);
+
+  /* ── Service colors: 8 perceptually-balanced hues ──
+     Light mode: L=0.50, high enough chroma for distinction, meets 4.5:1 on white.
+     Dark mode overrides these to L=0.72 for readability on dark backgrounds. */
+  --svc-0: oklch(0.50 0.12 240);   /* Steel blue */
+  --svc-1: oklch(0.50 0.12 300);   /* Iris */
+  --svc-2: oklch(0.50 0.12 60);    /* Bronze */
+  --svc-3: oklch(0.50 0.12 15);    /* Coral */
+  --svc-4: oklch(0.50 0.12 175);   /* Sage */
+  --svc-5: oklch(0.50 0.12 335);   /* Orchid */
+  --svc-6: oklch(0.50 0.12 125);   /* Moss */
+  --svc-7: oklch(0.50 0.12 275);   /* Plum */
+
+  /* ── Shadcn compat layer ── */
+  --background: var(--surface-base);
+  --foreground: var(--text-primary);
+  --card: var(--surface-raised);
+  --card-foreground: var(--text-primary);
+  --popover: var(--surface-overlay);
+  --popover-foreground: var(--text-primary);
+  --primary: var(--accent);
+  --primary-foreground: oklch(1.000 0 0);
+  --secondary: var(--surface-sunken);
+  --secondary-foreground: var(--text-primary);
+  --muted: var(--surface-sunken);
+  --muted-foreground: var(--text-secondary);
+  --accent-foreground: oklch(1.000 0 0);
+  --destructive: var(--status-red);
+  --border: var(--border-default);
+  --input: var(--border-default);
+  --ring: var(--accent);
+
+  /* ── Radius ── */
+  --radius: 5px;
+  --radius-xs: 3px;
+
+  /* ── Typography sizes ── */
+  --text-size-xs:   0.6875rem;  /* 11px — metadata, timestamps, line numbers */
+  --text-size-sm:   0.8125rem;  /* 13px — log content, secondary UI */
+  --text-size-base: 0.875rem;   /* 14px — primary UI */
+  --text-size-lg:   1.0rem;     /* 16px — section headings */
+  --text-size-xl:   1.25rem;    /* 20px — page headings */
+
+  /* ── Timing ── */
+  --duration-instant: 100ms;
+  --duration-fast:    150ms;
+  --duration-normal:  200ms;
+  --duration-slow:    300ms;
+
+  --ease-out:    cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in:     cubic-bezier(0.7, 0, 0.84, 0);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
 }
 
+/* ═══════════════════════════════════════════════════════════════════
+   DARK MODE — token overrides only
+   ═══════════════════════════════════════════════════════════════════ */
 .dark {
-    --background: oklch(0.07 0.003 260);
-    --foreground: oklch(0.92 0 0);
-    --card: oklch(0.09 0.003 260);
-    --card-foreground: oklch(0.92 0 0);
-    --popover: oklch(0.11 0.003 260);
-    --popover-foreground: oklch(0.92 0 0);
-    --primary: oklch(0.78 0.12 180);
-    --primary-foreground: oklch(0.10 0 0);
-    --secondary: oklch(0.14 0.005 260);
-    --secondary-foreground: oklch(0.92 0 0);
-    --muted: oklch(0.14 0.005 260);
-    --muted-foreground: oklch(0.50 0 0);
-    --accent: oklch(0.78 0.12 180);
-    --accent-foreground: oklch(0.10 0 0);
-    --destructive: oklch(0.65 0.2 25);
-    --border: oklch(1 0 0 / 8%);
-    --input: oklch(1 0 0 / 10%);
-    --ring: oklch(0.5 0 0);
-    --surface-1: oklch(0.10 0.004 260);
-    --surface-2: oklch(0.12 0.005 260);
-    --glow-primary: oklch(0.78 0.12 180 / 15%);
+  --surface-base:     oklch(0.140 0.006 260);
+  --surface-raised:   oklch(0.170 0.007 260);
+  --surface-sunken:   oklch(0.110 0.005 260);
+  --surface-overlay:  oklch(0.190 0.008 260);
+
+  --text-primary:     oklch(0.92 0.005 80);
+  --text-secondary:   oklch(0.64 0.007 260);
+  --text-tertiary:    oklch(0.48 0.006 260);
+
+  --border-default:   oklch(1 0 0 / 10%);
+  --border-subtle:    oklch(1 0 0 / 6%);
+
+  --status-green:        oklch(0.65 0.17 155);
+  --status-green-tint:   oklch(0.65 0.17 155 / 8%);
+  --status-green-text:   oklch(0.65 0.17 155);
+
+  --status-amber:        oklch(0.76 0.14 75);
+  --status-amber-tint:   oklch(0.76 0.14 75 / 8%);
+  --status-amber-text:   oklch(0.76 0.14 75);
+
+  --status-red:          oklch(0.68 0.18 25);
+  --status-red-tint:     oklch(0.68 0.18 25 / 7%);
+  --status-red-text:     oklch(0.68 0.18 25);
+
+  --status-blue:         oklch(0.62 0.12 255);
+  --status-blue-tint:    oklch(0.62 0.12 255 / 8%);
+
+  --accent:            oklch(0.62 0.10 255);
+  --accent-hover:      oklch(0.56 0.12 255);
+  --accent-ring:       oklch(0.62 0.10 255 / 35%);
+
+  /* Service colors — brighter for dark backgrounds */
+  --svc-0: oklch(0.72 0.12 240);
+  --svc-1: oklch(0.72 0.12 300);
+  --svc-2: oklch(0.72 0.12 60);
+  --svc-3: oklch(0.72 0.12 15);
+  --svc-4: oklch(0.72 0.12 175);
+  --svc-5: oklch(0.72 0.12 335);
+  --svc-6: oklch(0.72 0.12 125);
+  --svc-7: oklch(0.72 0.12 275);
+
+  /* Shadcn compat */
+  --background: var(--surface-base);
+  --foreground: var(--text-primary);
+  --card: var(--surface-raised);
+  --card-foreground: var(--text-primary);
+  --popover: var(--surface-overlay);
+  --popover-foreground: var(--text-primary);
+  --primary: var(--accent);
+  --primary-foreground: oklch(1.000 0 0);
+  --secondary: oklch(1 0 0 / 6%);
+  --secondary-foreground: var(--text-primary);
+  --muted: oklch(1 0 0 / 5%);
+  --muted-foreground: var(--text-secondary);
+  --accent-foreground: oklch(1.000 0 0);
+  --destructive: var(--status-red);
+  --border: var(--border-default);
+  --input: var(--border-default);
+  --ring: var(--accent);
 }
 
+/* ═══════════════════════════════════════════════════════════════════
+   TAILWIND THEME — register tokens as utilities
+   ═══════════════════════════════════════════════════════════════════ */
 @theme inline {
-    --font-sans: 'Outfit Variable', 'Outfit', sans-serif;
-    --font-mono: 'JetBrains Mono', 'Fira Code', 'SF Mono', ui-monospace, monospace;
-    --color-ring: var(--ring);
-    --color-border: var(--border);
-    --color-input: var(--input);
-    --color-destructive: var(--destructive);
-    --color-accent-foreground: var(--accent-foreground);
-    --color-accent: var(--accent);
-    --color-muted-foreground: var(--muted-foreground);
-    --color-muted: var(--muted);
-    --color-secondary-foreground: var(--secondary-foreground);
-    --color-secondary: var(--secondary);
-    --color-primary-foreground: var(--primary-foreground);
-    --color-primary: var(--primary);
-    --color-popover-foreground: var(--popover-foreground);
-    --color-popover: var(--popover);
-    --color-card-foreground: var(--card-foreground);
-    --color-card: var(--card);
-    --color-foreground: var(--foreground);
-    --color-background: var(--background);
-    --color-surface-1: var(--surface-1);
-    --color-surface-2: var(--surface-2);
-    --color-glow-primary: var(--glow-primary);
-    --radius-sm: calc(var(--radius) - 4px);
-    --radius-md: calc(var(--radius) - 2px);
-    --radius-lg: var(--radius);
-    --radius-xl: calc(var(--radius) + 4px);
-    --radius-2xl: calc(var(--radius) + 8px);
-    --radius-3xl: calc(var(--radius) + 12px);
-    --radius-4xl: calc(var(--radius) + 16px);
+  /* Fonts */
+  --font-sans: 'Outfit Variable', 'Outfit', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', 'SF Mono', ui-monospace, monospace;
+
+  /* Semantic colors — usable as text-ink, bg-surface-raised, etc. */
+  --color-ink:           var(--text-primary);
+  --color-ink-secondary: var(--text-secondary);
+  --color-ink-tertiary:  var(--text-tertiary);
+
+  --color-surface-base:    var(--surface-base);
+  --color-surface-raised:  var(--surface-raised);
+  --color-surface-sunken:  var(--surface-sunken);
+  --color-surface-overlay: var(--surface-overlay);
+
+  --color-line:        var(--border-default);
+  --color-line-subtle: var(--border-subtle);
+
+  --color-status-green:      var(--status-green);
+  --color-status-green-tint: var(--status-green-tint);
+  --color-status-green-text: var(--status-green-text);
+  --color-status-amber:      var(--status-amber);
+  --color-status-amber-tint: var(--status-amber-tint);
+  --color-status-amber-text: var(--status-amber-text);
+  --color-status-red:        var(--status-red);
+  --color-status-red-tint:   var(--status-red-tint);
+  --color-status-red-text:   var(--status-red-text);
+  --color-status-blue:       var(--status-blue);
+  --color-status-blue-tint:  var(--status-blue-tint);
+
+  --color-accent:       var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-ring:  var(--accent-ring);
+
+  /* Shadcn compat */
+  --color-ring: var(--ring);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-foreground: var(--foreground);
+  --color-background: var(--background);
+
+  /* Radius scale */
+  --radius-sm: var(--radius-xs);
+  --radius-md: var(--radius);
+  --radius-lg: calc(var(--radius) + 2px);
+  --radius-xl: calc(var(--radius) + 5px);
+  --radius-2xl: calc(var(--radius) + 8px);
+  --radius-3xl: calc(var(--radius) + 12px);
+  --radius-4xl: calc(var(--radius) + 16px);
+
+  /* Typography tokens */
+  --text-size-xs: var(--text-size-xs);
+  --text-size-sm: var(--text-size-sm);
+  --text-size-base: var(--text-size-base);
+  --text-size-lg: var(--text-size-lg);
+  --text-size-xl: var(--text-size-xl);
 }
 
+/* ═══════════════════════════════════════════════════════════════════
+   SERVICE COLOR CLASSES — applied via hash of service name
+   ═══════════════════════════════════════════════════════════════════ */
+.svc-color-0 { --svc-color: var(--svc-0); }
+.svc-color-1 { --svc-color: var(--svc-1); }
+.svc-color-2 { --svc-color: var(--svc-2); }
+.svc-color-3 { --svc-color: var(--svc-3); }
+.svc-color-4 { --svc-color: var(--svc-4); }
+.svc-color-5 { --svc-color: var(--svc-5); }
+.svc-color-6 { --svc-color: var(--svc-6); }
+.svc-color-7 { --svc-color: var(--svc-7); }
+
+.svc-strip-bg { background: var(--svc-color); }
+.svc-text     { color: var(--svc-color); }
+.svc-row-tint { background: oklch(from var(--svc-color) l c h / 4%); }
+
+/* ═══════════════════════════════════════════════════════════════════
+   BASE LAYER
+   ═══════════════════════════════════════════════════════════════════ */
 @layer base {
   * {
-    @apply border-border outline-ring/50;
+    @apply border-line;
+    outline-color: var(--ring);
   }
   body {
-    @apply font-sans bg-background text-foreground;
+    @apply font-sans bg-surface-base text-ink;
+    font-size: var(--text-size-base);
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
   }
   html {
     @apply font-sans;
@@ -99,226 +277,180 @@
   }
 }
 
-/* Scrollbar styling for the dark terminal aesthetic */
+/* ── Scrollbar ── */
 @layer base {
-  ::-webkit-scrollbar {
-    width: 6px;
-    height: 6px;
-  }
-  ::-webkit-scrollbar-track {
-    background: transparent;
-  }
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb {
-    background: oklch(0.3 0 0);
+    background: var(--border-default);
     border-radius: 3px;
   }
   ::-webkit-scrollbar-thumb:hover {
-    background: oklch(0.4 0 0);
+    background: var(--text-tertiary);
   }
 }
 
-/* Hide scrollbar for horizontal-scroll areas (tabs) */
-.scrollbar-none::-webkit-scrollbar {
-  display: none;
-}
-.scrollbar-none {
-  -ms-overflow-style: none;
-  scrollbar-width: none;
-}
+.scrollbar-none::-webkit-scrollbar { display: none; }
+.scrollbar-none { -ms-overflow-style: none; scrollbar-width: none; }
 
-/* Log viewer line highlighting */
-.log-line:hover {
-  background: oklch(1 0 0 / 2.5%);
-}
-.log-line:hover .log-ts {
-  color: oklch(0.55 0 0);
-}
+/* ═══════════════════════════════════════════════════════════════════
+   LOG VIEWER COMPONENTS
+   ═══════════════════════════════════════════════════════════════════ */
 
-/* Subtle noise texture overlay */
-.noise-bg::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  opacity: 0.02;
-  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='1'/%3E%3C/svg%3E");
-  background-size: 256px 256px;
-  pointer-events: none;
-  z-index: 0;
-}
+.log-line { transition: background-color var(--duration-instant) ease; }
+.log-line:hover { background: oklch(from var(--text-primary) l c h / 3%); }
+.log-line:hover .log-ts { color: var(--text-secondary); }
 
-/* Ambient glow behind header */
-.header-glow {
-  background: linear-gradient(
-    180deg,
-    oklch(0.78 0.12 180 / 4%) 0%,
-    transparent 100%
-  );
-}
+.log-level-warn-tint  { background: var(--status-amber-tint); }
+.log-level-error-tint { background: var(--status-red-tint); }
+.log-level-warn-strip  { background: var(--status-amber) !important; }
+.log-level-error-strip { background: var(--status-red) !important; }
 
-/* Service row hover states */
-.service-row {
-  transition: background-color 150ms ease, border-color 150ms ease;
-}
-
-/* Smooth tab indicator */
-.tab-active {
-  position: relative;
-}
-.tab-active::after {
-  content: '';
-  position: absolute;
-  bottom: 0;
-  left: 8px;
-  right: 8px;
-  height: 2px;
-  background: oklch(0.78 0.12 180);
-  border-radius: 1px 1px 0 0;
-}
-
-/* Pulse dot animation */
-@keyframes pulse-dot {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.5; transform: scale(0.85); }
-}
-.pulse-dot {
-  animation: pulse-dot 2s ease-in-out infinite;
-}
-
-/* Stagger children animation */
-@keyframes fade-up-in {
-  from { opacity: 0; transform: translateY(6px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-.stagger-in > * {
-  animation: fade-up-in 0.3s ease-out both;
-}
-.stagger-in > *:nth-child(1) { animation-delay: 0ms; }
-.stagger-in > *:nth-child(2) { animation-delay: 40ms; }
-.stagger-in > *:nth-child(3) { animation-delay: 80ms; }
-.stagger-in > *:nth-child(4) { animation-delay: 120ms; }
-.stagger-in > *:nth-child(5) { animation-delay: 160ms; }
-.stagger-in > *:nth-child(6) { animation-delay: 200ms; }
-.stagger-in > *:nth-child(7) { animation-delay: 240ms; }
-.stagger-in > *:nth-child(8) { animation-delay: 280ms; }
-.stagger-in > *:nth-child(9) { animation-delay: 320ms; }
-.stagger-in > *:nth-child(10) { animation-delay: 360ms; }
-
-/* Status dot glow */
-.status-glow-green {
-  box-shadow: 0 0 6px oklch(0.72 0.17 155 / 40%);
-}
-.status-glow-amber {
-  box-shadow: 0 0 6px oklch(0.80 0.15 85 / 40%);
-}
-.status-glow-orange {
-  box-shadow: 0 0 6px oklch(0.70 0.18 55 / 40%);
-}
-.status-glow-red {
-  box-shadow: 0 0 6px oklch(0.65 0.2 25 / 40%);
-}
-
-/* Service color strips — 3px left-edge service identity */
-.svc-strip {
-  width: 3px;
-  min-height: 100%;
-  flex-shrink: 0;
-}
-
-/* Service color palette — solid left strips and text colors */
-.svc-color-0 { --svc-color: oklch(0.72 0.12 230); } /* Sky blue */
-.svc-color-1 { --svc-color: oklch(0.68 0.14 290); } /* Violet */
-.svc-color-2 { --svc-color: oklch(0.80 0.12 85); }  /* Amber */
-.svc-color-3 { --svc-color: oklch(0.68 0.18 15); }  /* Rose */
-.svc-color-4 { --svc-color: oklch(0.72 0.12 175); } /* Teal */
-.svc-color-5 { --svc-color: oklch(0.68 0.16 320); } /* Fuchsia */
-.svc-color-6 { --svc-color: oklch(0.78 0.14 130); } /* Lime */
-.svc-color-7 { --svc-color: oklch(0.68 0.14 265); } /* Indigo */
-
-.svc-strip-bg { background: var(--svc-color); }
-.svc-text { color: var(--svc-color); }
-.svc-row-tint { background: oklch(from var(--svc-color) l c h / 4%); }
-
-/* Log level row tints */
-.log-level-warn-tint {
-  background: oklch(0.82 0.15 85 / 4%);
-}
-.log-level-error-tint {
-  background: oklch(0.65 0.22 25 / 6%);
-}
-
-/* Log level left-edge accent (overlays service strip on warn/error) */
-.log-level-warn-strip {
-  background: oklch(0.80 0.15 85) !important;
-}
-.log-level-error-strip {
-  background: oklch(0.65 0.22 25) !important;
-}
-
-/* Line numbers */
 .log-line-number {
-  width: 48px;
+  width: 44px;
   text-align: right;
   user-select: none;
-  color: oklch(0.28 0 0);
-  font-size: 11px;
+  color: var(--text-tertiary);
+  font-size: var(--text-size-xs);
   font-variant-numeric: tabular-nums;
   flex-shrink: 0;
 }
-.log-line:hover .log-line-number {
-  color: oklch(0.42 0 0);
-}
+.log-line:hover .log-line-number { color: var(--text-secondary); }
 
-/* Long line handling — break-word not break-all */
 .log-content-text {
   white-space: pre-wrap;
   overflow-wrap: break-word;
   word-break: normal;
 }
 
+.log-detail-panel {
+  background: var(--surface-raised);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius);
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   UI COMPONENTS
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* Service popover enter */
+@keyframes svc-popover-in {
+  from { opacity: 0; transform: translateX(-4px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+.svc-popover-enter {
+  animation: svc-popover-in var(--duration-fast) var(--ease-out) both;
+}
+
+/* Sidebar collapse/expand transition */
+.sidebar-transition {
+  transition: width var(--duration-slow) var(--ease-in-out);
+}
+
+.service-row {
+  transition: background-color var(--duration-instant) ease,
+              border-color var(--duration-instant) ease;
+}
+
+/* Tab underline indicator */
+.tab-active { position: relative; }
+.tab-active::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 6px;
+  right: 6px;
+  height: 2px;
+  background: var(--accent);
+  border-radius: 1px 1px 0 0;
+}
+
+/* Status dot pulse (starting state only) */
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(0.85); }
+}
+.pulse-dot { animation: pulse-dot 2s ease-in-out infinite; }
+
 /* Facet proportional bars */
 .facet-bar {
   height: 4px;
-  background: oklch(0.42 0 0 / 20%);
+  background: oklch(from var(--text-tertiary) l c h / 20%);
   position: absolute;
   left: 0;
   bottom: 0;
 }
-.facet-bar-error { background: oklch(0.65 0.22 25 / 40%); }
-.facet-bar-warn { background: oklch(0.80 0.15 85 / 40%); }
+.facet-bar-error { background: oklch(from var(--status-red) l c h / 40%); }
+.facet-bar-warn  { background: oklch(from var(--status-amber) l c h / 40%); }
 
 /* Skeleton shimmer */
 @keyframes shimmer {
   from { background-position: -200% 0; }
-  to { background-position: 200% 0; }
+  to   { background-position: 200% 0; }
 }
 .skeleton-shimmer {
-  background: linear-gradient(90deg, oklch(0.14 0.005 260) 25%, oklch(0.18 0.005 260) 50%, oklch(0.14 0.005 260) 75%);
+  background: linear-gradient(90deg, var(--surface-sunken) 25%, var(--surface-raised) 50%, var(--surface-sunken) 75%);
   background-size: 200% 100%;
   animation: shimmer 1.5s linear infinite;
+  border-radius: var(--radius);
 }
 
-/* Tab bar — stronger active state */
-.tab-active::after {
-  height: 2px;
-  left: 4px;
-  right: 4px;
-  border-radius: 1px 1px 0 0;
+/* Facet popover enter */
+@keyframes facet-popover-in {
+  from { opacity: 0; transform: scale(0.97) translateY(-4px); }
+  to   { opacity: 1; transform: scale(1) translateY(0); }
+}
+.facet-popover-enter {
+  animation: facet-popover-in var(--duration-fast) var(--ease-out) both;
+  transform-origin: top left;
 }
 
-/* Focus visible — accent ring */
+/* Scroll-to-bottom toast */
+@keyframes slide-up-fade-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.new-logs-toast {
+  animation: slide-up-fade-in var(--duration-normal) var(--ease-out);
+}
+
+/* Focus rings */
 :focus-visible {
-  outline: 2px solid var(--primary);
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
-/* Expanded log detail — stronger surface treatment */
-.log-detail-panel {
-  background: oklch(0.09 0.003 260);
-  border: 1px solid oklch(1 0 0 / 14%);
-  box-shadow: inset 0 1px 0 oklch(1 0 0 / 3%);
+/* ═══════════════════════════════════════════════════════════════════
+   MOBILE
+   ═══════════════════════════════════════════════════════════════════ */
+.mobile-panel-backdrop {
+  position: fixed;
+  inset: 0;
+  background: oklch(0 0 0 / 50%);
+  z-index: 25;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--duration-normal) ease;
+}
+.mobile-panel-backdrop.is-open {
+  opacity: 1;
+  pointer-events: auto;
+}
+.mobile-slide-panel {
+  transition: transform 250ms var(--ease-out);
 }
 
-/* Reduced motion */
+@media (max-width: 767px) {
+  .touch-target-boost { min-height: 44px; min-width: 44px; }
+  .desktop-only-hints { display: none !important; }
+  .log-line-number { width: 32px; font-size: 10px; padding-right: 4px; }
+  .log-ts { font-size: var(--text-size-xs); padding-right: 4px; }
+  .log-line .svc-strip { width: 2px; }
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   ACCESSIBILITY
+   ═══════════════════════════════════════════════════════════════════ */
 @media (prefers-reduced-motion: reduce) {
   *, ::before, ::after {
     animation-duration: 0.01ms !important;
@@ -328,77 +460,110 @@
   .pulse-dot { animation: none; }
 }
 
-/* ─── Mobile responsive base ─── */
-
-/* Mobile overlay backdrop — slides with the panel */
-.mobile-panel-backdrop {
-  position: fixed;
-  inset: 0;
-  background: oklch(0 0 0 / 60%);
-  z-index: 25;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 200ms ease;
-}
-.mobile-panel-backdrop.is-open {
-  opacity: 1;
-  pointer-events: auto;
-}
-
-/* Mobile slide-over panel */
-.mobile-slide-panel {
-  transition: transform 250ms cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-/* Touch-friendly targets: ensure 44px minimum on mobile */
-@media (max-width: 767px) {
-  /* Boost small interactive elements */
-  .touch-target-boost {
-    min-height: 44px;
-    min-width: 44px;
-  }
-  /* Keyboard shortcut hints are useless on mobile */
-  .desktop-only-hints {
-    display: none !important;
-  }
-  /* Compact log line-numbers on mobile */
-  .log-line-number {
-    width: 32px;
-    font-size: 10px;
-    padding-right: 4px;
-  }
-  /* Hide verbose timestamp — show just HH:MM:SS on mobile (drop .ms) */
-  .log-ts {
-    font-size: 11px;
-    padding-right: 4px;
-  }
-  /* Narrower service name column on mobile */
-  .log-line .svc-strip {
-    width: 2px;
-  }
-}
-
-/* New logs toast with count */
-.new-logs-toast {
-  animation: slide-up-fade-in 200ms ease-out;
-}
-@keyframes slide-up-fade-in {
-  from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
-/* vanilla-jsoneditor dark theme overrides */
+/* ═══════════════════════════════════════════════════════════════════
+   VANILLA-JSONEDITOR — themed to match dashboard design system
+   ═══════════════════════════════════════════════════════════════════ */
 .json-editor-dark {
-  --jse-theme-color: oklch(0.78 0.12 180);
-  --jse-theme-color-highlight: oklch(0.78 0.12 180 / 15%);
-  --jse-background-color: oklch(0.07 0.003 260);
-  --jse-text-color: oklch(0.85 0 0);
-  --jse-panel-background: oklch(0.09 0.003 260);
-  --jse-panel-border: oklch(1 0 0 / 8%);
-  font-family: var(--font-mono);
+  /* ── Typography ── */
+  --jse-font-family: var(--font-sans);
+  --jse-font-family-mono: var(--font-mono);
+  --jse-font-size: var(--text-size-sm);
+  --jse-font-size-mono: var(--text-size-sm);
+  --jse-line-height: 1.6;
+  --jse-indent-size: 1.25em;
+
+  /* ── Surfaces ── */
+  --jse-background-color: transparent;
+  --jse-text-color: var(--text-primary);
+  --jse-text-color-inverse: var(--text-primary);
+
+  /* ── Borders — blend in, don't outline ── */
+  --jse-main-border: none;
+  --jse-panel-border: none;
+  --jse-panel-background-border: none;
+
+  /* ── Theme accent ── */
+  --jse-theme-color: var(--accent);
+  --jse-theme-color-highlight: var(--accent-hover);
+
+  /* ── Key / value colors — match dashboard semantic palette ── */
+  --jse-key-color: var(--text-secondary);
+  --jse-value-color: var(--text-primary);
+  --jse-value-color-string: var(--status-green-text);
+  --jse-value-color-number: var(--status-blue);
+  --jse-value-color-boolean: var(--status-amber-text);
+  --jse-value-color-null: var(--text-tertiary);
+  --jse-value-color-url: var(--status-blue);
+  --jse-delimiter-color: var(--text-tertiary);
+
+  /* ── Selection / interaction ── */
+  --jse-selection-background-color: oklch(from var(--accent) l c h / 15%);
+  --jse-selection-background-inactive-color: oklch(from var(--accent) l c h / 8%);
+  --jse-hover-background-color: oklch(from var(--text-primary) l c h / 5%);
+  --jse-active-line-background-color: oklch(from var(--text-primary) l c h / 4%);
+
+  /* ── Collapsed items ── */
+  --jse-collapsed-items-background-color: oklch(from var(--text-primary) l c h / 5%);
+  --jse-collapsed-items-selected-background-color: oklch(from var(--accent) l c h / 12%);
+  --jse-collapsed-items-link-color: var(--text-tertiary);
+  --jse-collapsed-items-link-color-highlight: var(--accent);
+
+  /* ── Inline tags ── */
+  --jse-tag-background: oklch(from var(--text-primary) l c h / 8%);
+  --jse-tag-color: var(--text-secondary);
+
+  /* ── Context menu (rare in read-only, but themed for completeness) ── */
+  --jse-context-menu-background: var(--surface-overlay);
+  --jse-context-menu-background-highlight: oklch(from var(--text-primary) l c h / 8%);
+  --jse-context-menu-separator-color: var(--border-subtle);
+  --jse-context-menu-color: var(--text-primary);
+  --jse-context-menu-pointer-background: var(--surface-overlay);
+  --jse-context-menu-pointer-background-highlight: oklch(from var(--text-primary) l c h / 8%);
+  --jse-context-menu-pointer-color: var(--text-primary);
+
+  /* ── Search highlights ── */
+  --jse-search-match-color: oklch(from var(--accent) l c h / 20%);
+  --jse-search-match-outline: 1px solid oklch(from var(--accent) l c h / 40%);
+  --jse-search-match-active-color: oklch(from var(--accent) l c h / 35%);
+  --jse-search-match-active-outline: 2px solid var(--accent);
+
+  /* ── Panels (nav bar, status bar — hidden, but safe) ── */
+  --jse-panel-background: var(--surface-sunken);
+  --jse-panel-color: var(--text-secondary);
+  --jse-panel-color-readonly: var(--text-tertiary);
+  --jse-panel-button-background-highlight: oklch(from var(--text-primary) l c h / 8%);
+  --jse-panel-button-color-highlight: var(--text-primary);
+
+  /* ── Tooltips ── */
+  --jse-tooltip-background: var(--surface-overlay);
+  --jse-tooltip-color: var(--text-primary);
+  --jse-tooltip-border: 1px solid var(--border-default);
+
+  /* ── Edit outline (read-only, but just in case) ── */
+  --jse-edit-outline: 2px solid var(--accent);
+
+  /* ── Modal (shouldn't appear in read-only) ── */
+  --jse-modal-background: var(--surface-overlay);
+  --jse-modal-overlay-background: oklch(0 0 0 / 50%);
+
+  /* ── Padding — compact for log detail context ── */
+  --jse-padding: 0;
 }
 
+/* Remove outer border & outline from the editor container */
 .json-editor-dark .jse-main {
-  min-height: 0;
-  border: none;
+  border: none !important;
+  min-height: 0 !important;
+}
+
+/* Remove the outer contents border */
+.json-editor-dark .jse-contents {
+  border: none !important;
+  border-width: 0 !important;
+}
+
+/* Size the editor naturally within the log detail panel */
+.log-detail-json-editor {
+  max-height: 60vh;
+  overflow: auto;
 }

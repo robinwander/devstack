@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { ServiceRow } from "./service-row";
 
 describe("ServiceRow keyboard interactions", () => {
-  it("does not toggle row selection when pressing Space on an action button", () => {
+  it("toggles row selection on Enter on the row element", () => {
     const onSelect = vi.fn();
 
     render(
@@ -20,14 +20,12 @@ describe("ServiceRow keyboard interactions", () => {
         }}
         isViewing={false}
         onSelect={onSelect}
-        onRestart={vi.fn()}
-        isRestarting={false}
+        svcColorIndex={0}
       />,
     );
 
-    const copyButton = screen.getByRole("button", { name: "Copy api URL" });
-    fireEvent.keyDown(copyButton, { key: " ", code: "Space" });
-
-    expect(onSelect).not.toHaveBeenCalled();
+    const row = screen.getByRole("button", { name: "api — ready" });
+    fireEvent.keyDown(row, { key: "Enter", code: "Enter" });
+    expect(onSelect).toHaveBeenCalledWith("api");
   });
 });

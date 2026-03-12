@@ -9,30 +9,31 @@ export function DaemonStatus({ compact }: { compact?: boolean }) {
 
   return (
     <div
-      className="flex items-center gap-2 px-2 md:px-3 h-9 text-xs font-medium shrink-0"
+      className="flex items-center gap-1.5 px-2 h-8 text-xs font-medium shrink-0"
       role="status"
       aria-label={isLoading ? "Connecting to daemon" : isConnected ? "Daemon connected" : "Daemon offline"}
     >
       <span className={cn(
         "w-1.5 h-1.5 rounded-full shrink-0",
-        isConnected ? "bg-emerald-400 status-glow-green" : isLoading ? "bg-muted-foreground/40 pulse-dot" : "bg-red-400 status-glow-red pulse-dot",
+        isConnected ? "bg-status-green" : isLoading ? "bg-ink-tertiary pulse-dot" : "bg-status-red pulse-dot",
       )} />
       {!compact && (
         <span className={cn(
-          isConnected ? "text-muted-foreground/50" : isLoading ? "text-muted-foreground/40" : "text-red-400/70",
+          "text-xs",
+          isConnected ? "text-ink-tertiary" : isLoading ? "text-ink-tertiary" : "text-status-red-text",
         )}>
-          {isLoading ? "Connecting…" : isConnected ? "Daemon" : "Offline"}
+          {isLoading ? "Connecting…" : isConnected ? "Connected" : "Offline"}
         </span>
       )}
     </div>
   );
 }
 
-/** Error banner shown when daemon is unreachable (7.2) */
+/** Error banner shown when daemon is unreachable */
 export function DaemonBanner({ onRetry }: { onRetry: () => void }) {
   return (
     <div
-      className="flex items-center justify-between gap-2 px-3 md:px-5 py-2 bg-red-500/10 border-b border-red-500/20 text-xs md:text-sm text-red-400"
+      className="flex items-center justify-between gap-2 px-3 md:px-4 py-2 bg-status-red-tint border-b border-status-red text-xs md:text-sm text-status-red-text"
       role="alert"
     >
       <div className="flex items-center gap-2 min-w-0">
@@ -41,7 +42,7 @@ export function DaemonBanner({ onRetry }: { onRetry: () => void }) {
       </div>
       <button
         onClick={onRetry}
-        className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-red-300 hover:text-foreground bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 transition-colors shrink-0"
+        className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-status-red-text hover:text-ink bg-status-red-tint border border-status-red rounded-md transition-colors shrink-0"
       >
         <RefreshCw className="w-3 h-3" />
         Retry

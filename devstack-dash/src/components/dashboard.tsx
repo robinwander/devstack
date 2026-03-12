@@ -1,97 +1,114 @@
-import { useState, useEffect, useRef, useMemo, useCallback } from "react";
-import { motion, AnimatePresence } from "framer-motion";
-import { useQuery } from "@tanstack/react-query";
-import { AlertTriangle } from "lucide-react";
-import { api, ApiError, queries, type RunSummary } from "@/lib/api";
-import { patchUrlParams, readUrlParam } from "@/lib/url-state";
-import { useIsMobile } from "@/lib/use-media-query";
-import { Header } from "./header";
-import { ServicePanel } from "./service-panel";
-import { EmptyDashboard } from "./empty-dashboard";
-import { LogViewer } from "./log-viewer";
-import { DaemonBanner } from "./daemon-status";
-import { CommandPalette, useDashboardCommands } from "./command-palette";
-import { toast } from "sonner";
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
+import { AnimatePresence, motion } from 'framer-motion'
+import { useQuery } from '@tanstack/react-query'
+import { AlertTriangle } from 'lucide-react'
+import { api, ApiError, queries, type RunSummary } from '@/lib/api'
+import { patchUrlParams, readUrlParam } from '@/lib/url-state'
+import { useIsMobile } from '@/lib/use-media-query'
+import { Header } from './header'
+import { ServicePanel } from './service-panel'
+import { EmptyDashboard } from './empty-dashboard'
+import { LogViewer } from './log-viewer'
+import { DaemonBanner } from './daemon-status'
+import { CommandPalette, useDashboardCommands } from './command-palette'
+import { toast } from 'sonner'
 
 export interface ActiveRun {
-  run: RunSummary;
-  projectName: string;
+  run: RunSummary
+  projectName: string
 }
 
 export function Dashboard() {
-  const [selectedRunId, setSelectedRunId] = useState<string | null>(() => readUrlParam("run"));
-  const [selectedService, setSelectedService] = useState<string | null>(() => readUrlParam("service"));
-  const [logViewerVersion, setLogViewerVersion] = useState(0);
-  // Track whether the user explicitly picked a run (vs auto-selection)
-  const userSelectedRef = useRef(false);
-  const lastAppliedIntentRef = useRef<string | null>(null);
+  const [selectedSource, setSelectedSource] = useState<string | null>(() =>
+    readUrlParam('source'),
+  )
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(() =>
+    readUrlParam('source') ? null : readUrlParam('run'),
+  )
+  const [selectedService, setSelectedService] = useState<string | null>(() =>
+    readUrlParam('service'),
+  )
+  const [logViewerVersion, setLogViewerVersion] = useState(0)
+  const userSelectedRef = useRef(false)
+  const lastAppliedIntentRef = useRef<string | null>(null)
 
-  const { data: runs = [] } = useQuery(queries.runs);
-  const { data: projects = [] } = useQuery(queries.projects);
-  const { data: globals = [] } = useQuery(queries.globals);
-  const pingQuery = useQuery(queries.ping);
-  const navigationIntentQuery = useQuery(queries.navigationIntent);
-  const navigationIntent = navigationIntentQuery.data?.intent ?? null;
+  const { data: runs = [] } = useQuery(queries.runs)
+  const { data: sources = [] } = useQuery(queries.sources)
+  const { data: projects = [] } = useQuery(queries.projects)
+  const { data: globals = [] } = useQuery(queries.globals)
+  const pingQuery = useQuery(queries.ping)
+  const navigationIntentQuery = useQuery(queries.navigationIntent)
+  const navigationIntent = navigationIntentQuery.data?.intent ?? null
 
   const activeRuns: ActiveRun[] = useMemo(() => {
     return runs
-      .filter((r) => r.state !== "stopped")
+      .filter((r) => r.state !== 'stopped')
       .map((run) => {
-        const project = projects.find((p) => p.path === run.project_dir);
-        const projectName = project?.name || run.project_dir.split("/").pop() || "unknown";
-        return { run, projectName };
+        const project = projects.find((p) => p.path === run.project_dir)
+        const projectName =
+          project?.name || run.project_dir.split('/').pop() || 'unknown'
+        return { run, projectName }
       })
-      .sort((a, b) => b.run.created_at.localeCompare(a.run.created_at));
-  }, [runs, projects]);
+      .sort((a, b) => b.run.created_at.localeCompare(a.run.created_at))
+  }, [runs, projects])
 
   const stoppedRuns = useMemo(() => {
     return runs
-      .filter((r) => r.state === "stopped")
-      .sort((a, b) => (b.stopped_at || b.created_at).localeCompare(a.stopped_at || a.created_at))
-      .slice(0, 10);
-  }, [runs]);
+      .filter((r) => r.state === 'stopped')
+      .sort((a, b) =>
+        (b.stopped_at || b.created_at).localeCompare(
+          a.stopped_at || a.created_at,
+        ),
+      )
+      .slice(0, 10)
+  }, [runs])
 
-  // --- Sticky run selection (Bug 1) ---
-  // Auto-select only when no valid selection exists.
+  const viewMode = selectedSource ? 'source' : 'run'
+
+  // Auto-select first active run when none selected in run mode
   useEffect(() => {
+    if (viewMode === 'source') return
+
     const selectionStillValid =
-      selectedRunId !== null && runs.some((r) => r.run_id === selectedRunId);
+      selectedRunId !== null && runs.some((r) => r.run_id === selectedRunId)
 
-    if (selectionStillValid) return;
+    if (selectionStillValid) return
 
-    // Selected run was purged or nothing selected yet — pick first active run.
-    const fallback = activeRuns[0]?.run;
+    const fallback = activeRuns[0]?.run
     if (fallback) {
-      setSelectedRunId(fallback.run_id);
+      setSelectedRunId(fallback.run_id)
     } else {
-      setSelectedRunId(null);
+      setSelectedRunId(null)
     }
-    userSelectedRef.current = false;
-  }, [selectedRunId, runs, activeRuns]);
+    userSelectedRef.current = false
+  }, [viewMode, selectedRunId, runs, activeRuns])
 
   const currentRun = useMemo(() => {
     if (selectedRunId) {
-      return runs.find((r) => r.run_id === selectedRunId) ?? null;
+      return runs.find((r) => r.run_id === selectedRunId) ?? null
     }
-    return null;
-  }, [selectedRunId, runs]);
+    return null
+  }, [selectedRunId, runs])
 
   useEffect(() => {
-    patchUrlParams({ run: selectedRunId });
-  }, [selectedRunId]);
+    patchUrlParams({ run: selectedRunId })
+  }, [selectedRunId])
 
   useEffect(() => {
-    patchUrlParams({ service: selectedService });
-  }, [selectedService]);
+    patchUrlParams({ source: selectedSource })
+  }, [selectedSource])
 
   useEffect(() => {
-    if (!navigationIntent) return;
-    if (lastAppliedIntentRef.current === navigationIntent.created_at) return;
+    patchUrlParams({ service: selectedService })
+  }, [selectedService])
 
-    lastAppliedIntentRef.current = navigationIntent.created_at;
+  // Navigation intent from CLI
+  useEffect(() => {
+    if (!navigationIntent) return
+    if (lastAppliedIntentRef.current === navigationIntent.created_at) return
 
-    // Apply URL params first (synchronous DOM update) so that when the
-    // LogViewer remounts it reads the correct initial state from the URL.
+    lastAppliedIntentRef.current = navigationIntent.created_at
+
     const params: Record<string, string | null | undefined> = {
       run: navigationIntent.run_id,
       service: navigationIntent.service,
@@ -99,121 +116,163 @@ export function Dashboard() {
       level: navigationIntent.level,
       stream: navigationIntent.stream,
       since: navigationIntent.since,
-      last: navigationIntent.last != null ? String(navigationIntent.last) : undefined,
-    };
-    patchUrlParams(params);
+      last:
+        navigationIntent.last != null
+          ? String(navigationIntent.last)
+          : undefined,
+    }
+    patchUrlParams(params)
 
     if (navigationIntent.run_id) {
-      setSelectedRunId(navigationIntent.run_id);
-      userSelectedRef.current = true;
+      setSelectedRunId(navigationIntent.run_id)
+      setSelectedSource(null)
+      userSelectedRef.current = true
     }
-    setSelectedService(navigationIntent.service ?? null);
-    setLogViewerVersion((version) => version + 1);
-    void api.clearNavigationIntent();
-  }, [navigationIntent]);
+    setSelectedService(navigationIntent.service ?? null)
+    setLogViewerVersion((version) => version + 1)
+    void api.clearNavigationIntent()
+  }, [navigationIntent])
 
   const currentProject = useMemo(() => {
-    if (!currentRun) return null;
-    return projects.find((p) => p.path === currentRun.project_dir) ?? null;
-  }, [currentRun, projects]);
+    if (!currentRun) return null
+    return projects.find((p) => p.path === currentRun.project_dir) ?? null
+  }, [currentRun, projects])
 
   const statusQuery = useQuery({
-    ...queries.runStatus(currentRun?.run_id || ""),
-    enabled: !!currentRun,
-  });
-  const status = statusQuery.data;
+    ...queries.runStatus(currentRun?.run_id || ''),
+    enabled: viewMode === 'run' && !!currentRun,
+  })
+  const status = statusQuery.data
 
-  // Detect 404 on the selected run's status (Bug 2)
+  const tasksQuery = useQuery({
+    ...queries.runTasks(currentRun?.run_id || ''),
+    enabled: viewMode === 'run' && !!currentRun,
+  })
+  const tasks = tasksQuery.data ?? []
+
   const isRunGone =
     statusQuery.isError &&
     statusQuery.error instanceof ApiError &&
-    statusQuery.error.status === 404;
+    statusQuery.error.status === 404
 
-  // When status returns 404 and there are other active runs, auto-switch (Bug 2)
   useEffect(() => {
-    if (!isRunGone) return;
-    const fallback = activeRuns.find((ar) => ar.run.run_id !== selectedRunId);
+    if (!isRunGone) return
+    const fallback = activeRuns.find((ar) => ar.run.run_id !== selectedRunId)
     if (fallback) {
-      setSelectedRunId(fallback.run.run_id);
-      setSelectedService(null);
-      userSelectedRef.current = false;
+      setSelectedRunId(fallback.run.run_id)
+      setSelectedService(null)
+      userSelectedRef.current = false
     }
-  }, [isRunGone, activeRuns, selectedRunId]);
+  }, [isRunGone, activeRuns, selectedRunId])
 
-  // User explicitly selects a run — mark as sticky
   const selectRun = useCallback((runId: string) => {
-    setSelectedRunId(runId);
-    setSelectedService(null);
-    userSelectedRef.current = true;
-  }, []);
+    setSelectedRunId(runId)
+    setSelectedSource(null)
+    setSelectedService(null)
+    userSelectedRef.current = true
+  }, [])
 
-  const isDaemonDown = !pingQuery.isLoading && (pingQuery.isError || !pingQuery.data?.ok);
+  const selectSource = useCallback((name: string) => {
+    setSelectedSource(name)
+    setSelectedRunId(null)
+    setSelectedService(null)
+    userSelectedRef.current = true
+  }, [])
 
-  // Mobile responsiveness
-  const isMobile = useIsMobile();
-  const [mobilePanelOpen, setMobilePanelOpen] = useState(false);
+  const isDaemonDown =
+    !pingQuery.isLoading && (pingQuery.isError || !pingQuery.data?.ok)
 
-  // Close mobile panel when switching to desktop
+  const isMobile = useIsMobile()
+  const [mobilePanelOpen, setMobilePanelOpen] = useState(false)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+
   useEffect(() => {
-    if (!isMobile) setMobilePanelOpen(false);
-  }, [isMobile]);
+    if (!isMobile) setMobilePanelOpen(false)
+  }, [isMobile])
 
-  // Close mobile panel when a service is selected on mobile
-  const handleMobileServiceSelect = useCallback((name: string | null) => {
-    setSelectedService(name === selectedService ? null : name);
-    if (isMobile) setMobilePanelOpen(false);
-  }, [isMobile, selectedService]);
+  const handleMobileServiceSelect = useCallback(
+    (name: string | null) => {
+      setSelectedService(name === selectedService ? null : name)
+      if (isMobile) setMobilePanelOpen(false)
+    },
+    [isMobile, selectedService],
+  )
 
-  // Command palette (⌘K)
-  const [paletteOpen, setPaletteOpen] = useState(false);
+  // Command palette
+  const [paletteOpen, setPaletteOpen] = useState(false)
 
   const paletteActions = useDashboardCommands({
     services: status ? Object.keys(status.services) : [],
     onSelectService: setSelectedService,
     onFocusSearch: () => {
-      // Focus search via DOM query — the search input has aria-label="Search log lines"
-      const el = document.querySelector<HTMLInputElement>('[aria-label="Search log lines"]');
-      el?.focus();
-      el?.select();
+      const el = document.querySelector<HTMLInputElement>(
+        '[aria-label="Search log lines"]',
+      )
+      el?.focus()
+      el?.select()
     },
     onToggleErrors: () => {
-      // Dispatch a synthetic keydown event for 'e' to toggle error filter
-      window.dispatchEvent(new KeyboardEvent("keydown", { key: "e", bubbles: true }));
+      window.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'e', bubbles: true }),
+      )
     },
     onToggleWarns: () => {
-      window.dispatchEvent(new KeyboardEvent("keydown", { key: "w", bubbles: true }));
+      window.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'w', bubbles: true }),
+      )
     },
     onToggleFacets: () => {
-      window.dispatchEvent(new KeyboardEvent("keydown", { key: "f", bubbles: true }));
+      window.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'f', bubbles: true }),
+      )
     },
     onScrollToBottom: () => {
-      // The scroll-to-bottom button in LogViewer — click it
-      const btn = document.querySelector<HTMLButtonElement>('[aria-label="Scroll to latest"], [aria-label="Auto-scroll active"]');
-      btn?.click();
+      const btn = document.querySelector<HTMLButtonElement>(
+        '[aria-label="Scroll to latest"], [aria-label="Auto-scroll active"]',
+      )
+      btn?.click()
     },
     onCopyUrl: () => {
       void navigator.clipboard.writeText(window.location.href).then(
-        () => toast.success("URL copied"),
-        () => toast.error("Failed to copy URL"),
-      );
+        () => toast.success('URL copied'),
+        () => toast.error('Failed to copy URL'),
+      )
     },
-  });
+  })
 
-  // Global ⌘K handler
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
-        e.preventDefault();
-        setPaletteOpen((v) => !v);
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        e.preventDefault()
+        setPaletteOpen((v) => !v)
       }
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, []);
+      // Sidebar collapse/expand
+      const isInput =
+        document.activeElement?.tagName === 'INPUT' ||
+        document.activeElement?.tagName === 'TEXTAREA'
+      if (
+        !isInput &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        (e.key === '[' || e.key === ']')
+      ) {
+        e.preventDefault()
+        setSidebarCollapsed((v) => !v)
+      }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [])
 
   return (
-    <div className="min-h-[100dvh] h-[100dvh] flex flex-col bg-background text-foreground overflow-hidden noise-bg relative">
-      {/* Command Palette (⌘K) */}
+    <div className="min-h-dvh h-dvh flex flex-col bg-surface-base text-ink overflow-hidden relative">
+      {/* Skip to content link — visible only on keyboard focus */}
+      <a
+        href="#log-viewer"
+        className="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:top-2 focus:left-2 focus:px-3 focus:py-1.5 focus:text-sm focus:font-medium focus:bg-surface-raised focus:border focus:border-line focus:rounded-md focus:shadow-lg"
+      >
+        Skip to logs
+      </a>
       <CommandPalette
         open={paletteOpen}
         onClose={() => setPaletteOpen(false)}
@@ -226,18 +285,19 @@ export function Dashboard() {
         activeRuns={activeRuns}
         stoppedRuns={stoppedRuns}
         projects={projects}
+        sources={sources}
+        selectedSource={selectedSource}
         status={status}
         onSelectRun={selectRun}
+        onSelectSource={selectSource}
         isMobile={isMobile}
         mobilePanelOpen={mobilePanelOpen}
         onToggleMobilePanel={() => setMobilePanelOpen((v) => !v)}
       />
 
-      {/* Daemon unreachable banner (7.2) */}
       {isDaemonDown && <DaemonBanner onRetry={() => pingQuery.refetch()} />}
 
-      {/* Main content */}
-      <div className="flex-1 flex min-h-0 relative z-10">
+      <div className="flex-1 flex min-h-0 relative">
         <AnimatePresence mode="wait">
           {currentRun && isRunGone ? (
             <motion.div
@@ -249,11 +309,13 @@ export function Dashboard() {
               className="flex-1 flex items-center justify-center"
             >
               <div className="text-center max-w-sm">
-                <div className="w-12 h-12 mx-auto mb-4 bg-red-500/5 border border-red-500/10 flex items-center justify-center">
-                  <AlertTriangle className="w-5 h-5 text-red-400/40" />
+                <div className="w-12 h-12 mx-auto mb-4 bg-status-red-tint border border-line rounded-lg flex items-center justify-center">
+                  <AlertTriangle className="w-5 h-5 text-status-red-text" />
                 </div>
-                <h2 className="text-lg font-semibold text-foreground/80 mb-1">Run not found</h2>
-                <p className="text-sm text-muted-foreground/60">
+                <h2 className="text-lg font-semibold text-ink mb-1">
+                  Run not found
+                </h2>
+                <p className="text-sm text-ink-secondary">
                   This run has been stopped or purged.
                 </p>
               </div>
@@ -267,10 +329,9 @@ export function Dashboard() {
               transition={{ duration: 0.15 }}
               className="flex flex-1 min-h-0 min-w-0 overflow-hidden"
             >
-              {/* Mobile overlay backdrop */}
               {isMobile && (
                 <div
-                  className={`mobile-panel-backdrop ${mobilePanelOpen ? "is-open" : ""}`}
+                  className={`mobile-panel-backdrop ${mobilePanelOpen ? 'is-open' : ''}`}
                   onClick={() => setMobilePanelOpen(false)}
                 />
               )}
@@ -279,11 +340,17 @@ export function Dashboard() {
                 run={currentRun}
                 status={status}
                 globals={globals}
+                tasks={tasks}
                 selectedService={selectedService}
-                onSelectService={isMobile ? handleMobileServiceSelect : setSelectedService}
+                selectedSource={selectedSource}
+                onSelectService={
+                  isMobile ? handleMobileServiceSelect : setSelectedService
+                }
                 isMobile={isMobile}
                 mobilePanelOpen={mobilePanelOpen}
                 onCloseMobilePanel={() => setMobilePanelOpen(false)}
+                collapsed={!isMobile && sidebarCollapsed}
+                onToggleCollapse={() => setSidebarCollapsed((v) => !v)}
               />
               <div className="flex-1 min-w-0 flex flex-col">
                 <LogViewer
@@ -292,8 +359,32 @@ export function Dashboard() {
                   projectDir={currentRun.project_dir}
                   services={Object.keys(status.services)}
                   selectedService={selectedService}
+                  selectedSource={selectedSource}
                   onSelectService={setSelectedService}
                   status={status}
+                  isMobile={isMobile}
+                />
+              </div>
+            </motion.div>
+          ) : selectedSource ? (
+            <motion.div
+              key={`source:${selectedSource}`}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.15 }}
+              className="flex flex-1 min-h-0 min-w-0 overflow-hidden"
+            >
+              <div className="flex-1 min-w-0 flex flex-col">
+                <LogViewer
+                  key={`source:${selectedSource}:${logViewerVersion}`}
+                  runId=""
+                  projectDir=""
+                  services={[]}
+                  selectedService={selectedService}
+                  selectedSource={selectedSource}
+                  sourceName={selectedSource}
+                  onSelectService={setSelectedService}
                   isMobile={isMobile}
                 />
               </div>
@@ -304,5 +395,5 @@ export function Dashboard() {
         </AnimatePresence>
       </div>
     </div>
-  );
+  )
 }

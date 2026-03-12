@@ -18,11 +18,10 @@ export function LogScrollControls({
   return (
     <button
       onClick={onScrollToBottom}
-      className="absolute bottom-4 right-4 flex items-center gap-2 px-3 h-8 bg-card/90 backdrop-blur-sm border border-border text-xs font-medium text-foreground shadow-lg hover:bg-secondary transition-all hover:shadow-xl new-logs-toast"
+      className="absolute bottom-3 right-3 flex items-center gap-2 px-3 h-8 bg-surface-raised border border-line text-xs font-medium text-ink shadow-lg hover:bg-surface-sunken rounded-md transition-colors new-logs-toast"
     >
       <ArrowDown className="w-3.5 h-3.5" />
-      {/* Show count of new lines (14.18) */}
-      {newLogCount > 0 ? `↓ ${newLogCount} new lines` : "New logs"}
+      ↓ {newLogCount} new lines
     </button>
   );
 }

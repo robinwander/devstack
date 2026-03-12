@@ -8,9 +8,10 @@ import {
 
 interface JsonEditorProps {
   content: Content;
+  className?: string;
 }
 
-export function JsonEditorView({ content }: JsonEditorProps) {
+export function JsonEditorView({ content, className }: JsonEditorProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<JsonEditor | null>(null);
 
@@ -24,6 +25,7 @@ export function JsonEditorView({ content }: JsonEditorProps) {
         readOnly: true,
         mainMenuBar: false,
         navigationBar: false,
+        statusBar: false,
         mode: Mode.tree,
       },
     });
@@ -46,7 +48,7 @@ export function JsonEditorView({ content }: JsonEditorProps) {
   return (
     <div
       ref={containerRef}
-      className="json-editor-dark jse-theme-dark"
+      className={`json-editor-dark jse-theme-dark${className ? ` ${className}` : ""}`}
       onClick={(e) => e.stopPropagation()}
     />
   );

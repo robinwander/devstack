@@ -47,8 +47,8 @@ impl SourcesLedger {
 
         let data = std::fs::read_to_string(path)
             .with_context(|| format!("read sources ledger at {path:?}"))?;
-        let ledger: SourcesLedger = serde_json::from_str(&data)
-            .with_context(|| "parse sources ledger")?;
+        let ledger: SourcesLedger =
+            serde_json::from_str(&data).with_context(|| "parse sources ledger")?;
         Ok(ledger)
     }
 
@@ -170,7 +170,8 @@ fn expand_pattern(pattern: &str) -> Result<Vec<PathBuf>> {
 
     let mut out = Vec::new();
     for path in glob::glob(&pattern_text)
-        .with_context(|| format!("invalid glob pattern: {pattern_text}"))?.flatten()
+        .with_context(|| format!("invalid glob pattern: {pattern_text}"))?
+        .flatten()
     {
         out.push(path);
     }
@@ -239,7 +240,10 @@ mod tests {
         ledger.save_to_path(&ledger_path).unwrap();
 
         let loaded = SourcesLedger::load_from_path(&ledger_path).unwrap();
-        assert_eq!(loaded.sources.get("src").unwrap().paths, vec!["/tmp/src.log"]);
+        assert_eq!(
+            loaded.sources.get("src").unwrap().paths,
+            vec!["/tmp/src.log"]
+        );
     }
 
     #[test]

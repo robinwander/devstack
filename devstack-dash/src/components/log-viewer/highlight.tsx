@@ -15,7 +15,7 @@ function highlightSubstring(text: string, query: string): ReactNode {
   while (idx !== -1) {
     if (idx > lastEnd) parts.push(text.slice(lastEnd, idx));
     parts.push(
-      <mark key={key++} className="bg-primary/20 text-primary px-0.5">
+      <mark key={key++} className="bg-accent/20 text-accent rounded-sm px-0.5">
         {text.slice(idx, idx + query.length)}
       </mark>,
     );
@@ -39,7 +39,7 @@ function highlightRegex(text: string, regex: RegExp): ReactNode {
     }
     if (match.index > lastEnd) parts.push(text.slice(lastEnd, match.index));
     parts.push(
-      <mark key={key++} className="bg-primary/20 text-primary px-0.5">
+      <mark key={key++} className="bg-accent/20 text-accent rounded-sm px-0.5">
         {match[0]}
       </mark>,
     );

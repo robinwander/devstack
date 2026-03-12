@@ -1,49 +1,46 @@
 /**
- * Single source of truth for service/run state → color mapping.
- * Used by StatusDot and any other component displaying state.
+ * Service/run state → style mapping.
+ * All styles reference design tokens via Tailwind utility classes.
  */
 
 export type AnyState = "running" | "ready" | "starting" | "degraded" | "failed" | "stopped";
 
 export interface StateStyle {
-  /** Tailwind bg- class for the dot */
   dot: string;
-  /** CSS glow class name */
-  glow: string;
-  /** Tailwind text- class for the icon */
   iconColor: string;
+  textColor: string;
 }
 
 const stateStyles: Record<AnyState, StateStyle> = {
   running: {
-    dot: "bg-emerald-400",
-    glow: "status-glow-green",
-    iconColor: "text-emerald-500",
+    dot: "bg-status-green",
+    iconColor: "text-status-green-text",
+    textColor: "text-status-green-text",
   },
   ready: {
-    dot: "bg-emerald-400",
-    glow: "status-glow-green",
-    iconColor: "text-emerald-500",
+    dot: "bg-status-green",
+    iconColor: "text-status-green-text",
+    textColor: "text-status-green-text",
   },
   starting: {
-    dot: "bg-amber-400",
-    glow: "status-glow-amber",
-    iconColor: "text-amber-500",
+    dot: "bg-status-amber",
+    iconColor: "text-status-amber-text",
+    textColor: "text-status-amber-text",
   },
   degraded: {
-    dot: "bg-orange-400",
-    glow: "status-glow-orange",
-    iconColor: "text-orange-500",
+    dot: "bg-status-amber",
+    iconColor: "text-status-amber-text",
+    textColor: "text-status-amber-text",
   },
   failed: {
-    dot: "bg-red-400",
-    glow: "status-glow-red",
-    iconColor: "text-red-500",
+    dot: "bg-status-red",
+    iconColor: "text-status-red-text",
+    textColor: "text-status-red-text",
   },
   stopped: {
-    dot: "bg-zinc-500",
-    glow: "",
-    iconColor: "text-zinc-500",
+    dot: "bg-ink-tertiary",
+    iconColor: "text-ink-tertiary",
+    textColor: "text-ink-tertiary",
   },
 };
 

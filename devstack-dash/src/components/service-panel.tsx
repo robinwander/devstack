@@ -1,158 +1,261 @@
-import { useCallback } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { toast } from "sonner";
+import { useCallback } from 'react'
+import { cn } from '@/lib/utils'
+import { ChevronsLeft, ChevronsRight } from 'lucide-react'
+import { StatusDot } from './status-dot'
+import { ServiceRow } from './service-row'
 import {
-  Square,
-  XCircle,
-  Activity,
-} from "lucide-react";
-import { cn } from "@/lib/utils";
-import { Button } from "@/components/ui/button";
-import { StatusDot } from "./status-dot";
-import { ServiceRow } from "./service-row";
-import {
-  api,
-  queryKeys,
-  type RunSummary,
   type RunStatusResponse,
-} from "@/lib/api";
+  type RunSummary,
+  type TaskExecutionSummary,
+} from '@/lib/api'
+import { getServiceColorIndex } from '@/lib/service-colors'
 
 export function ServicePanel({
   run,
   status,
   globals,
+  tasks,
   selectedService,
+  selectedSource,
   onSelectService,
   isMobile,
   mobilePanelOpen,
   onCloseMobilePanel,
+  collapsed,
+  onToggleCollapse,
 }: {
-  run: RunSummary;
-  status: RunStatusResponse;
-  globals: { key: string; name: string; state: string; port: number | null; url: string | null }[];
-  selectedService: string | null;
-  onSelectService: (name: string | null) => void;
-  isMobile?: boolean;
-  mobilePanelOpen?: boolean;
-  onCloseMobilePanel?: () => void;
+  run: RunSummary
+  status: RunStatusResponse
+  globals: {
+    key: string
+    name: string
+    state: string
+    port: number | null
+    url: string | null
+  }[]
+  tasks: TaskExecutionSummary[]
+  selectedService: string | null
+  selectedSource?: string | null
+  onSelectService: (name: string | null) => void
+  isMobile?: boolean
+  mobilePanelOpen?: boolean
+  onCloseMobilePanel?: () => void
+  collapsed?: boolean
+  onToggleCollapse?: () => void
 }) {
-  void onCloseMobilePanel; // Used by parent for backdrop clicks
-  const queryClient = useQueryClient();
-  const serviceEntries = Object.entries(status.services);
+  void onCloseMobilePanel
+  void selectedSource
+  const serviceEntries = Object.entries(status.services)
 
-  const downMutation = useMutation({
-    mutationFn: () => api.down(run.run_id),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.runs });
-      toast.success("Stack stopped");
-    },
-    onError: (err) => toast.error(`Failed to stop stack: ${err.message}`),
-  });
-
-  const killMutation = useMutation({
-    mutationFn: () => api.kill(run.run_id),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.runs });
-      toast.success("Stack killed");
-    },
-    onError: (err) => toast.error(`Failed to kill stack: ${err.message}`),
-  });
-
-  const restartMutation = useMutation({
-    mutationFn: (service: string) => api.restartService(run.run_id, service),
-    onSuccess: (_, service) => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.runStatus(run.run_id) });
-      toast.success(`Restarted ${service}`);
-    },
-    onError: (err) => toast.error(`Failed to restart: ${err.message}`),
-  });
-
-  // Stable callbacks to avoid re-rendering ServiceRow on every poll (Bug 3)
   const handleSelectService = useCallback(
     (name: string) => onSelectService(selectedService === name ? null : name),
     [onSelectService, selectedService],
-  );
+  )
 
-  const handleRestart = useCallback(
-    (name: string) => restartMutation.mutate(name),
-    [restartMutation],
-  );
-
-  const isActive = run.state !== "stopped";
-
-  const panelOpen = isMobile ? mobilePanelOpen : true;
+  const panelOpen = isMobile ? mobilePanelOpen : true
 
   return (
     <aside
       className={cn(
-        "flex flex-col shrink-0 border-r border-border",
-        // Mobile: fixed slide-over panel with opaque bg
+        'flex flex-col shrink-0 border-r border-line sidebar-transition',
         isMobile
-          ? "fixed inset-y-0 left-0 z-30 w-[280px] mobile-slide-panel shadow-2xl bg-background"
-          : "w-[260px] bg-card/50",
-        // Transform for mobile slide
-        isMobile && !panelOpen && "-translate-x-full",
-        isMobile && panelOpen && "translate-x-0",
+          ? 'fixed inset-y-0 left-0 z-30 w-[240px] mobile-slide-panel shadow-lg bg-surface-raised'
+          : collapsed
+            ? 'w-10 bg-surface-raised'
+            : 'w-[160px] bg-surface-raised',
+        isMobile && !panelOpen && '-translate-x-full',
+        isMobile && panelOpen && 'translate-x-0',
       )}
     >
-      {/* Stack controls */}
-      <div className="px-4 py-3 border-b border-border flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2 min-w-0">
-          <Activity className="w-3.5 h-3.5 text-muted-foreground/40 shrink-0" />
-          <span className="text-xs text-muted-foreground/60 font-mono truncate" title={run.run_id}>
-            {run.run_id}
+      {/* Section header */}
+      <div
+        className={cn(
+          'flex items-center border-b border-line shrink-0',
+          collapsed ? 'justify-center py-2' : 'justify-between px-3 py-2',
+        )}
+      >
+        {!collapsed && (
+          <span className="text-[11px] font-semibold text-ink-tertiary uppercase tracking-wider">
+            Services
           </span>
-        </div>
-        {isActive && (
-          <div className="flex items-center gap-1 md:gap-0.5 shrink-0">
-            <Button variant="ghost" size={isMobile ? "icon-sm" : "icon-xs"} onClick={() => downMutation.mutate()} disabled={downMutation.isPending} aria-label="Stop stack" title="Stop stack">
-              <Square className="w-3.5 h-3.5" />
-            </Button>
-            <Button variant="ghost" size={isMobile ? "icon-sm" : "icon-xs"} onClick={() => killMutation.mutate()} disabled={killMutation.isPending} aria-label="Kill stack" title="Kill stack" className="text-destructive hover:text-destructive">
-              <XCircle className="w-3.5 h-3.5" />
-            </Button>
-          </div>
+        )}
+        {!isMobile && onToggleCollapse && (
+          <button
+            onClick={onToggleCollapse}
+            className="w-6 h-6 flex items-center justify-center text-ink-tertiary hover:text-ink transition-colors rounded-sm"
+            title={collapsed ? 'Expand sidebar (])' : 'Collapse sidebar ([)'}
+            aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          >
+            {collapsed ? (
+              <ChevronsRight className="w-3.5 h-3.5" />
+            ) : (
+              <ChevronsLeft className="w-3.5 h-3.5" />
+            )}
+          </button>
         )}
       </div>
 
       {/* Services list */}
-      <nav className="flex-1 overflow-y-auto py-1.5 stagger-in" aria-label="Services">
-        {serviceEntries.map(([name, svc]) => (
-          <ServiceRow
-            key={name}
-            name={name}
-            service={svc}
-            isViewing={selectedService === name}
-            onSelect={handleSelectService}
-            onRestart={handleRestart}
-            isRestarting={restartMutation.isPending && restartMutation.variables === name}
-          />
-        ))}
-
-        {globals.length > 0 && (
-          <div className="mt-2 pt-2 border-t border-border/50">
-            <div className="text-[11px] font-semibold text-muted-foreground/40 uppercase tracking-wider px-4 pb-1.5">
-              Globals
-            </div>
-            {globals.map((g) => (
-              <div key={g.key} className="flex items-center gap-2.5 px-4 py-2 text-sm">
-                <StatusDot state={g.state === "running" ? "running" : "stopped"} />
-                <span className="text-foreground/50 truncate">{g.name}</span>
-                {g.port && (
-                  <span className="text-muted-foreground/50 font-mono text-xs ml-auto">:{g.port}</span>
+      <nav className="flex-1 overflow-y-auto py-1" aria-label="Services">
+        {collapsed ? (
+          /* Collapsed: just status dots */
+          <>
+            {serviceEntries.map(([name, svc]) => (
+              <button
+                key={name}
+                onClick={() => handleSelectService(name)}
+                className={cn(
+                  'w-full flex items-center justify-center py-2 transition-colors',
+                  selectedService === name
+                    ? 'bg-surface-sunken'
+                    : 'hover:bg-surface-sunken/50',
                 )}
-              </div>
+                title={`${name} — ${svc.state}`}
+                aria-label={`${name} — ${svc.state}`}
+              >
+                <StatusDot state={svc.state} />
+              </button>
             ))}
-          </div>
+            {tasks.length > 0 && (
+              <div className="border-t border-line-subtle mt-1 pt-1">
+                {tasks.map((task) => {
+                  const taskKey = `task:${task.task}`
+                  return (
+                    <button
+                      key={task.task}
+                      onClick={() => handleSelectService(taskKey)}
+                      className={cn(
+                        'w-full flex items-center justify-center py-2 transition-colors',
+                        selectedService === taskKey
+                          ? 'bg-surface-sunken'
+                          : 'hover:bg-surface-sunken/50',
+                      )}
+                      title={`${task.task} — ${task.exit_code === 0 ? 'passed' : 'failed'}`}
+                      aria-label={`${task.task} — ${task.exit_code === 0 ? 'passed' : 'failed'}`}
+                    >
+                      <span
+                        className={cn(
+                          'text-xs',
+                          task.exit_code === 0
+                            ? 'text-emerald-500'
+                            : 'text-red-400',
+                        )}
+                      >
+                        {task.exit_code === 0 ? '✓' : '✗'}
+                      </span>
+                    </button>
+                  )
+                })}
+              </div>
+            )}
+            {globals.length > 0 && (
+              <div className="border-t border-line-subtle mt-1 pt-1">
+                {globals.map((g) => (
+                  <div
+                    key={g.key}
+                    className="flex items-center justify-center py-2"
+                    title={`${g.name} — ${g.state}`}
+                  >
+                    <StatusDot
+                      state={g.state === 'running' ? 'running' : 'stopped'}
+                    />
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
+        ) : (
+          /* Expanded: full rows */
+          <>
+            {serviceEntries.map(([name, svc]) => (
+              <ServiceRow
+                key={name}
+                name={name}
+                service={svc}
+                isViewing={selectedService === name}
+                onSelect={handleSelectService}
+                svcColorIndex={getServiceColorIndex(name)}
+              />
+            ))}
+            {tasks.length > 0 && (
+              <div className="mt-1 pt-1 border-t border-line-subtle">
+                <div className="text-[11px] font-semibold text-ink-tertiary uppercase tracking-wider px-3 pb-1 pt-1.5">
+                  Tasks
+                </div>
+                {tasks.map((task) => {
+                  const taskKey = `task:${task.task}`
+                  return (
+                    <button
+                      key={task.task}
+                      onClick={() => onSelectService(taskKey)}
+                      className={cn(
+                        'w-full flex items-center gap-2 px-3 py-1.5 text-[13px] transition-colors',
+                        selectedService === taskKey
+                          ? 'bg-surface-sunken'
+                          : 'hover:bg-surface-sunken/50',
+                      )}
+                    >
+                      <span
+                        className={cn(
+                          'text-xs',
+                          task.exit_code === 0
+                            ? 'text-emerald-500'
+                            : 'text-red-400',
+                        )}
+                      >
+                        {task.exit_code === 0 ? '✓' : '✗'}
+                      </span>
+                      <span className="text-ink-secondary truncate">
+                        {task.task}
+                      </span>
+                      <span className="text-ink-tertiary text-[11px] ml-auto">
+                        {(task.duration_ms / 1000).toFixed(1)}s
+                      </span>
+                    </button>
+                  )
+                })}
+              </div>
+            )}
+            {globals.length > 0 && (
+              <div className="mt-1 pt-1 border-t border-line-subtle">
+                <div className="text-[11px] font-semibold text-ink-tertiary uppercase tracking-wider px-3 pb-1 pt-1.5">
+                  Globals
+                </div>
+                {globals.map((g) => (
+                  <div
+                    key={g.key}
+                    className="flex items-center gap-2 px-3 py-1.5 text-[13px]"
+                  >
+                    <StatusDot
+                      state={g.state === 'running' ? 'running' : 'stopped'}
+                    />
+                    <span className="text-ink-secondary truncate">
+                      {g.name}
+                    </span>
+                    {g.port && (
+                      <span className="text-ink-tertiary font-mono text-[11px] ml-auto">
+                        :{g.port}
+                      </span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
         )}
       </nav>
 
-      {/* Project path */}
-      <div className="px-4 py-2.5 border-t border-border/50">
-        <div className="text-[11px] text-muted-foreground/40 font-mono truncate" title={run.project_dir}>
-          {run.project_dir}
+      {/* Project path — hidden when collapsed */}
+      {!collapsed && (
+        <div className="px-3 py-2 border-t border-line-subtle">
+          <div
+            className="text-[11px] text-ink-tertiary font-mono truncate"
+            title={run.project_dir}
+          >
+            {run.project_dir}
+          </div>
         </div>
-      </div>
+      )}
     </aside>
-  );
+  )
 }

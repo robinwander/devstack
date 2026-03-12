@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use notify::{RecursiveMode, Watcher};
 use serde::Serialize;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
@@ -127,7 +127,9 @@ pub async fn stream_logs(
 
     let start = Instant::now();
     loop {
-        if let Some(limit) = follow_for && start.elapsed() >= limit {
+        if let Some(limit) = follow_for
+            && start.elapsed() >= limit
+        {
             return Ok(());
         }
         tokio::select! {
@@ -184,12 +186,7 @@ fn emit_line(line: &str, service: &str, json: bool, no_health: bool) -> Result<(
     Ok(())
 }
 
-async fn emit_line_async(
-    line: &str,
-    service: &str,
-    json: bool,
-    no_health: bool,
-) -> Result<()> {
+async fn emit_line_async(line: &str, service: &str, json: bool, no_health: bool) -> Result<()> {
     if no_health && is_health_noise_line(line) {
         return Ok(());
     }
@@ -224,7 +221,8 @@ mod tests {
 
     #[test]
     fn structured_log_from_raw_handles_json_lines() {
-        let line = r#"{"time":"2025-01-01T00:00:00Z","stream":"stdout","level":"WARN","msg":"watch out"}"#;
+        let line =
+            r#"{"time":"2025-01-01T00:00:00Z","stream":"stdout","level":"WARN","msg":"watch out"}"#;
         let parsed = structured_log_from_raw("api", line);
 
         assert_eq!(parsed.timestamp.as_deref(), Some("2025-01-01T00:00:00Z"));

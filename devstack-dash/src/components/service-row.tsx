@@ -1,13 +1,8 @@
-import { useState, useCallback } from "react";
-import {
-  ExternalLink,
-  Copy,
-  Check,
-  RotateCcw,
-} from "lucide-react";
+import { useCallback, useState, useRef } from "react";
+import { createPortal } from "react-dom";
 import { cn } from "@/lib/utils";
-import { toast } from "sonner";
-import { StatusIcon } from "./status-dot";
+import { Copy, ExternalLink, Check } from "lucide-react";
+import { StatusDot } from "./status-dot";
 import type { ServiceStatus } from "@/lib/api";
 
 export function ServiceRow({
@@ -15,140 +10,143 @@ export function ServiceRow({
   service,
   isViewing,
   onSelect,
-  onRestart,
-  isRestarting,
+  svcColorIndex,
 }: {
   name: string;
   service: ServiceStatus;
   isViewing: boolean;
-  onSelect: ((name: string) => void) | (() => void);
-  onRestart: ((name: string) => void) | (() => void);
-  isRestarting: boolean;
+  onSelect: (name: string) => void;
+  svcColorIndex: number;
 }) {
+  const handleSelect = useCallback(() => onSelect(name), [onSelect, name]);
+  const svcColorClass = `svc-color-${svcColorIndex}`;
+  const [hoverOpen, setHoverOpen] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [popoverPos, setPopoverPos] = useState({ top: 0, left: 0 });
+  const rowRef = useRef<HTMLDivElement>(null);
+  const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const leaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const copyUrl = useCallback(async (e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (service.url) {
-      try {
-        await navigator.clipboard.writeText(service.url);
-        setCopied(true);
-        setTimeout(() => setCopied(false), 1500);
-        toast.success("URL copied");
-      } catch {
-        toast.error("Failed to copy URL");
+  const showPopover = useCallback(() => {
+    if (leaveTimerRef.current) clearTimeout(leaveTimerRef.current);
+    hoverTimerRef.current = setTimeout(() => {
+      if (rowRef.current) {
+        const rect = rowRef.current.getBoundingClientRect();
+        setPopoverPos({ top: rect.top, left: rect.right + 4 });
       }
-    }
+      setHoverOpen(true);
+    }, 250);
+  }, []);
+
+  const hidePopover = useCallback(() => {
+    if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
+    leaveTimerRef.current = setTimeout(() => setHoverOpen(false), 150);
+  }, []);
+
+  const keepPopover = useCallback(() => {
+    if (leaveTimerRef.current) clearTimeout(leaveTimerRef.current);
+  }, []);
+
+  const copyUrl = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!service.url) return;
+    void navigator.clipboard.writeText(service.url).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
   }, [service.url]);
 
-  const handleSelect = useCallback(() => {
-    (onSelect as (name: string) => void)(name);
-  }, [onSelect, name]);
-
-  const handleRestart = useCallback(() => {
-    (onRestart as (name: string) => void)(name);
-  }, [onRestart, name]);
+  const openUrl = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (service.url) window.open(service.url, "_blank");
+  }, [service.url]);
 
   return (
-    <div
-      onClick={handleSelect}
-      className={cn(
-        "service-row group cursor-pointer mx-1.5 mb-0.5 border-l-2",
-        isViewing
-          ? "bg-secondary/70 border-l-primary/70"
-          : "hover:bg-secondary/30 border-l-transparent",
-      )}
-      role="button"
-      tabIndex={0}
-      onKeyDown={(e) => {
-        if (e.target !== e.currentTarget) return;
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          handleSelect();
-        }
-      }}
-      aria-label={`${name} — ${service.state}`}
-      aria-pressed={isViewing}
-    >
-      <div className="flex items-center gap-2.5 px-3 py-3 md:py-2.5">
-        {/* Status indicator */}
-        <StatusIcon state={service.state} />
-
-        {/* Name */}
-        <span className={cn(
-          "text-sm font-medium truncate min-w-0 flex-1",
-          isViewing ? "text-foreground" : "text-foreground/70"
-        )}>
-          {name}
-        </span>
-
-        {/* State label (only when not ready) — no truncation, uses flex-shrink-0 */}
-        {service.state !== "ready" && (
-          <span className={cn(
-            "text-xs capitalize shrink-0",
-            service.state === "starting" && "text-amber-500",
-            service.state === "failed" && "text-red-400",
-            service.state === "stopped" && "text-muted-foreground/40",
-            service.state === "degraded" && "text-orange-500",
-          )}>{service.state}</span>
+    <div ref={rowRef} onMouseEnter={showPopover} onMouseLeave={hidePopover}>
+      <div
+        onClick={handleSelect}
+        className={cn(
+          "service-row group cursor-pointer mx-1 rounded-sm",
+          svcColorClass,
+          isViewing
+            ? "bg-surface-sunken"
+            : "hover:bg-surface-sunken/50",
         )}
-
-        {/* Actions — always visible at 60% opacity, 100% on hover/viewing, keyboard-focusable */}
-        <div className={cn(
-          "flex items-center gap-0.5 shrink-0 ml-auto transition-opacity duration-150",
-          isViewing ? "opacity-100" : "opacity-60 group-hover:opacity-100"
-        )}>
-          {service.url && (
-            <button
-              onClick={copyUrl}
-              className="w-10 h-10 md:w-8 md:h-8 flex items-center justify-center text-muted-foreground/50 hover:text-foreground transition-colors"
-              aria-label={`Copy ${name} URL`}
-              tabIndex={0}
-            >
-              {copied ? <Check className="w-4 h-4 md:w-3.5 md:h-3.5 text-emerald-500" /> : <Copy className="w-4 h-4 md:w-3.5 md:h-3.5" />}
-            </button>
-          )}
-          {service.url && (
-            <a
-              href={service.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              onClick={(e) => e.stopPropagation()}
-              className="w-10 h-10 md:w-8 md:h-8 flex items-center justify-center text-muted-foreground/50 hover:text-foreground transition-colors"
-              aria-label={`Open ${name}`}
-              tabIndex={0}
-            >
-              <ExternalLink className="w-4 h-4 md:w-3.5 md:h-3.5" />
-            </a>
-          )}
-          {service.state !== "stopped" && (
-            <button
-              onClick={(e) => { e.stopPropagation(); handleRestart(); }}
-              disabled={isRestarting}
-              className="w-10 h-10 md:w-8 md:h-8 flex items-center justify-center text-muted-foreground/50 hover:text-foreground transition-colors disabled:opacity-30"
-              aria-label={`Restart ${name}`}
-              tabIndex={0}
-            >
-              <RotateCcw className={cn("w-4 h-4 md:w-3.5 md:h-3.5", isRestarting && "animate-spin")} />
-            </button>
+        role="button"
+        tabIndex={0}
+        onKeyDown={(e) => {
+          if (e.target !== e.currentTarget) return;
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            handleSelect();
+          }
+        }}
+        aria-label={`${name} — ${service.state}`}
+        aria-pressed={isViewing}
+      >
+        <div className="flex items-center gap-2 px-2 py-1.5">
+          <StatusDot state={service.state} />
+          <span className={cn(
+            "text-[13px] font-medium truncate min-w-0 flex-1",
+            isViewing ? "text-ink" : "text-ink-secondary"
+          )}>
+            {name}
+          </span>
+          {service.state !== "ready" && (
+            <span className={cn(
+              "text-[11px] capitalize shrink-0",
+              service.state === "starting" && "text-status-amber-text",
+              service.state === "failed" && "text-status-red-text",
+              service.state === "stopped" && "text-ink-tertiary",
+              service.state === "degraded" && "text-status-amber-text",
+            )}>{service.state}</span>
           )}
         </div>
       </div>
 
-      {/* URL + failure info */}
-      {(service.url || service.last_failure) && (
-        <div className="px-3 pb-2 -mt-0.5">
-          {service.url && (
-            <div className="text-[11px] font-mono text-muted-foreground/45 truncate pl-[30px]">
+      {/* Hover popover — portaled to body to avoid overflow clipping */}
+      {hoverOpen && service.url && createPortal(
+        <div
+          className="fixed z-50 svc-popover-enter"
+          style={{ top: popoverPos.top, left: popoverPos.left }}
+          onMouseEnter={keepPopover}
+          onMouseLeave={hidePopover}
+        >
+          <div className={cn(
+            "bg-surface-overlay border border-line shadow-lg rounded-md p-3 w-56",
+            svcColorClass,
+          )}>
+            <div className="flex items-center gap-2 mb-2">
+              <StatusDot state={service.state} />
+              <span className="text-sm font-semibold text-ink">{name}</span>
+              <span className={cn(
+                "text-[11px] capitalize ml-auto",
+                service.state === "ready" && "text-status-green-text",
+                service.state === "starting" && "text-status-amber-text",
+                service.state === "failed" && "text-status-red-text",
+                service.state === "stopped" && "text-ink-tertiary",
+              )}>{service.state}</span>
+            </div>
+            <div className="text-[11px] text-ink-tertiary font-mono truncate mb-3" title={service.url}>
               {service.url}
             </div>
-          )}
-          {service.last_failure && (
-            <div className="text-[11px] text-red-400/50 truncate pl-[30px] mt-0.5" title={service.last_failure}>
-              {service.last_failure}
+            <div className="flex items-center gap-1.5">
+              <button
+                onClick={copyUrl}
+                className="flex items-center gap-1.5 px-2.5 h-7 text-[11px] font-medium bg-surface-sunken hover:bg-surface-base border border-line rounded-md transition-colors"
+              >
+                {copied ? <><Check className="w-3 h-3 text-status-green-text" />Copied</> : <><Copy className="w-3 h-3" />Copy URL</>}
+              </button>
+              <button
+                onClick={openUrl}
+                className="flex items-center gap-1.5 px-2.5 h-7 text-[11px] font-medium bg-surface-sunken hover:bg-surface-base border border-line rounded-md transition-colors"
+              >
+                <ExternalLink className="w-3 h-3" />Open
+              </button>
             </div>
-          )}
-        </div>
+          </div>
+        </div>,
+        document.body,
       )}
     </div>
   );
