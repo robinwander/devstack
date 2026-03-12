@@ -27,9 +27,16 @@ import {
 import { patchUrlParams, readUrlParam } from '@/lib/url-state'
 import { buildColorIndexMap } from '@/lib/service-colors'
 import {
+  detectColumns,
+  loadColumnConfig,
+  saveColumnConfig,
+  type ColumnConfig,
+} from '@/lib/column-detection'
+import {
   LogRow,
   FacetSection,
   LogTabBar,
+  LogTableHeader,
   LogScrollControls,
   LogSkeleton,
   type ParsedLog,
@@ -434,6 +441,7 @@ export function LogViewer({
       level: (e.level as ParsedLog['level']) || 'info',
       raw: stripAnsi(e.raw),
       json: buildStructuredJson(e),
+      attributes: e.attributes,
     }))
     return {
       logs: result,
@@ -452,6 +460,97 @@ export function LogViewer({
   const colorIndexMap = useMemo(
     () => buildColorIndexMap(services.length > 0 ? services : logServiceNames),
     [services, logServiceNames],
+  )
+
+  // ── Column detection and management ──
+  const columnStorageKey = `devstack:columns:${activeSourceName || projectDir || 'default'}`
+  const rawEntries = logsQuery.data?.entries ?? []
+
+  const [columnConfig, setColumnConfig] = useState<ColumnConfig[]>(() => {
+    const saved = loadColumnConfig(columnStorageKey)
+    return saved ?? []
+  })
+
+  // Re-detect columns when entries change significantly
+  const columnDetectionKey = useMemo(() => {
+    const fields = new Set<string>()
+    for (const entry of rawEntries) {
+      if (entry.attributes) {
+        for (const key of Object.keys(entry.attributes)) {
+          fields.add(key)
+        }
+      }
+    }
+    return Array.from(fields).sort().join(',')
+  }, [rawEntries])
+
+  useEffect(() => {
+    if (rawEntries.length === 0) return
+    const saved = loadColumnConfig(columnStorageKey)
+    const detected = detectColumns(rawEntries, saved)
+    setColumnConfig(detected)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [columnDetectionKey, columnStorageKey])
+
+  const visibleDynamicColumns = useMemo(
+    () => columnConfig.filter((c) => c.visible && !c.builtIn),
+    [columnConfig],
+  )
+
+  const attributeCardinality = useMemo(() => {
+    const map = new Map<string, Set<string>>()
+    for (const entry of rawEntries) {
+      if (!entry.attributes) continue
+      for (const [key, value] of Object.entries(entry.attributes)) {
+        const set = map.get(key) ?? new Set<string>()
+        set.add(value)
+        map.set(key, set)
+      }
+    }
+    const result = new Map<string, number>()
+    for (const [key, set] of map) {
+      result.set(key, set.size)
+    }
+    return result
+  }, [rawEntries])
+
+  const handleToggleColumn = useCallback(
+    (field: string) => {
+      setColumnConfig((prev) => {
+        const next = prev.map((c) =>
+          c.field === field ? { ...c, visible: !c.visible } : c,
+        )
+        saveColumnConfig(columnStorageKey, next)
+        return next
+      })
+    },
+    [columnStorageKey],
+  )
+
+  const handleRemoveColumn = useCallback(
+    (field: string) => {
+      setColumnConfig((prev) => {
+        const next = prev.map((c) =>
+          c.field === field ? { ...c, visible: false } : c,
+        )
+        saveColumnConfig(columnStorageKey, next)
+        return next
+      })
+    },
+    [columnStorageKey],
+  )
+
+  const handleResizeColumn = useCallback(
+    (field: string, width: number) => {
+      setColumnConfig((prev) => {
+        const next = prev.map((c) =>
+          c.field === field ? { ...c, width } : c,
+        )
+        saveColumnConfig(columnStorageKey, next)
+        return next
+      })
+    },
+    [columnStorageKey],
   )
 
   // Track new logs when not at the latest edge.
@@ -1312,43 +1411,56 @@ export function LogViewer({
               )}
             </div>
           ) : (
-            <div
-              style={{
-                height: virtualizer.getTotalSize(),
-                width: '100%',
-                position: 'relative',
-              }}
-            >
-              {virtualizer.getVirtualItems().map((virtualRow) => {
-                const i = virtualRow.index
-                const log = logs[i]
-                const prevService = i > 0 ? logs[i - 1].service : null
-                const showLabel =
-                  showServiceColumn && log.service !== prevService
-                const svcColorIndex = colorIndexMap.get(log.service) ?? 0
+            <>
+              <LogTableHeader
+                columns={columnConfig}
+                showServiceColumn={showServiceColumn}
+                serviceColumnWidth={serviceColumnWidth}
+                lineWrap={lineWrap}
+                attributeCardinality={attributeCardinality}
+                onToggleColumn={handleToggleColumn}
+                onRemoveColumn={handleRemoveColumn}
+                onResizeColumn={handleResizeColumn}
+              />
+              <div
+                style={{
+                  height: virtualizer.getTotalSize(),
+                  width: '100%',
+                  position: 'relative',
+                }}
+              >
+                {virtualizer.getVirtualItems().map((virtualRow) => {
+                  const i = virtualRow.index
+                  const log = logs[i]
+                  const prevService = i > 0 ? logs[i - 1].service : null
+                  const showLabel =
+                    showServiceColumn && log.service !== prevService
+                  const svcColorIndex = colorIndexMap.get(log.service) ?? 0
 
-                return (
-                  <LogRow
-                    key={virtualRow.key}
-                    virtualRow={virtualRow}
-                    measureElement={virtualizer.measureElement}
-                    log={log}
-                    index={i}
-                    lineNumber={i + 1}
-                    showLabel={showLabel}
-                    showServiceColumn={showServiceColumn}
-                    serviceColumnWidth={serviceColumnWidth}
-                    svcColorIndex={svcColorIndex}
-                    highlighter={highlighter}
-                    isActiveMatch={!!debouncedSearch && i === activeMatchIndex}
-                    isExpanded={expandedRow === i}
-                    lineWrap={lineWrap}
-                    onToggleExpand={toggleExpand}
-                    hasBorderTop={showLabel && i > 0}
-                  />
-                )
-              })}
-            </div>
+                  return (
+                    <LogRow
+                      key={virtualRow.key}
+                      virtualRow={virtualRow}
+                      measureElement={virtualizer.measureElement}
+                      log={log}
+                      index={i}
+                      lineNumber={i + 1}
+                      showLabel={showLabel}
+                      showServiceColumn={showServiceColumn}
+                      serviceColumnWidth={serviceColumnWidth}
+                      svcColorIndex={svcColorIndex}
+                      highlighter={highlighter}
+                      isActiveMatch={!!debouncedSearch && i === activeMatchIndex}
+                      isExpanded={expandedRow === i}
+                      lineWrap={lineWrap}
+                      onToggleExpand={toggleExpand}
+                      hasBorderTop={showLabel && i > 0}
+                      dynamicColumns={visibleDynamicColumns}
+                    />
+                  )
+                })}
+              </div>
+            </>
           )}
         </div>
       </div>

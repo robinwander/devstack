@@ -3,6 +3,7 @@ import { cn } from '@/lib/utils'
 import { highlightAll } from './highlight'
 import { LogDetail } from './log-detail'
 import type { ParsedLog } from './types'
+import type { ColumnConfig } from '@/lib/column-detection'
 
 interface LogRowProps {
   log: ParsedLog
@@ -20,6 +21,7 @@ interface LogRowProps {
   lineWrap: boolean
   onToggleExpand: (index: number) => void
   hasBorderTop: boolean
+  dynamicColumns: ColumnConfig[]
 }
 
 export const LogRow = memo(function LogRow({
@@ -38,6 +40,7 @@ export const LogRow = memo(function LogRow({
   lineWrap,
   onToggleExpand,
   hasBorderTop,
+  dynamicColumns,
 }: LogRowProps) {
   const level = log.level
   const svcColorClass = `svc-color-${svcColorIndex}`
@@ -91,7 +94,7 @@ export const LogRow = memo(function LogRow({
         </span>
 
         {/* Timestamp */}
-        <span className="log-ts pr-2 py-[2px] text-ink-tertiary select-none whitespace-nowrap tabular-nums text-[13px] font-mono shrink-0">
+        <span className="log-ts pr-2 py-[2px] text-ink-tertiary select-none whitespace-nowrap tabular-nums text-[13px] font-mono shrink-0" style={{ width: 108 }}>
           {log.timestamp}
         </span>
 
@@ -100,7 +103,7 @@ export const LogRow = memo(function LogRow({
           <span className={cn('w-[3px] min-h-full shrink-0', levelStrip || 'svc-strip-bg')} />
         )}
 
-        {/* Service name — always visible, reduced weight for consecutive */}
+        {/* Service name */}
         {showServiceColumn && (
           <span
             className={cn(
@@ -115,7 +118,31 @@ export const LogRow = memo(function LogRow({
           </span>
         )}
 
-        {/* Log content */}
+        {/* Level badge */}
+        <span className="py-[2px] px-1 shrink-0 flex items-center" style={{ width: 56 }}>
+          <LevelBadge level={level} />
+        </span>
+
+        {/* Dynamic attribute columns */}
+        {dynamicColumns.map((col) => {
+          const value = log.attributes?.[col.field]
+          return (
+            <span
+              key={col.field}
+              className="log-attr-cell py-[2px] px-2 shrink-0 font-mono text-[13px] whitespace-nowrap overflow-hidden text-ellipsis"
+              style={{ width: col.width }}
+              title={value || undefined}
+            >
+              {value ? (
+                <span className="text-ink-secondary">{value}</span>
+              ) : (
+                <span className="text-ink-tertiary/40">—</span>
+              )}
+            </span>
+          )
+        })}
+
+        {/* Log content / message */}
         <span
           className={cn(
             'py-[2px] pl-2 pr-4 log-content-text min-w-0 flex-1 font-mono text-[13px]',
@@ -136,3 +163,18 @@ export const LogRow = memo(function LogRow({
   )
 })
 LogRow.displayName = 'LogRow'
+
+function LevelBadge({ level }: { level: 'info' | 'warn' | 'error' }) {
+  return (
+    <span
+      className={cn(
+        'inline-flex items-center justify-center h-[18px] min-w-[18px] px-1 rounded text-[10px] font-bold uppercase tracking-wide leading-none',
+        level === 'error' && 'bg-status-red/15 text-status-red-text',
+        level === 'warn' && 'bg-status-amber/15 text-status-amber-text',
+        level === 'info' && 'bg-surface-sunken text-ink-tertiary',
+      )}
+    >
+      {level === 'error' ? 'ERR' : level === 'warn' ? 'WRN' : 'INF'}
+    </span>
+  )
+}
