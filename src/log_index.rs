@@ -8,6 +8,10 @@ use std::sync::{Mutex, RwLock};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
+use tantivy::aggregation::AggregationCollector;
+use tantivy::aggregation::agg_req::{Aggregation, AggregationVariants, Aggregations};
+use tantivy::aggregation::agg_result::{AggregationResult, AggregationResults, BucketResult};
+use tantivy::aggregation::bucket::TermsAggregation as TantivyTermsAgg;
 use tantivy::collector::{Count, TopDocs};
 use tantivy::query::{AllQuery, BooleanQuery, Occur, Query, QueryParser, RangeQuery, TermQuery};
 use tantivy::schema::{FAST, Field, FieldType, INDEXED, STORED, STRING, TEXT, Value};
@@ -22,6 +26,9 @@ use crate::logfmt::{
 };
 use crate::paths;
 use crate::util::{atomic_write, contains_ansi, strip_ansi};
+
+const CURRENT_SCHEMA_VERSION: &str = "3";
+const FACET_TERMS_LIMIT: u32 = 50;
 
 #[derive(Clone, Debug)]
 pub(crate) struct LogSource {
@@ -88,7 +95,34 @@ impl LogIndex {
         Self::open_or_create_at(&index_dir, &ingest_state_path)
     }
 
+    fn schema_version_path(index_dir: &Path) -> PathBuf {
+        index_dir.join("schema_version")
+    }
+
+    fn reset_for_schema_version(index_dir: &Path, ingest_state_path: &Path) -> Result<()> {
+        let version_path = Self::schema_version_path(index_dir);
+        let version_matches = std::fs::read_to_string(&version_path)
+            .ok()
+            .map(|version| version.trim().to_string())
+            .as_deref()
+            == Some(CURRENT_SCHEMA_VERSION);
+
+        if version_matches {
+            return Ok(());
+        }
+
+        if index_dir.exists() {
+            std::fs::remove_dir_all(index_dir)?;
+        }
+        if ingest_state_path.exists() {
+            std::fs::remove_file(ingest_state_path)?;
+        }
+
+        Ok(())
+    }
+
     fn open_or_create_at(index_dir: &Path, ingest_state_path: &Path) -> Result<Self> {
+        Self::reset_for_schema_version(index_dir, ingest_state_path)?;
         std::fs::create_dir_all(index_dir)?;
 
         let index = match Index::open_in_dir(index_dir) {
@@ -104,6 +138,11 @@ impl LogIndex {
                 Index::create_in_dir(index_dir, schema)?
             }
         };
+
+        atomic_write(
+            &Self::schema_version_path(index_dir),
+            CURRENT_SCHEMA_VERSION.as_bytes(),
+        )?;
 
         let schema = index.schema();
         let fields = Self::resolve_fields(&schema)?;
@@ -138,10 +177,10 @@ impl LogIndex {
 
     fn build_schema() -> tantivy::schema::Schema {
         let mut schema = tantivy::schema::Schema::builder();
-        schema.add_text_field("run_id", STRING | STORED);
-        schema.add_text_field("service", STRING | STORED);
-        schema.add_text_field("stream", STRING | STORED);
-        schema.add_text_field("level", STRING | STORED);
+        schema.add_text_field("run_id", STRING | STORED | FAST);
+        schema.add_text_field("service", STRING | STORED | FAST);
+        schema.add_text_field("stream", STRING | STORED | FAST);
+        schema.add_text_field("level", STRING | STORED | FAST);
         schema.add_i64_field("ts_nanos", INDEXED | FAST | STORED);
         schema.add_text_field("ts", STRING | STORED);
         schema.add_u64_field("seq", INDEXED | FAST | STORED);
@@ -218,7 +257,7 @@ impl LogIndex {
             schema_builder.add_field(field_entry.clone());
         }
         for field_name in &missing {
-            schema_builder.add_text_field(field_name, STRING | STORED);
+            schema_builder.add_text_field(field_name, STRING | STORED | FAST);
         }
 
         let mut metas = self.index.read().unwrap().load_metas()?;
@@ -921,56 +960,66 @@ impl LogIndex {
             Self::build_scope_query(&fields, run_id, None, since_nanos, None, None, None)?;
         let total: usize = searcher.search(&total_query, &Count)?;
 
-        let mut filters = Vec::new();
-        for (field_name, field_handle) in facet_fields {
-            let include_service = if field_name == "service" {
-                None
-            } else {
-                service_filter
-            };
-            let include_stream = if field_name == "stream" {
-                None
-            } else {
-                stream_filter
-            };
+        #[derive(Clone, Debug, Eq, Hash, PartialEq)]
+        struct FacetScopeKey {
+            service: Option<String>,
+            level: Option<String>,
+            stream: Option<String>,
+        }
 
+        let mut fields_by_scope: HashMap<FacetScopeKey, Vec<String>> = HashMap::new();
+        for field_name in &facet_fields {
+            let scope_key = FacetScopeKey {
+                service: if field_name == "service" {
+                    None
+                } else {
+                    service_filter.map(str::to_string)
+                },
+                level: if field_name == "level" {
+                    None
+                } else {
+                    level_filter.map(str::to_string)
+                },
+                stream: if field_name == "stream" {
+                    None
+                } else {
+                    stream_filter.map(str::to_string)
+                },
+            };
+            fields_by_scope
+                .entry(scope_key)
+                .or_default()
+                .push(field_name.clone());
+        }
+
+        let mut facet_values_by_field = HashMap::new();
+        for (scope_key, field_names) in fields_by_scope {
             let mut scope = Self::build_scope_query(
                 &fields,
                 run_id,
-                include_service,
+                scope_key.service.as_deref(),
                 since_nanos,
-                include_stream,
+                scope_key.stream.as_deref(),
                 None,
                 None,
             )?;
-            if field_name != "level"
-                && let Some(level) = level_filter
-            {
+            if let Some(level) = scope_key.level.as_deref() {
                 scope = Self::add_level_filter(fields.level, scope, level)?;
             }
 
-            let mut values = Vec::new();
-            for value in Self::collect_field_terms(&searcher, field_handle)? {
-                let term = Term::from_field_text(field_handle, &value);
-                let scoped = scope.box_clone();
-                let count_query = BooleanQuery::new(vec![
-                    (Occur::Must, scoped),
-                    (
-                        Occur::Must,
-                        Box::new(TermQuery::new(
-                            term,
-                            tantivy::schema::IndexRecordOption::Basic,
-                        )),
-                    ),
-                ]);
-                let count: usize = searcher.search(&count_query, &Count)?;
-                if count > 0 {
-                    values.push(FacetValueCount { value, count });
+            let agg_results =
+                Self::collect_terms_aggregations(&searcher, scope.as_ref(), &field_names)?;
+            for field_name in field_names {
+                let values = Self::facet_values_from_aggregation_results(&agg_results, &field_name);
+                if !values.is_empty() {
+                    facet_values_by_field.insert(field_name, values);
                 }
             }
-            values.sort_by(|a, b| b.count.cmp(&a.count).then(a.value.cmp(&b.value)));
+        }
 
-            if !values.is_empty() {
+        let mut filters = Vec::new();
+        for field_name in facet_fields {
+            if let Some(values) = facet_values_by_field.remove(&field_name) {
                 filters.push(FacetFilter {
                     field: field_name.clone(),
                     kind: Self::facet_kind_for(&field_name).to_string(),
@@ -988,11 +1037,12 @@ impl LogIndex {
         Ok(LogFacetsResponse { total, filters })
     }
 
-    fn facet_fields(schema: &tantivy::schema::Schema) -> Vec<(String, Field)> {
+    fn facet_fields(schema: &tantivy::schema::Schema) -> Vec<String> {
+        let mut seen = BTreeSet::new();
         schema
             .fields()
-            .filter_map(|(field, entry)| {
-                if !entry.is_indexed() || !entry.is_stored() {
+            .filter_map(|(_field, entry)| {
+                if !entry.is_indexed() || !entry.is_stored() || !entry.is_fast() {
                     return None;
                 }
                 if !matches!(entry.field_type(), FieldType::Str(_)) {
@@ -1002,7 +1052,11 @@ impl LogIndex {
                 if matches!(name, "run_id" | "ts" | "raw" | "message") {
                     return None;
                 }
-                Some((name.to_string(), field))
+                let name = name.to_string();
+                if !seen.insert(name.clone()) {
+                    return None;
+                }
+                Some(name)
             })
             .collect()
     }
@@ -1029,22 +1083,59 @@ impl LogIndex {
             .collect()
     }
 
-    fn collect_field_terms(searcher: &tantivy::Searcher, field: Field) -> Result<Vec<String>> {
-        let mut terms = BTreeSet::new();
-        for segment in searcher.segment_readers() {
-            let inverted_index = segment.inverted_index(field)?;
-            let mut stream = inverted_index.terms().stream()?;
-            while stream.advance() {
-                let Ok(value) = std::str::from_utf8(stream.key()) else {
-                    continue;
-                };
-                if value.is_empty() {
-                    continue;
-                }
-                terms.insert(value.to_string());
-            }
+    fn collect_terms_aggregations(
+        searcher: &tantivy::Searcher,
+        scope_query: &dyn Query,
+        field_names: &[String],
+    ) -> Result<AggregationResults> {
+        let mut aggs = Aggregations::default();
+        for field_name in field_names {
+            aggs.insert(
+                field_name.clone(),
+                Aggregation {
+                    agg: AggregationVariants::Terms(TantivyTermsAgg {
+                        field: field_name.clone(),
+                        size: Some(FACET_TERMS_LIMIT),
+                        ..Default::default()
+                    }),
+                    sub_aggregation: Aggregations::default(),
+                },
+            );
         }
-        Ok(terms.into_iter().collect())
+
+        let collector = AggregationCollector::from_aggs(aggs, Default::default());
+        Ok(searcher.search(scope_query, &collector)?)
+    }
+
+    fn facet_values_from_aggregation_results(
+        agg_results: &AggregationResults,
+        field_name: &str,
+    ) -> Vec<FacetValueCount> {
+        let Some(result) = agg_results.0.get(field_name) else {
+            return Vec::new();
+        };
+        let AggregationResult::BucketResult(BucketResult::Terms { buckets, .. }) = result else {
+            return Vec::new();
+        };
+
+        let mut values: Vec<FacetValueCount> = buckets
+            .iter()
+            .filter_map(|bucket| {
+                let value = bucket
+                    .key_as_string
+                    .clone()
+                    .unwrap_or_else(|| bucket.key.to_string());
+                if value.is_empty() {
+                    return None;
+                }
+                Some(FacetValueCount {
+                    value,
+                    count: bucket.doc_count as usize,
+                })
+            })
+            .collect();
+        values.sort_by(|a, b| b.count.cmp(&a.count).then(a.value.cmp(&b.value)));
+        values
     }
 
     fn facet_kind_for(field: &str) -> &'static str {
@@ -1672,6 +1763,92 @@ mod tests {
                 .iter()
                 .all(|filter| filter.field != "trace")
         );
+    }
+
+    #[test]
+    fn facets_exclude_active_filter_from_its_own_counts() {
+        let dir = tempfile::tempdir().unwrap();
+        let index = LogIndex::open_or_create_in(dir.path()).unwrap();
+
+        let api_log = dir.path().join("api.log");
+        let worker_log = dir.path().join("worker.log");
+
+        std::fs::write(
+            &api_log,
+            concat!(
+                "[2025-01-01T00:00:00Z] [stderr] Error: api failed\n",
+                "[2025-01-01T00:00:01Z] [stdout] api recovered\n",
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            &worker_log,
+            "[2025-01-01T00:00:02Z] [stdout] Error: worker failed\n",
+        )
+        .unwrap();
+
+        let sources = vec![
+            LogSource {
+                run_id: "run-filtered-facets".to_string(),
+                service: "api".to_string(),
+                path: api_log,
+            },
+            LogSource {
+                run_id: "run-filtered-facets".to_string(),
+                service: "worker".to_string(),
+                path: worker_log,
+            },
+        ];
+        ingest(&index, &sources);
+
+        let response = index
+            .facets_run(
+                "run-filtered-facets",
+                &sources,
+                LogFacetsQuery {
+                    since: None,
+                    service: Some("api".to_string()),
+                    level: Some("error".to_string()),
+                    stream: None,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(
+            facet_values(&response, "service"),
+            vec![("api".to_string(), 1), ("worker".to_string(), 1)]
+        );
+        assert_eq!(
+            facet_values(&response, "level"),
+            vec![("error".to_string(), 1), ("info".to_string(), 1)]
+        );
+        assert_eq!(
+            facet_values(&response, "stream"),
+            vec![("stderr".to_string(), 1)]
+        );
+    }
+
+    #[test]
+    fn schema_version_mismatch_rebuilds_index_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let index_dir = dir.path().join("logs_index");
+        std::fs::create_dir_all(&index_dir).unwrap();
+        std::fs::write(index_dir.join("schema_version"), "2").unwrap();
+        std::fs::write(index_dir.join("sentinel"), "stale").unwrap();
+        std::fs::write(
+            index_dir.join("ingest_state.json"),
+            r#"{"version":1,"sources":{"run-1/api":{"offset":123,"next_seq":4}}}"#,
+        )
+        .unwrap();
+
+        let index = LogIndex::open_or_create_in(dir.path()).unwrap();
+
+        assert!(!index_dir.join("sentinel").exists());
+        assert_eq!(
+            std::fs::read_to_string(index_dir.join("schema_version")).unwrap(),
+            CURRENT_SCHEMA_VERSION
+        );
+        assert!(index.ingest.lock().unwrap().sources.is_empty());
     }
 
     #[test]
