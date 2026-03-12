@@ -12,6 +12,7 @@ interface LogRowProps {
   measureElement: (el: Element | null) => void;
   showLabel: boolean;
   showServiceColumn: boolean;
+  serviceColumnWidth?: number;
   svcColorIndex: number;
   highlighter: string | RegExp | null;
   isActiveMatch: boolean;
@@ -28,6 +29,7 @@ export const LogRow = memo(function LogRow({
   measureElement,
   showLabel,
   showServiceColumn,
+  serviceColumnWidth,
   svcColorIndex,
   highlighter,
   isActiveMatch,
@@ -93,11 +95,12 @@ export const LogRow = memo(function LogRow({
         {showServiceColumn && (
           <span
             className={cn(
-              "py-[2px] px-2 select-none whitespace-nowrap shrink-0 w-24 text-[13px]",
+              "py-[2px] px-2 select-none whitespace-nowrap shrink-0 overflow-hidden text-ellipsis text-[13px]",
               showLabel
                 ? "svc-text font-semibold"
                 : "text-ink-tertiary font-normal",
             )}
+            style={serviceColumnWidth ? { width: serviceColumnWidth } : { width: 96 }}
           >
             {log.service}
           </span>

@@ -628,6 +628,17 @@ export function LogViewer({
     activeTab === '__all__' &&
     (services.length > 1 || logServiceNames.length > 1)
 
+  // Compute service column width based on longest name (~7.8px per char at 13px mono + 16px padding)
+  const serviceColumnWidth = useMemo(() => {
+    const names = services.length > 0 ? services : logServiceNames
+    const maxLen = Math.max(...names.map((n) => n.length), 0)
+    const charWidth = 7.8
+    const padding = 16
+    const minWidth = 96  // w-24
+    const maxWidth = 200
+    return Math.min(maxWidth, Math.max(minWidth, Math.ceil(maxLen * charWidth + padding)))
+  }, [services, logServiceNames])
+
   const highlighter = useMemo(() => {
     if (!debouncedSearch) return null
     if (isAdvancedQuery) return null
@@ -1252,6 +1263,7 @@ export function LogViewer({
                     lineNumber={i + 1}
                     showLabel={showLabel}
                     showServiceColumn={showServiceColumn}
+                    serviceColumnWidth={serviceColumnWidth}
                     svcColorIndex={svcColorIndex}
                     highlighter={highlighter}
                     isActiveMatch={!!debouncedSearch && i === activeMatchIndex}
