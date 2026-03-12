@@ -6,6 +6,8 @@ use notify::{RecursiveMode, Watcher};
 use serde::Serialize;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
+use std::collections::BTreeMap;
+
 use crate::api::LogEntry;
 use crate::logfmt::{
     classify_line_level, detect_log_level, extract_log_content, extract_timestamp_str,
@@ -20,6 +22,8 @@ pub(crate) struct StructuredLogLine {
     pub(crate) stream: String,
     pub(crate) level: Option<String>,
     pub(crate) message: String,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) attributes: BTreeMap<String, String>,
 }
 
 pub(crate) fn structured_log_from_raw(service: &str, line: &str) -> StructuredLogLine {
@@ -34,6 +38,7 @@ pub(crate) fn structured_log_from_raw(service: &str, line: &str) -> StructuredLo
         stream,
         level: normalize_level(Some(&level), &message),
         message,
+        attributes: BTreeMap::new(),
     }
 }
 
@@ -55,6 +60,7 @@ pub(crate) fn structured_log_from_entry(entry: &LogEntry) -> StructuredLogLine {
         stream: stream.to_string(),
         level: normalize_level(Some(entry.level.as_str()), &message),
         message,
+        attributes: entry.attributes.clone(),
     }
 }
 

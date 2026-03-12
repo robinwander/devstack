@@ -1408,7 +1408,7 @@ pub(crate) async fn source_logs(
     State(state): State<AppState>,
     AxumPath(name): AxumPath<String>,
     Query(query): Query<LogsQuery>,
-) -> Result<Json<LogsResponse>, AppError> {
+) -> Result<Json<LogSearchResponse>, AppError> {
     if query.after.is_some() {
         return Err(AppError::bad_request(
             "after cursor is not supported for source logs",
@@ -1421,13 +1421,12 @@ pub(crate) async fn source_logs(
     }
     let sources = source_log_sources(&ledger, &name).map_err(AppError::from)?;
     if sources.is_empty() {
-        return Ok(Json(LogsResponse {
-            lines: Vec::new(),
+        return Ok(Json(LogSearchResponse {
+            entries: Vec::new(),
             truncated: false,
             total: 0,
             error_count: 0,
             warn_count: 0,
-            next_after: None,
             matched_total: 0,
         }));
     }
@@ -1449,19 +1448,7 @@ pub(crate) async fn source_logs(
             .map_err(|e| AppError::Internal(anyhow!("source log search task failed: {e}")))?
             .map_err(map_log_index_error)?;
 
-    Ok(Json(LogsResponse {
-        lines: response
-            .entries
-            .into_iter()
-            .map(|entry| entry.raw)
-            .collect(),
-        truncated: response.truncated,
-        total: response.total,
-        error_count: response.error_count,
-        warn_count: response.warn_count,
-        next_after: None,
-        matched_total: response.matched_total,
-    }))
+    Ok(Json(response))
 }
 
 #[utoipa::path(

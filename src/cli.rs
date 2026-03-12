@@ -1258,32 +1258,8 @@ async fn query_source_logs(
         let path = format!("/v1/sources/{source_name}/logs{query_str}");
         let value =
             call_daemon::<serde_json::Value>("GET", &path, None, Some(DAEMON_LONG_TIMEOUT)).await?;
-        let logs_response: crate::api::LogsResponse = serde_json::from_value(value)?;
-        // Convert raw lines to LogSearchResponse entries
-        let entries: Vec<crate::api::LogEntry> = logs_response
-            .lines
-            .iter()
-            .map(|line| {
-                let s = structured_log_from_raw(source_name, line);
-                crate::api::LogEntry {
-                    ts: s.timestamp.unwrap_or_default(),
-                    service: s.service,
-                    stream: s.stream,
-                    level: s.level.unwrap_or_else(|| "info".to_string()),
-                    message: s.message,
-                    raw: line.clone(),
-                    attributes: Default::default(),
-                }
-            })
-            .collect();
-        return Ok(LogSearchResponse {
-            total: logs_response.total,
-            truncated: logs_response.truncated,
-            error_count: logs_response.error_count,
-            warn_count: logs_response.warn_count,
-            matched_total: logs_response.matched_total,
-            entries,
-        });
+        let response: LogSearchResponse = serde_json::from_value(value)?;
+        return Ok(response);
     }
 
     let source_name = source_name.to_string();
