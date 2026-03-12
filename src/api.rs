@@ -246,6 +246,20 @@ pub struct RunStatusResponse {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+pub struct TaskExecutionSummary {
+    pub task: String,
+    pub started_at: String,
+    pub finished_at: String,
+    pub exit_code: i32,
+    pub duration_ms: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+pub struct TasksResponse {
+    pub tasks: Vec<TaskExecutionSummary>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct GlobalSummary {
     pub key: String,
     pub name: String,

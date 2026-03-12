@@ -9,7 +9,8 @@ use crate::api::{
     NavigationIntent, NavigationIntentResponse, PingResponse, RestartServiceRequest,
     RunListResponse, RunStatusResponse, RunSummary, RunWatchResponse, ServiceStatus,
     SetNavigationIntentRequest, ShareAgentMessageRequest, ShareAgentMessageResponse, SourceSummary,
-    SourcesResponse, SystemdStatus, UpRequest, WatchControlRequest, WatchServiceStatus,
+    SourcesResponse, SystemdStatus, TaskExecutionSummary, TasksResponse, UpRequest,
+    WatchControlRequest, WatchServiceStatus,
 };
 use crate::manifest::{RunLifecycle, RunManifest, ServiceManifest, ServiceState};
 
@@ -28,6 +29,7 @@ use crate::manifest::{RunLifecycle, RunManifest, ServiceManifest, ServiceState};
         crate::daemon::kill,
         crate::daemon::restart_service,
         crate::daemon::status,
+        crate::daemon::run_tasks,
         crate::daemon::watch_status,
         crate::daemon::watch_pause,
         crate::daemon::watch_resume,
@@ -68,6 +70,8 @@ use crate::manifest::{RunLifecycle, RunManifest, ServiceManifest, ServiceState};
             RunManifest,
             ServiceManifest,
             RunStatusResponse,
+            TasksResponse,
+            TaskExecutionSummary,
             RunWatchResponse,
             ServiceStatus,
             WatchServiceStatus,

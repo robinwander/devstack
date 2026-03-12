@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, btree_map::Entry};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
@@ -7,12 +7,15 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
+use serde::{Deserialize, Serialize};
 
 use crate::config::TaskConfig;
 use crate::ids::RunId;
 use crate::paths;
-use crate::util::{now_rfc3339, strip_ansi_if_needed, validate_name_for_path_component};
+use crate::util::{
+    atomic_write, now_rfc3339, strip_ansi_if_needed, validate_name_for_path_component,
+};
 
 #[derive(Clone, Copy, Debug)]
 pub enum TaskLogScope<'a> {
@@ -25,6 +28,61 @@ pub struct TaskResult {
     pub exit_code: i32,
     pub duration: Duration,
     pub last_stderr_line: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TaskExecution {
+    pub task: String,
+    pub started_at: String,
+    pub finished_at: String,
+    pub exit_code: i32,
+    pub duration_ms: u64,
+    pub log_file: String,
+    pub scope: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+pub struct TaskHistory {
+    pub executions: Vec<TaskExecution>,
+}
+
+impl TaskHistory {
+    pub fn load(path: &Path) -> Result<Self> {
+        if !path.exists() {
+            return Ok(Self::default());
+        }
+        let bytes =
+            std::fs::read(path).with_context(|| format!("read task history {}", path.display()))?;
+        serde_json::from_slice(&bytes)
+            .with_context(|| format!("parse task history {}", path.display()))
+    }
+
+    pub fn append(&mut self, execution: TaskExecution, path: &Path) -> Result<()> {
+        self.executions.push(execution);
+        let bytes = serde_json::to_vec_pretty(self).context("serialize task history")?;
+        atomic_write(path, &bytes).with_context(|| format!("write task history {}", path.display()))
+    }
+
+    pub fn latest_by_task(&self) -> BTreeMap<String, &TaskExecution> {
+        let mut latest = BTreeMap::new();
+        for execution in &self.executions {
+            match latest.entry(execution.task.clone()) {
+                Entry::Vacant(slot) => {
+                    slot.insert(execution);
+                }
+                Entry::Occupied(mut slot) => {
+                    let current = slot.get();
+                    if execution.finished_at > current.finished_at
+                        || (execution.finished_at == current.finished_at
+                            && execution.started_at >= current.started_at)
+                    {
+                        slot.insert(execution);
+                    }
+                }
+            }
+        }
+        latest
+    }
 }
 
 impl TaskResult {
@@ -77,11 +135,45 @@ pub fn summarize_stderr_line(value: &str, max_chars: usize) -> String {
     out
 }
 
-pub fn task_log_path(project_dir: &Path, task_name: &str, scope: TaskLogScope<'_>) -> Result<PathBuf> {
+pub fn task_log_path(
+    project_dir: &Path,
+    task_name: &str,
+    scope: TaskLogScope<'_>,
+) -> Result<PathBuf> {
     match scope {
         TaskLogScope::Run(run_id) => paths::task_log_path(run_id, task_name),
         TaskLogScope::AdHoc => paths::ad_hoc_task_log_path(project_dir, task_name),
     }
+}
+
+fn task_scope_label(scope: TaskLogScope<'_>) -> String {
+    match scope {
+        TaskLogScope::Run(run_id) => format!("run:{}", run_id.as_str()),
+        TaskLogScope::AdHoc => "adhoc".to_string(),
+    }
+}
+
+fn append_task_execution(
+    history_path: &Path,
+    task_name: &str,
+    scope: TaskLogScope<'_>,
+    started_at: String,
+    finished_at: String,
+    result: &TaskResult,
+) -> Result<()> {
+    let mut history = TaskHistory::load(history_path)?;
+    history.append(
+        TaskExecution {
+            task: task_name.to_string(),
+            started_at,
+            finished_at,
+            exit_code: result.exit_code,
+            duration_ms: result.duration.as_millis().try_into().unwrap_or(u64::MAX),
+            log_file: format!("{task_name}.log"),
+            scope: task_scope_label(scope),
+        },
+        history_path,
+    )
 }
 
 /// Run a single task synchronously.
@@ -93,6 +185,7 @@ pub fn run_task(
     task: &TaskConfig,
     project_dir: &Path,
     log_scope: TaskLogScope<'_>,
+    history_path: &Path,
     verbose: bool,
 ) -> Result<TaskResult> {
     let (cmd, cwd, env, env_file) = task_cmd_parts(task);
@@ -127,7 +220,8 @@ pub fn run_task(
             let iter = dotenvy::from_path_iter(&env_path)
                 .with_context(|| format!("read env file {}", env_path.display()))?;
             for item in iter {
-                let (k, v) = item.with_context(|| format!("parse env file {}", env_path.display()))?;
+                let (k, v) =
+                    item.with_context(|| format!("parse env file {}", env_path.display()))?;
                 command.env(k, v);
             }
         }
@@ -137,15 +231,25 @@ pub fn run_task(
         command.env(k, v);
     }
 
+    let started_at = now_rfc3339();
     let start = Instant::now();
 
     if verbose {
         let status = command.status().context("run task")?;
-        return Ok(TaskResult {
+        let result = TaskResult {
             exit_code: status.code().unwrap_or(1),
             duration: start.elapsed(),
             last_stderr_line: None,
-        });
+        };
+        append_task_execution(
+            history_path,
+            task_name,
+            log_scope,
+            started_at,
+            now_rfc3339(),
+            &result,
+        )?;
+        return Ok(result);
     }
 
     let log_path = task_log_path(project_dir, task_name, log_scope)?;
@@ -160,39 +264,34 @@ pub fn run_task(
         .with_context(|| format!("create task log {}", log_path.display()))?;
     let log_file = Arc::new(Mutex::new(log_file));
 
-    let stdout = child
-        .stdout
-        .take()
-        .context("capture task stdout")?;
-    let stderr = child
-        .stderr
-        .take()
-        .context("capture task stderr")?;
+    let stdout = child.stdout.take().context("capture task stdout")?;
+    let stderr = child.stderr.take().context("capture task stderr")?;
 
     let stderr_last_line = Arc::new(Mutex::new(None::<String>));
 
     let stdout_handle = spawn_log_pump(stdout, "stdout", log_file.clone(), None);
-    let stderr_handle = spawn_log_pump(
-        stderr,
-        "stderr",
-        log_file,
-        Some(stderr_last_line.clone()),
-    );
+    let stderr_handle = spawn_log_pump(stderr, "stderr", log_file, Some(stderr_last_line.clone()));
 
     let status = child.wait().context("wait for task")?;
     let _ = stdout_handle.join();
     let _ = stderr_handle.join();
 
-    let last_stderr_line = stderr_last_line
-        .lock()
-        .ok()
-        .and_then(|guard| guard.clone());
+    let last_stderr_line = stderr_last_line.lock().ok().and_then(|guard| guard.clone());
 
-    Ok(TaskResult {
+    let result = TaskResult {
         exit_code: status.code().unwrap_or(1),
         duration: start.elapsed(),
         last_stderr_line,
-    })
+    };
+    append_task_execution(
+        history_path,
+        task_name,
+        log_scope,
+        started_at,
+        now_rfc3339(),
+        &result,
+    )?;
+    Ok(result)
 }
 
 /// Run init tasks for a service. If any task fails, returns an error.
@@ -201,6 +300,7 @@ pub fn run_init_tasks(
     init: &[String],
     project_dir: &Path,
     log_scope: TaskLogScope<'_>,
+    history_path: &Path,
     verbose: bool,
 ) -> Result<()> {
     for name in init {
@@ -218,7 +318,7 @@ pub fn run_init_tasks(
                 continue;
             }
 
-            let result = run_task(name, task, project_dir, log_scope, verbose)?;
+            let result = run_task(name, task, project_dir, log_scope, history_path, verbose)?;
             if !result.success() {
                 emit_task_failure_summary(name, &result);
                 return Err(anyhow!(
@@ -232,7 +332,7 @@ pub fn run_init_tasks(
             continue;
         }
 
-        let result = run_task(name, task, project_dir, log_scope, verbose)?;
+        let result = run_task(name, task, project_dir, log_scope, history_path, verbose)?;
         if !result.success() {
             emit_task_failure_summary(name, &result);
             return Err(anyhow!(
@@ -291,10 +391,11 @@ fn spawn_log_pump<R: Read + Send + 'static>(
 
             if label == "stderr"
                 && let Some(last) = &last_stderr_line
-                    && !clean.trim().is_empty()
-                        && let Ok(mut guard) = last.lock() {
-                            *guard = Some(clean);
-                        }
+                && !clean.trim().is_empty()
+                && let Ok(mut guard) = last.lock()
+            {
+                *guard = Some(clean);
+            }
         }
     })
 }
@@ -307,7 +408,12 @@ fn task_hash_path(project_dir: &Path, task_name: &str) -> Result<PathBuf> {
 /// Extract (cmd, cwd, env, env_file) from a TaskConfig.
 fn task_cmd_parts(
     task: &TaskConfig,
-) -> (String, Option<PathBuf>, BTreeMap<String, String>, Option<PathBuf>) {
+) -> (
+    String,
+    Option<PathBuf>,
+    BTreeMap<String, String>,
+    Option<PathBuf>,
+) {
     match task {
         TaskConfig::Command(cmd) => (cmd.clone(), None, BTreeMap::new(), None),
         TaskConfig::Structured(def) => (
@@ -371,8 +477,69 @@ mod tests {
     }
 
     #[test]
+    fn task_history_load_append_and_latest_by_task() {
+        let dir = tempfile::tempdir().unwrap();
+        let history_path = dir.path().join("history.json");
+
+        let mut history = TaskHistory::load(&history_path).unwrap();
+        assert!(history.executions.is_empty());
+
+        history
+            .append(
+                TaskExecution {
+                    task: "build".to_string(),
+                    started_at: "2025-03-01T10:00:00Z".to_string(),
+                    finished_at: "2025-03-01T10:00:01Z".to_string(),
+                    exit_code: 0,
+                    duration_ms: 1000,
+                    log_file: "build.log".to_string(),
+                    scope: "adhoc".to_string(),
+                },
+                &history_path,
+            )
+            .unwrap();
+        history
+            .append(
+                TaskExecution {
+                    task: "build".to_string(),
+                    started_at: "2025-03-01T11:00:00Z".to_string(),
+                    finished_at: "2025-03-01T11:00:03Z".to_string(),
+                    exit_code: 1,
+                    duration_ms: 3000,
+                    log_file: "build.log".to_string(),
+                    scope: "run:run-1".to_string(),
+                },
+                &history_path,
+            )
+            .unwrap();
+        history
+            .append(
+                TaskExecution {
+                    task: "test".to_string(),
+                    started_at: "2025-03-01T11:30:00Z".to_string(),
+                    finished_at: "2025-03-01T11:30:02Z".to_string(),
+                    exit_code: 0,
+                    duration_ms: 2000,
+                    log_file: "test.log".to_string(),
+                    scope: "run:run-1".to_string(),
+                },
+                &history_path,
+            )
+            .unwrap();
+
+        let loaded = TaskHistory::load(&history_path).unwrap();
+        assert_eq!(loaded.executions.len(), 3);
+
+        let latest = loaded.latest_by_task();
+        assert_eq!(latest.len(), 2);
+        assert_eq!(latest["build"].exit_code, 1);
+        assert_eq!(latest["test"].duration_ms, 2000);
+    }
+
+    #[test]
     fn run_task_uses_login_shell() {
         let project_dir = tempfile::tempdir().unwrap();
+        let history_path = project_dir.path().join("history.json");
 
         let task = TaskConfig::Structured(crate::config::TaskDefinition {
             cmd: "echo $0".to_string(),
@@ -387,6 +554,7 @@ mod tests {
             &task,
             project_dir.path(),
             TaskLogScope::AdHoc,
+            &history_path,
             false,
         )
         .unwrap();

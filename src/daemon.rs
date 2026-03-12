@@ -38,8 +38,8 @@ use crate::api::{
     PingResponse, ProjectsResponse, RecentErrorLine, RegisterProjectRequest,
     RegisterProjectResponse, RestartServiceRequest, RunListResponse, RunStatusResponse, RunSummary,
     RunWatchResponse, ServiceStatus, SetNavigationIntentRequest, ShareAgentMessageRequest,
-    ShareAgentMessageResponse, SourceSummary, SourcesResponse, SystemdStatus, UpRequest,
-    WatchControlRequest, WatchServiceStatus,
+    ShareAgentMessageResponse, SourceSummary, SourcesResponse, SystemdStatus, TaskExecutionSummary,
+    TasksResponse, UpRequest, WatchControlRequest, WatchServiceStatus,
 };
 use crate::config::{ConfigFile, ServiceConfig, StackPlan, TaskConfig};
 use crate::ids::{RunId, ServiceName};
@@ -281,6 +281,7 @@ pub async fn run_daemon() -> Result<()> {
     // Spawn periodic GC to evict stopped runs from memory and the log index,
     // preventing unbounded memory growth over long daemon lifetimes.
     spawn_periodic_gc(app_state.clone());
+    spawn_periodic_run_ingest(app_state.clone());
     spawn_periodic_source_ingest(app_state.clone());
     spawn_periodic_agent_session_cleanup(app_state.clone());
 
@@ -313,6 +314,7 @@ pub async fn run_daemon() -> Result<()> {
         .route("/v1/runs/kill", post(kill))
         .route("/v1/runs/{run_id}/restart-service", post(restart_service))
         .route("/v1/runs/{run_id}/status", get(status))
+        .route("/v1/runs/{run_id}/tasks", get(run_tasks))
         .route("/v1/runs/{run_id}/watch", get(watch_status))
         .route("/v1/runs/{run_id}/watch/pause", post(watch_pause))
         .route("/v1/runs/{run_id}/watch/resume", post(watch_resume))
@@ -725,6 +727,48 @@ pub(crate) async fn status(
 
 #[utoipa::path(
     get,
+    path = "/v1/runs/{run_id}/tasks",
+    params(
+        ("run_id" = String, Path, description = "Run id")
+    ),
+    responses(
+        (status = 200, description = "Latest task executions for the run", body = TasksResponse),
+        (status = 404, description = "Run not found", body = crate::api::ErrorResponse),
+        (status = 500, description = "Internal error", body = crate::api::ErrorResponse)
+    ),
+    tag = "daemon"
+)]
+pub(crate) async fn run_tasks(
+    State(state): State<AppState>,
+    AxumPath(run_id): AxumPath<String>,
+) -> Result<Json<TasksResponse>, AppError> {
+    {
+        let guard = state.state.lock().await;
+        guard
+            .runs
+            .get(&run_id)
+            .ok_or_else(|| AppError::not_found(format!("run {run_id} not found")))?;
+    }
+
+    let history = crate::tasks::TaskHistory::load(&paths::task_history_path(&RunId::new(&run_id))?)
+        .map_err(AppError::from)?;
+    let tasks = history
+        .latest_by_task()
+        .into_values()
+        .map(|execution| TaskExecutionSummary {
+            task: execution.task.clone(),
+            started_at: execution.started_at.clone(),
+            finished_at: execution.finished_at.clone(),
+            exit_code: execution.exit_code,
+            duration_ms: execution.duration_ms,
+        })
+        .collect();
+
+    Ok(Json(TasksResponse { tasks }))
+}
+
+#[utoipa::path(
+    get,
     path = "/v1/runs/{run_id}/watch",
     params(
         ("run_id" = String, Path, description = "Run id")
@@ -845,6 +889,48 @@ pub(crate) async fn logs(
     Ok(Json(response))
 }
 
+fn run_service_log_sources(run_id: &str, run: &RunState) -> Vec<LogSource> {
+    run.services
+        .iter()
+        .map(|(service, runtime)| LogSource {
+            run_id: run_id.to_string(),
+            service: service.clone(),
+            path: runtime.log_path.clone(),
+        })
+        .collect()
+}
+
+fn discover_task_log_sources(run_id: &str) -> Result<Vec<LogSource>> {
+    let task_logs_dir = paths::run_task_logs_dir(&RunId::new(run_id))?;
+    if !task_logs_dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut sources = Vec::new();
+    for entry in std::fs::read_dir(&task_logs_dir)
+        .with_context(|| format!("read task log dir {}", task_logs_dir.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        if path.extension().and_then(|ext| ext.to_str()) != Some("log") {
+            continue;
+        }
+        let Some(name) = path.file_stem().and_then(|stem| stem.to_str()) else {
+            continue;
+        };
+        sources.push(LogSource {
+            run_id: run_id.to_string(),
+            service: format!("task:{name}"),
+            path,
+        });
+    }
+    sources.sort_by(|left, right| left.service.cmp(&right.service));
+    Ok(sources)
+}
+
 #[utoipa::path(
     get,
     path = "/v1/runs/{run_id}/logs",
@@ -870,34 +956,38 @@ pub(crate) async fn logs_search(
     AxumPath(run_id): AxumPath<String>,
     Query(query): Query<LogSearchQuery>,
 ) -> Result<Json<LogSearchResponse>, AppError> {
-    let sources: Vec<LogSource> = {
+    let service_sources = {
         let guard = state.state.lock().await;
         let run = guard
             .runs
             .get(&run_id)
             .ok_or_else(|| AppError::not_found(format!("run {run_id} not found")))?;
-        let mut out = Vec::new();
-        if let Some(svc) = query.service.as_deref() {
-            let runtime = run
-                .services
-                .get(svc)
-                .ok_or_else(|| AppError::not_found(format!("service {svc} not found")))?;
-            out.push(LogSource {
-                run_id: run_id.clone(),
-                service: svc.to_string(),
-                path: runtime.log_path.clone(),
-            });
-        } else {
-            for (svc, runtime) in &run.services {
-                out.push(LogSource {
-                    run_id: run_id.clone(),
-                    service: svc.clone(),
-                    path: runtime.log_path.clone(),
-                });
-            }
-        }
-        out
+        run_service_log_sources(&run_id, run)
     };
+
+    let mut sources: Vec<LogSource> = match query.service.as_deref() {
+        Some(service) if service.starts_with("task:") => discover_task_log_sources(&run_id)?
+            .into_iter()
+            .filter(|source| source.service == service)
+            .collect(),
+        Some(service) => service_sources
+            .into_iter()
+            .filter(|source| source.service == service)
+            .collect(),
+        None => {
+            let mut all_sources = service_sources;
+            all_sources.extend(discover_task_log_sources(&run_id)?);
+            all_sources
+        }
+    };
+
+    if let Some(service) = query.service.as_deref()
+        && sources.is_empty()
+    {
+        return Err(AppError::not_found(format!("service {service} not found")));
+    }
+
+    sources.sort_by(|left, right| left.service.cmp(&right.service));
 
     let index = state.log_index.clone();
     let run_id_for_task = run_id.clone();
@@ -933,22 +1023,16 @@ pub(crate) async fn logs_facets(
     AxumPath(run_id): AxumPath<String>,
     Query(query): Query<LogFacetsQuery>,
 ) -> Result<Json<LogFacetsResponse>, AppError> {
-    let sources: Vec<LogSource> = {
+    let mut sources: Vec<LogSource> = {
         let guard = state.state.lock().await;
         let run = guard
             .runs
             .get(&run_id)
             .ok_or_else(|| AppError::not_found(format!("run {run_id} not found")))?;
-        let mut out = Vec::new();
-        for (svc, runtime) in &run.services {
-            out.push(LogSource {
-                run_id: run_id.clone(),
-                service: svc.clone(),
-                path: runtime.log_path.clone(),
-            });
-        }
-        out
+        run_service_log_sources(&run_id, run)
     };
+    sources.extend(discover_task_log_sources(&run_id)?);
+    sources.sort_by(|left, right| left.service.cmp(&right.service));
 
     let index = state.log_index.clone();
     let run_id_for_task = run_id.clone();
@@ -1596,12 +1680,14 @@ async fn run_init_tasks_blocking(
     project_dir: PathBuf,
     run_id: RunId,
 ) -> Result<()> {
+    let history_path = paths::task_history_path(&run_id)?;
     tokio::task::spawn_blocking(move || {
         crate::tasks::run_init_tasks(
             &tasks_map,
             &init_tasks,
             &project_dir,
             crate::tasks::TaskLogScope::Run(&run_id),
+            &history_path,
             false,
         )
     })
@@ -3977,6 +4063,53 @@ fn spawn_periodic_gc(state: AppState) {
                 })
                 .await;
                 write_daemon_state(&state).await.ok();
+            }
+        }
+    });
+}
+
+fn spawn_periodic_run_ingest(state: AppState) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(5));
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            let active_runs: Vec<(String, Vec<LogSource>)> = {
+                let guard = state.state.lock().await;
+                guard
+                    .runs
+                    .iter()
+                    .filter(|(_, run)| run.state != RunLifecycle::Stopped)
+                    .map(|(run_id, run)| (run_id.clone(), run_service_log_sources(run_id, run)))
+                    .collect()
+            };
+
+            let index = state.log_index.clone();
+            let ingest_result = tokio::task::spawn_blocking(move || {
+                let mut run_ids = Vec::new();
+                let mut sources = Vec::new();
+                for (run_id, service_sources) in active_runs {
+                    run_ids.push(run_id.clone());
+                    sources.extend(service_sources);
+                    sources.extend(discover_task_log_sources(&run_id)?);
+                }
+                if !sources.is_empty() {
+                    index.ingest_sources(&sources).with_context(|| {
+                        format!("ingest logs for active runs [{}]", run_ids.join(", "))
+                    })?;
+                }
+                Ok::<Vec<String>, anyhow::Error>(run_ids)
+            })
+            .await;
+
+            match ingest_result {
+                Ok(Ok(_)) => {}
+                Ok(Err(err)) => {
+                    eprintln!("devstack: periodic run ingest failed: {err}");
+                }
+                Err(err) => {
+                    eprintln!("devstack: periodic run ingest worker failed: {err}");
+                }
             }
         }
     });

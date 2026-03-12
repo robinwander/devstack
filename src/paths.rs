@@ -57,12 +57,17 @@ pub fn run_log_path(run_id: &RunId, service: &ServiceName) -> Result<PathBuf> {
 }
 
 pub fn run_task_logs_dir(run_id: &RunId) -> Result<PathBuf> {
-    Ok(run_dir(run_id)?.join("tasks"))
+    validate_name_for_path_component("run id", run_id.as_str())?;
+    Ok(base_dir()?.join("task-logs").join(run_id.as_str()))
 }
 
 pub fn task_log_path(run_id: &RunId, task_name: &str) -> Result<PathBuf> {
     validate_name_for_path_component("task", task_name)?;
     Ok(run_task_logs_dir(run_id)?.join(format!("{task_name}.log")))
+}
+
+pub fn task_history_path(run_id: &RunId) -> Result<PathBuf> {
+    Ok(run_task_logs_dir(run_id)?.join("history.json"))
 }
 
 pub fn globals_root() -> Result<PathBuf> {
@@ -100,12 +105,16 @@ pub fn task_hashes_dir(project_dir: &Path) -> Result<PathBuf> {
 pub fn ad_hoc_task_logs_dir(project_dir: &Path) -> Result<PathBuf> {
     Ok(base_dir()?
         .join("task-logs")
-        .join(project_hash(project_dir)))
+        .join(format!("adhoc-{}", project_hash(project_dir))))
 }
 
 pub fn ad_hoc_task_log_path(project_dir: &Path, task_name: &str) -> Result<PathBuf> {
     validate_name_for_path_component("task", task_name)?;
     Ok(ad_hoc_task_logs_dir(project_dir)?.join(format!("{task_name}.log")))
+}
+
+pub fn ad_hoc_task_history_path(project_dir: &Path) -> Result<PathBuf> {
+    Ok(ad_hoc_task_logs_dir(project_dir)?.join("history.json"))
 }
 
 pub fn dashboard_dir() -> Result<PathBuf> {

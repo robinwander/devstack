@@ -2701,6 +2701,7 @@ fn run_task_command(
             .stack_plan(&stack_name)
             .map_err(|err| anyhow!("{err}"))?;
 
+        let history_path = paths::ad_hoc_task_history_path(&project_dir)?;
         let mut ran_any = false;
         for svc_name in &stack_plan.order {
             let svc = &stack_plan.services[svc_name];
@@ -2712,6 +2713,7 @@ fn run_task_command(
                     init_tasks,
                     &project_dir,
                     crate::tasks::TaskLogScope::AdHoc,
+                    &history_path,
                     verbose,
                 )?;
                 ran_any = true;
@@ -2756,11 +2758,13 @@ fn run_task_command(
         .get(&task_name)
         .ok_or_else(|| anyhow!("unknown task '{task_name}'"))?;
 
+    let history_path = paths::ad_hoc_task_history_path(&project_dir)?;
     let result = crate::tasks::run_task(
         &task_name,
         task,
         &project_dir,
         crate::tasks::TaskLogScope::AdHoc,
+        &history_path,
         verbose,
     )?;
 
