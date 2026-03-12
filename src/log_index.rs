@@ -3,7 +3,7 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::ops::Bound;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, RwLock};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -55,17 +55,17 @@ struct LogIndexFields {
     raw: Field,
 }
 
-struct LogIndexState {
-    index: Index,
-    reader: IndexReader,
+struct LogIndexWriterState {
     writer: Option<IndexWriter>,
-    fields: LogIndexFields,
     dynamic_fields: HashMap<String, Field>,
 }
 
 pub(crate) struct LogIndex {
     index_dir: PathBuf,
-    state: Mutex<LogIndexState>,
+    index: RwLock<Index>,
+    reader: RwLock<IndexReader>,
+    fields: LogIndexFields,
+    writer_state: Mutex<LogIndexWriterState>,
     ingest_state_path: PathBuf,
     // Serialize ingestion + cursor persistence to avoid duplicate indexing when multiple
     // clients (UI + CLI) poll concurrently.
@@ -123,11 +123,11 @@ impl LogIndex {
 
         Ok(Self {
             index_dir: index_dir.to_path_buf(),
-            state: Mutex::new(LogIndexState {
-                index,
-                reader,
+            index: RwLock::new(index),
+            reader: RwLock::new(reader),
+            fields,
+            writer_state: Mutex::new(LogIndexWriterState {
                 writer: Some(writer),
-                fields,
                 dynamic_fields: HashMap::new(),
             }),
             ingest_state_path: ingest_state_path.to_path_buf(),
@@ -193,10 +193,10 @@ impl LogIndex {
 
     fn ensure_dynamic_fields(
         &self,
-        state: &mut LogIndexState,
+        state: &mut LogIndexWriterState,
         field_names: &BTreeSet<String>,
     ) -> Result<()> {
-        let schema = state.index.schema();
+        let schema = self.index.read().unwrap().schema();
         let mut missing = Vec::new();
         for field_name in field_names {
             if state.dynamic_fields.contains_key(field_name) {
@@ -221,7 +221,7 @@ impl LogIndex {
             schema_builder.add_text_field(field_name, STRING | STORED);
         }
 
-        let mut metas = state.index.load_metas()?;
+        let mut metas = self.index.read().unwrap().load_metas()?;
         metas.schema = schema_builder.build();
         let bytes = serde_json::to_vec_pretty(&metas)?;
         atomic_write(&self.index_dir.join("meta.json"), &bytes)?;
@@ -229,21 +229,21 @@ impl LogIndex {
         drop(state.writer.take());
 
         let index = Index::open_in_dir(&self.index_dir)?;
+        let schema = index.schema();
         let reader = index
             .reader_builder()
             .reload_policy(ReloadPolicy::OnCommitWithDelay)
             .try_into()?;
         let writer = index.writer(32 * 1024 * 1024)?;
-        let fields = Self::resolve_fields(&index.schema())?;
+        Self::resolve_fields(&schema)?;
         let cached_names: Vec<String> = state.dynamic_fields.keys().cloned().collect();
 
-        state.index = index;
-        state.reader = reader;
+        *self.index.write().unwrap() = index;
+        *self.reader.write().unwrap() = reader;
         state.writer = Some(writer);
-        state.fields = fields;
         state.dynamic_fields.clear();
         for field_name in cached_names.into_iter().chain(missing.into_iter()) {
-            if let Ok(field) = state.index.schema().get_field(&field_name) {
+            if let Ok(field) = schema.get_field(&field_name) {
                 state.dynamic_fields.insert(field_name, field);
             }
         }
@@ -341,13 +341,16 @@ impl LogIndex {
     pub(crate) fn delete_run(&self, run_id: &str) -> Result<()> {
         let _gate = self.ingest_gate.lock().unwrap();
         {
-            let mut state = self.state.lock().unwrap();
-            let term = Term::from_field_text(state.fields.run_id, run_id);
-            let writer = state.writer.as_mut().context("tantivy writer missing")?;
+            let mut writer_state = self.writer_state.lock().unwrap();
+            let term = Term::from_field_text(self.fields.run_id, run_id);
+            let writer = writer_state
+                .writer
+                .as_mut()
+                .context("tantivy writer missing")?;
             writer.delete_term(term);
             writer.commit()?;
-            state.reader.reload().ok();
         }
+        self.reader.read().unwrap().reload().ok();
         {
             let mut ingest = self.ingest.lock().unwrap();
             let prefix = format!("{run_id}/");
@@ -495,9 +498,9 @@ impl LogIndex {
 
         // Write + commit once.
         {
-            let mut state = self.state.lock().unwrap();
-            self.ensure_dynamic_fields(&mut state, &dynamic_field_names)?;
-            let fields = state.fields.clone();
+            let mut writer_state = self.writer_state.lock().unwrap();
+            self.ensure_dynamic_fields(&mut writer_state, &dynamic_field_names)?;
+            let fields = self.fields.clone();
 
             let docs: Vec<tantivy::TantivyDocument> = pending_docs
                 .into_iter()
@@ -513,7 +516,7 @@ impl LogIndex {
                     doc.add_text(fields.message, &pending.message);
                     doc.add_text(fields.raw, &pending.raw);
                     for (field_name, value) in pending.dynamic_fields {
-                        if let Some(field) = state.dynamic_fields.get(&field_name).copied() {
+                        if let Some(field) = writer_state.dynamic_fields.get(&field_name).copied() {
                             doc.add_text(field, &value);
                         }
                     }
@@ -521,7 +524,10 @@ impl LogIndex {
                 })
                 .collect();
 
-            let writer = state.writer.as_mut().context("tantivy writer missing")?;
+            let writer = writer_state
+                .writer
+                .as_mut()
+                .context("tantivy writer missing")?;
             // Crash-safe idempotency: if we previously committed docs but failed to persist
             // `ingest_state`, we may re-ingest overlapping seq ranges. Delete any docs in this
             // run/service with seq >= the starting seq for this ingest, then re-add.
@@ -560,8 +566,8 @@ impl LogIndex {
                 writer.add_document(doc)?;
             }
             writer.commit()?;
-            state.reader.reload()?;
         }
+        self.reader.read().unwrap().reload()?;
 
         // Persist cursors.
         {
@@ -595,12 +601,11 @@ impl LogIndex {
         let stream_filter = query.stream.as_deref();
         let since_nanos = query.since.as_deref().and_then(parse_timestamp_nanos);
         let after = query.after;
-
-        let state = self.state.lock().unwrap();
+        let fields = self.fields.clone();
 
         // Scope query: run + service (+ since/+ stream). Counts ignore search/level/after.
         let scope_query = Self::build_scope_query(
-            &state.fields,
+            &fields,
             run_id,
             Some(service),
             since_nanos,
@@ -609,11 +614,32 @@ impl LogIndex {
             None,
         )?;
 
-        let searcher = state.reader.searcher();
+        // Result query: scope + (after) + (level) + (search)
+        let mut result_query = Self::build_scope_query(
+            &fields,
+            run_id,
+            Some(service),
+            since_nanos,
+            stream_filter,
+            after,
+            None,
+        )?;
+        result_query = Self::add_level_filter(fields.level, result_query, level_filter)?;
+        {
+            let index = self.index.read().unwrap();
+            result_query = Self::add_text_query(
+                &index,
+                fields.message,
+                result_query,
+                query.search.as_deref(),
+            )?;
+        }
+
+        let searcher = self.reader.read().unwrap().searcher();
         let total: usize = searcher.search(&scope_query, &Count)?;
 
         let error_count: usize = {
-            let term = Term::from_field_text(state.fields.level, "error");
+            let term = Term::from_field_text(fields.level, "error");
             let q = BooleanQuery::new(vec![
                 (Occur::Must, scope_query.box_clone()),
                 (
@@ -627,7 +653,7 @@ impl LogIndex {
             searcher.search(&q, &Count)?
         };
         let warn_count: usize = {
-            let term = Term::from_field_text(state.fields.level, "warn");
+            let term = Term::from_field_text(fields.level, "warn");
             let q = BooleanQuery::new(vec![
                 (Occur::Must, scope_query.box_clone()),
                 (
@@ -640,25 +666,6 @@ impl LogIndex {
             ]);
             searcher.search(&q, &Count)?
         };
-
-        // Result query: scope + (after) + (level) + (search)
-        let mut result_query = Self::build_scope_query(
-            &state.fields,
-            run_id,
-            Some(service),
-            since_nanos,
-            stream_filter,
-            after,
-            None,
-        )?;
-
-        result_query = Self::add_level_filter(state.fields.level, result_query, level_filter)?;
-        result_query = Self::add_text_query(
-            &state.index,
-            state.fields.message,
-            result_query,
-            query.search.as_deref(),
-        )?;
 
         let matched_total: usize = searcher.search(&result_query, &Count)?;
 
@@ -675,16 +682,16 @@ impl LogIndex {
                 for (_sort, addr) in top_docs {
                     let doc: tantivy::TantivyDocument = searcher.doc(addr)?;
                     let raw = doc
-                        .get_first(state.fields.raw)
+                        .get_first(fields.raw)
                         .and_then(|v| v.as_str())
                         .unwrap_or_default()
                         .to_string();
                     let ts = doc
-                        .get_first(state.fields.ts_nanos)
+                        .get_first(fields.ts_nanos)
                         .and_then(|v| v.as_i64())
                         .unwrap_or(0);
                     let seq = doc
-                        .get_first(state.fields.seq)
+                        .get_first(fields.seq)
                         .and_then(|v| v.as_u64())
                         .unwrap_or(0);
                     next_after = Some(next_after.map(|value| value.max(seq)).unwrap_or(seq));
@@ -701,16 +708,16 @@ impl LogIndex {
                 for (_sort, addr) in top_docs {
                     let doc: tantivy::TantivyDocument = searcher.doc(addr)?;
                     let raw = doc
-                        .get_first(state.fields.raw)
+                        .get_first(fields.raw)
                         .and_then(|v| v.as_str())
                         .unwrap_or_default()
                         .to_string();
                     let ts = doc
-                        .get_first(state.fields.ts_nanos)
+                        .get_first(fields.ts_nanos)
                         .and_then(|v| v.as_i64())
                         .unwrap_or(0);
                     let seq = doc
-                        .get_first(state.fields.seq)
+                        .get_first(fields.seq)
                         .and_then(|v| v.as_u64())
                         .unwrap_or(0);
                     next_after = Some(next_after.map(|value| value.max(seq)).unwrap_or(seq));
@@ -735,21 +742,18 @@ impl LogIndex {
     pub(crate) fn search_run(
         &self,
         run_id: &str,
-        sources: &[LogSource],
+        _sources: &[LogSource],
         query: LogSearchQuery,
     ) -> Result<LogSearchResponse> {
-        self.ingest_sources(sources)?;
-
         let tail = query.last.unwrap_or(500);
         let level_filter = query.level.as_deref().unwrap_or("all");
         let stream_filter = query.stream.as_deref();
         let service_filter = query.service.as_deref();
         let since_nanos = query.since.as_deref().and_then(parse_timestamp_nanos);
-
-        let state = self.state.lock().unwrap();
+        let fields = self.fields.clone();
 
         let scope_query = Self::build_scope_query(
-            &state.fields,
+            &fields,
             run_id,
             service_filter,
             since_nanos,
@@ -758,10 +762,32 @@ impl LogIndex {
             None,
         )?;
 
-        let searcher = state.reader.searcher();
+        let mut result_query = Self::build_scope_query(
+            &fields,
+            run_id,
+            service_filter,
+            since_nanos,
+            stream_filter,
+            None,
+            None,
+        )?;
+        result_query = Self::add_level_filter(fields.level, result_query, level_filter)?;
+
+        let attribute_fields = {
+            let index = self.index.read().unwrap();
+            result_query = Self::add_text_query(
+                &index,
+                fields.message,
+                result_query,
+                query.search.as_deref(),
+            )?;
+            Self::dynamic_attribute_fields(&index.schema())
+        };
+
+        let searcher = self.reader.read().unwrap().searcher();
         let total: usize = searcher.search(&scope_query, &Count)?;
         let error_count: usize = {
-            let term = Term::from_field_text(state.fields.level, "error");
+            let term = Term::from_field_text(fields.level, "error");
             let q = BooleanQuery::new(vec![
                 (Occur::Must, scope_query.box_clone()),
                 (
@@ -775,7 +801,7 @@ impl LogIndex {
             searcher.search(&q, &Count)?
         };
         let warn_count: usize = {
-            let term = Term::from_field_text(state.fields.level, "warn");
+            let term = Term::from_field_text(fields.level, "warn");
             let q = BooleanQuery::new(vec![
                 (Occur::Must, scope_query.box_clone()),
                 (
@@ -789,23 +815,6 @@ impl LogIndex {
             searcher.search(&q, &Count)?
         };
 
-        let mut result_query = Self::build_scope_query(
-            &state.fields,
-            run_id,
-            service_filter,
-            since_nanos,
-            stream_filter,
-            None,
-            None,
-        )?;
-        result_query = Self::add_level_filter(state.fields.level, result_query, level_filter)?;
-        result_query = Self::add_text_query(
-            &state.index,
-            state.fields.message,
-            result_query,
-            query.search.as_deref(),
-        )?;
-
         let matched_total: usize = searcher.search(&result_query, &Count)?;
 
         let mut entries: Vec<(i64, u64, LogEntry)> = Vec::new();
@@ -817,50 +826,50 @@ impl LogIndex {
             for (_sort, addr) in top_docs {
                 let doc: tantivy::TantivyDocument = searcher.doc(addr)?;
                 let ts = doc
-                    .get_first(state.fields.ts)
+                    .get_first(fields.ts)
                     .and_then(|v| v.as_str())
                     .unwrap_or_default()
                     .to_string();
                 let service = doc
-                    .get_first(state.fields.service)
+                    .get_first(fields.service)
                     .and_then(|v| v.as_str())
                     .unwrap_or_default()
                     .to_string();
                 let stream = doc
-                    .get_first(state.fields.stream)
+                    .get_first(fields.stream)
                     .and_then(|v| v.as_str())
                     .unwrap_or_default()
                     .to_string();
                 let level = doc
-                    .get_first(state.fields.level)
+                    .get_first(fields.level)
                     .and_then(|v| v.as_str())
                     .unwrap_or_default()
                     .to_string();
                 let message = doc
-                    .get_first(state.fields.message)
+                    .get_first(fields.message)
                     .and_then(|v| v.as_str())
                     .unwrap_or_default()
                     .to_string();
                 let raw = doc
-                    .get_first(state.fields.raw)
+                    .get_first(fields.raw)
                     .and_then(|v| v.as_str())
                     .unwrap_or_default()
                     .to_string();
                 let ts_nanos = doc
-                    .get_first(state.fields.ts_nanos)
+                    .get_first(fields.ts_nanos)
                     .and_then(|v| v.as_i64())
                     .unwrap_or(0);
                 let seq = doc
-                    .get_first(state.fields.seq)
+                    .get_first(fields.seq)
                     .and_then(|v| v.as_u64())
                     .unwrap_or(0);
 
                 let mut attributes = BTreeMap::new();
-                for (field_name, field_handle) in &state.dynamic_fields {
-                    if let Some(value) = doc.get_first(*field_handle).and_then(|v| v.as_str()) {
-                        if !value.is_empty() {
-                            attributes.insert(field_name.clone(), value.to_string());
-                        }
+                for (field_name, field_handle) in &attribute_fields {
+                    if let Some(value) = doc.get_first(*field_handle).and_then(|v| v.as_str())
+                        && !value.is_empty()
+                    {
+                        attributes.insert(field_name.clone(), value.to_string());
                     }
                 }
 
@@ -894,25 +903,26 @@ impl LogIndex {
     pub(crate) fn facets_run(
         &self,
         run_id: &str,
-        sources: &[LogSource],
+        _sources: &[LogSource],
         query: LogFacetsQuery,
     ) -> Result<LogFacetsResponse> {
-        self.ingest_sources(sources)?;
-
         let since_nanos = query.since.as_deref().and_then(parse_timestamp_nanos);
         let service_filter = query.service.as_deref();
         let level_filter = query.level.as_deref();
         let stream_filter = query.stream.as_deref();
-
-        let state = self.state.lock().unwrap();
-        let searcher = state.reader.searcher();
+        let fields = self.fields.clone();
+        let facet_fields = {
+            let index = self.index.read().unwrap();
+            Self::facet_fields(&index.schema())
+        };
+        let searcher = self.reader.read().unwrap().searcher();
 
         let total_query =
-            Self::build_scope_query(&state.fields, run_id, None, since_nanos, None, None, None)?;
+            Self::build_scope_query(&fields, run_id, None, since_nanos, None, None, None)?;
         let total: usize = searcher.search(&total_query, &Count)?;
 
         let mut filters = Vec::new();
-        for (field_name, field_handle) in Self::facet_fields(&state.index.schema()) {
+        for (field_name, field_handle) in facet_fields {
             let include_service = if field_name == "service" {
                 None
             } else {
@@ -925,7 +935,7 @@ impl LogIndex {
             };
 
             let mut scope = Self::build_scope_query(
-                &state.fields,
+                &fields,
                 run_id,
                 include_service,
                 since_nanos,
@@ -936,7 +946,7 @@ impl LogIndex {
             if field_name != "level"
                 && let Some(level) = level_filter
             {
-                scope = Self::add_level_filter(state.fields.level, scope, level)?;
+                scope = Self::add_level_filter(fields.level, scope, level)?;
             }
 
             let mut values = Vec::new();
@@ -990,6 +1000,28 @@ impl LogIndex {
                 }
                 let name = entry.name();
                 if matches!(name, "run_id" | "ts" | "raw" | "message") {
+                    return None;
+                }
+                Some((name.to_string(), field))
+            })
+            .collect()
+    }
+
+    fn dynamic_attribute_fields(schema: &tantivy::schema::Schema) -> Vec<(String, Field)> {
+        schema
+            .fields()
+            .filter_map(|(field, entry)| {
+                if !entry.is_stored() {
+                    return None;
+                }
+                if !matches!(entry.field_type(), FieldType::Str(_)) {
+                    return None;
+                }
+                let name = entry.name();
+                if matches!(
+                    name,
+                    "run_id" | "service" | "stream" | "level" | "ts" | "message" | "raw"
+                ) {
                     return None;
                 }
                 Some((name.to_string(), field))
@@ -1197,6 +1229,10 @@ mod tests {
             .collect()
     }
 
+    fn ingest(index: &LogIndex, sources: &[LogSource]) {
+        index.ingest_sources(sources).unwrap();
+    }
+
     #[test]
     fn service_search_ingests_incrementally_and_supports_after() {
         let dir = tempfile::tempdir().unwrap();
@@ -1255,6 +1291,7 @@ mod tests {
                 path: web_log,
             },
         ];
+        ingest(&index, &sources);
 
         let resp = index
             .search_run(
@@ -1277,6 +1314,53 @@ mod tests {
     }
 
     #[test]
+    fn run_queries_do_not_auto_ingest_sources() {
+        let dir = tempfile::tempdir().unwrap();
+        let index = LogIndex::open_or_create_in(dir.path()).unwrap();
+
+        let log_path = dir.path().join("api.log");
+        std::fs::write(&log_path, "[2025-01-01T00:00:00Z] [stdout] hello\n").unwrap();
+
+        let sources = vec![LogSource {
+            run_id: "run-no-auto-ingest".to_string(),
+            service: "api".to_string(),
+            path: log_path,
+        }];
+
+        let search = index
+            .search_run(
+                "run-no-auto-ingest",
+                &sources,
+                LogSearchQuery {
+                    last: Some(10),
+                    since: None,
+                    search: None,
+                    level: None,
+                    stream: None,
+                    service: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(search.total, 0);
+        assert!(search.entries.is_empty());
+
+        let facets = index
+            .facets_run(
+                "run-no-auto-ingest",
+                &sources,
+                LogFacetsQuery {
+                    since: None,
+                    service: None,
+                    level: None,
+                    stream: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(facets.total, 0);
+        assert!(facets.filters.is_empty());
+    }
+
+    #[test]
     fn ingest_json_lines_returns_structured_fields() {
         let dir = tempfile::tempdir().unwrap();
         let index = LogIndex::open_or_create_in(dir.path()).unwrap();
@@ -1290,14 +1374,17 @@ mod tests {
         )
         .unwrap();
 
+        let sources = vec![LogSource {
+            run_id: "run-json".to_string(),
+            service: "api".to_string(),
+            path: log_path,
+        }];
+        ingest(&index, &sources);
+
         let resp = index
             .search_run(
                 "run-json",
-                &[LogSource {
-                    run_id: "run-json".to_string(),
-                    service: "api".to_string(),
-                    path: log_path,
-                }],
+                &sources,
                 LogSearchQuery {
                     last: Some(10),
                     since: None,
@@ -1352,14 +1439,17 @@ mod tests {
         )
         .unwrap();
 
+        let sources = vec![LogSource {
+            run_id: "run-level".to_string(),
+            service: "api".to_string(),
+            path: log_path,
+        }];
+        ingest(&index, &sources);
+
         let errors = index
             .search_run(
                 "run-level",
-                &[LogSource {
-                    run_id: "run-level".to_string(),
-                    service: "api".to_string(),
-                    path: log_path,
-                }],
+                &sources,
                 LogSearchQuery {
                     last: Some(10),
                     since: None,
@@ -1389,14 +1479,17 @@ mod tests {
         )
         .unwrap();
 
+        let sources = vec![LogSource {
+            run_id: "run-order".to_string(),
+            service: "api".to_string(),
+            path: log_path,
+        }];
+        ingest(&index, &sources);
+
         let resp = index
             .search_run(
                 "run-order",
-                &[LogSource {
-                    run_id: "run-order".to_string(),
-                    service: "api".to_string(),
-                    path: log_path,
-                }],
+                &sources,
                 LogSearchQuery {
                     last: Some(10),
                     since: None,
@@ -1444,6 +1537,7 @@ mod tests {
                 path: worker_log,
             },
         ];
+        ingest(&index, &sources);
 
         let response = index
             .facets_run(
@@ -1526,6 +1620,7 @@ mod tests {
                 path: worker_log,
             },
         ];
+        ingest(&index, &sources);
 
         let response = index
             .facets_run(

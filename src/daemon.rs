@@ -5158,6 +5158,15 @@ mod tests {
             );
         }
 
+        state
+            .log_index
+            .ingest_sources(&[LogSource {
+                run_id: "run-1".to_string(),
+                service: "api".to_string(),
+                path: dir.path().join("api.log"),
+            }])
+            .unwrap();
+
         let response = logs_facets(
             State(state),
             AxumPath("run-1".to_string()),

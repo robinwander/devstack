@@ -1222,6 +1222,7 @@ fn search_source_logs(
         });
     }
 
+    index.ingest_sources(&sources)?;
     let run_id = source_run_id(source_name);
     index.search_run(&run_id, &sources, query)
 }
@@ -1233,6 +1234,9 @@ fn search_source_log_facets(
     query: LogFacetsQuery,
 ) -> Result<LogFacetsResponse> {
     let sources = source_log_sources(ledger, source_name)?;
+    if !sources.is_empty() {
+        index.ingest_sources(&sources)?;
+    }
     let run_id = source_run_id(source_name);
     index.facets_run(&run_id, &sources, query)
 }
