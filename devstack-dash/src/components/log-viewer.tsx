@@ -540,8 +540,12 @@ export function LogViewer({
   })
 
   const shareCommand = useMemo(() => {
-    if (isSourceView) return ''
-    const args = ['devstack', 'show', '--run', runId]
+    const args: string[] = []
+    if (isSourceView) {
+      args.push('devstack', 'logs', '--source', activeSourceName || '')
+    } else {
+      args.push('devstack', 'show', '--run', runId)
+    }
     if (activeTab !== '__all__') args.push('--service', activeTab)
     if (searchInput.trim()) args.push('--search', searchInput.trim())
     if (timeRange === 'custom') {
@@ -555,6 +559,7 @@ export function LogViewer({
       .join(' ')
   }, [
     activeTab,
+    activeSourceName,
     defaultLast,
     isSourceView,
     last,
@@ -566,28 +571,6 @@ export function LogViewer({
 
   const canShare =
     !isSourceView && Boolean(latestAgentSessionQuery.data?.session)
-
-  const buildShareMessage = useCallback(
-    (logsToShare: ParsedLog[], subject: string) => {
-      const context: string[] = []
-      if (activeTab !== '__all__') context.push(`service:${activeTab}`)
-      if (searchInput.trim()) context.push(`search:${searchInput.trim()}`)
-      if (timeRange === 'custom') {
-        if (customTimeRange.fromInput) {
-          context.push(`from:${customTimeRange.fromInput}`)
-        }
-        if (customTimeRange.toInput) {
-          context.push(`to:${customTimeRange.toInput}`)
-        }
-      } else if (timeRange !== 'live') {
-        context.push(`since:${timeRange}`)
-      }
-      const contextLine =
-        context.length > 0 ? `\nCurrent view: ${context.join(' · ')}` : ''
-      return `${subject}${contextLine}\n\n${buildSharePayload(logsToShare)}`
-    },
-    [activeTab, customTimeRange.fromInput, customTimeRange.toInput, searchInput, timeRange],
-  )
 
   const shareCurrentView = useCallback(async () => {
     if (!canShare) return
@@ -604,23 +587,6 @@ export function LogViewer({
     }
   }, [canShare, projectDir, shareCommand])
 
-  const shareLogsWithAgent = useCallback(
-    async (logsToShare: ParsedLog[], subject: string, successMessage: string) => {
-      if (!canShare || logsToShare.length === 0) return
-      try {
-        await api.shareToAgent(
-          projectDir,
-          shareCommand,
-          buildShareMessage(logsToShare, subject),
-        )
-        toast.success(successMessage)
-      } catch (error) {
-        const message = error instanceof Error ? error.message : 'Unknown error'
-        toast.error(`Failed to share logs: ${message}`)
-      }
-    },
-    [buildShareMessage, canShare, projectDir, shareCommand],
-  )
 
   const { logs, matchCount, truncated, matchedTotal } = useMemo(() => {
     const entries = logsQuery.data?.entries ?? []
@@ -781,23 +747,21 @@ export function LogViewer({
   }, [])
 
   const handleShareLog = useCallback(
-    (log: ParsedLog) => {
-      void shareLogsWithAgent(
-        [log],
-        'Can you inspect this log entry?',
-        'Shared log entry with active agent',
-      )
+    (_log: ParsedLog) => {
+      void navigator.clipboard
+        .writeText(shareCommand)
+        .then(() => toast.success('Copied share command to clipboard'))
+        .catch(() => toast.error('Failed to copy to clipboard'))
     },
-    [shareLogsWithAgent],
+    [shareCommand],
   )
 
   const handleShareSelection = useCallback(() => {
-    void shareLogsWithAgent(
-      selectedLogs,
-      `Can you inspect these ${selectedLogs.length} selected log entries?`,
-      `Shared ${selectedLogs.length} selected rows with active agent`,
-    )
-  }, [selectedLogs, shareLogsWithAgent])
+    void navigator.clipboard
+      .writeText(shareCommand)
+      .then(() => toast.success('Copied share command to clipboard'))
+      .catch(() => toast.error('Failed to copy to clipboard'))
+  }, [shareCommand])
 
   const handleFilterAction = useCallback(
     (field: string, value: string, action: DetailFilterAction) => {
@@ -1005,7 +969,7 @@ export function LogViewer({
             return replaceAllTokens(current, 'level', 'warn')
           })
         }
-        if (e.key === 'f' && !e.shiftKey) {
+        if (e.key === 'f' || e.key === 'F') {
           e.preventDefault()
           setFacetsOpen((v) => !v)
         }
@@ -1701,7 +1665,7 @@ export function LogViewer({
                       isExpanded={expandedRow === i}
                       isSelected={selectedRowKeySet.has(logKeys[i])}
                       lineWrap={lineWrap}
-                      canShare={canShare}
+                      canShare={true}
                       onToggleExpand={toggleExpand}
                       onSelectRow={handleSelectRow}
                       onShareLog={handleShareLog}
@@ -1733,17 +1697,15 @@ export function LogViewer({
             <Copy className="w-3.5 h-3.5" />
             Copy
           </button>
-          {canShare && (
-            <button
-              type="button"
-              onClick={handleShareSelection}
-              className="h-8 px-2.5 rounded-full text-xs text-ink-tertiary hover:text-ink hover:bg-surface-sunken/60 transition-colors inline-flex items-center gap-1"
-              aria-label="Share selected rows with agent"
-            >
-              <Share2 className="w-3.5 h-3.5" />
-              Share
-            </button>
-          )}
+          <button
+            type="button"
+            onClick={handleShareSelection}
+            className="h-8 px-2.5 rounded-full text-xs text-ink-tertiary hover:text-ink hover:bg-surface-sunken/60 transition-colors inline-flex items-center gap-1"
+            aria-label="Share selected rows with agent"
+          >
+            <Share2 className="w-3.5 h-3.5" />
+            Share
+          </button>
           <button
             type="button"
             onClick={clearSelection}

@@ -175,11 +175,16 @@ describe('LogViewer share button', () => {
   })
 
   it('shares a specific log entry from the detail panel', async () => {
-    let sharePayload: { project_dir: string; command: string; message: string } | null = null
+    let clipboardText = ''
+    const writeText = vi.fn(async (text: string) => { clipboardText = text })
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText },
+      writable: true,
+      configurable: true,
+    })
 
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = typeof input === 'string' ? input : input instanceof Request ? input.url : String(input)
-      const method = init?.method ?? (input instanceof Request ? input.method : 'GET')
 
       if (url.includes('/api/v1/runs/run-1/logs/facets')) {
         return jsonResponse(facetsResponse)
@@ -188,22 +193,9 @@ describe('LogViewer share button', () => {
         return jsonResponse(detailLogSearchResponse)
       }
       if (url.includes('/api/v1/agent/sessions/latest')) {
-        return jsonResponse({
-          session: {
-            agent_id: 'agent-1',
-            project_dir: '/tmp/project',
-            stack: null,
-            command: 'claude',
-            pid: 123,
-            created_at: '2025-01-01T00:00:00Z',
-          },
-        })
+        return jsonResponse({ session: null })
       }
-      if (url.includes('/api/v1/agent/share') && method === 'POST') {
-        sharePayload = JSON.parse(String(init?.body))
-        return jsonResponse({ agent_id: 'agent-1', queued: 1 })
-      }
-      throw new Error(`Unhandled fetch URL: ${url} (${method})`)
+      throw new Error(`Unhandled fetch URL: ${url}`)
     })
 
     renderViewer('api')
@@ -212,11 +204,8 @@ describe('LogViewer share button', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Share log entry with agent' }))
 
     await waitFor(() => {
-      expect(sharePayload?.project_dir).toBe('/tmp/project')
-      expect(sharePayload?.command).toBe('devstack show --run run-1 --service api')
-      expect(sharePayload?.message).toContain('Can you inspect this log entry?')
-      expect(sharePayload?.message).toContain('panic mode')
-      expect(sharePayload?.message).toContain('event')
+      expect(writeText).toHaveBeenCalledOnce()
+      expect(clipboardText).toBe('devstack show --run run-1 --service api')
     })
   })
 })
