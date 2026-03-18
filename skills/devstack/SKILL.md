@@ -21,20 +21,21 @@ Use this skill when a user asks to set up or operate devstack in a repo: create 
 - Health check: `devstack doctor`.
 
 3) Start a stack
-- `devstack up [<stack>] [--stack <name>] [--all] [--new] [--force] [--project <path>] [--run-id <id>] [--file <path>] [--no-wait]`
+- `devstack up [<stack>] [--stack <name>] [--all] [--new] [--force] [--project <path>] [--run <id>] [--file <path>] [--no-wait]`
 - Use `--no-wait` if you only want to kick off services without waiting on readiness.
 
 4) Inspect and operate
 - `devstack ls [--all]`
-- `devstack status [--run-id <id>]`
+- `devstack status [--run <id>]`
 - `devstack watch` — show auto-restart watcher status per service
 - `devstack watch pause [--service <name>]` / `devstack watch resume [--service <name>]`
-- `devstack diagnose [--run-id <id>] [--service <name>]` — deep diagnostics including port binding, systemd state, and recent errors
-- `devstack logs [--run-id <id>] --service <svc> [--tail N] [--follow] [--follow-for 15s] [--json]`
-- `devstack logs --service <svc> --no-health` — filter noisy health check requests
+- `devstack diagnose [--run <id>] [--service <name>]` — deep diagnostics including port binding, systemd state, and recent errors
+- `devstack logs [--run <id>] --service <svc> [--last N] [--follow] [--follow-for 15s] [--json]`
+- `devstack logs --service <svc> --no-noise` — filter noisy health check requests (alias: `--no-health`)
 - `devstack logs --service <svc> --errors` — alias for `--level error`
-- `devstack logs --source <name> [--tail N] [--q <query>] [--level <level>] [--stream <stream>] [--since <iso8601>]`
+- `devstack logs --source <name> [--last N] [--search <query>] [--level <level>] [--stream <stream>] [--since <duration|iso8601>]`
 - `devstack logs --source <name> --facets` — show available field values (services, levels, streams) with counts
+- `devstack logs --all --facets` — discover queryable fields across all services in the run
 - `devstack logs --task <name>` — show logs for a task
 - `devstack lint [--project <path>] [--file <path>]` — validate config without starting anything
 
@@ -56,7 +57,7 @@ Use this skill when a user asks to set up or operate devstack in a repo: create 
 - `devstack sources ls` — list registered sources
 - External sources are JSONL files not managed by devstack (e.g. app logs, agent logs). The shim writes JSON lines; external sources must also be JSONL. When an app outputs JSON, fields are merged into the envelope. When plain text, the shim wraps it in a JSON object with `time`, `stream`, and `msg`.
 - The daemon periodically re-ingests registered sources so new files matching globs are picked up automatically.
-- Query with `devstack logs --source <name>` — same flags as run logs (`--tail`, `--q`, `--level`, `--since`).
+- Query with `devstack logs --source <name>` — same flags as run logs (`--last`, `--search`, `--level`, `--since`, `--service`).
 - Discover available facets with `devstack logs --source <name> --facets` before querying.
 
 8) Open dashboard
@@ -72,8 +73,8 @@ Use this skill when a user asks to set up or operate devstack in a repo: create 
 - **This is the preferred way to share log context with the user** instead of dumping raw log output
 
 10) Stop or clean up
-- `devstack down [--run-id <id>] [--purge]`
-- `devstack kill [--run-id <id>]` (if hung)
+- `devstack down [--run <id>] [--purge]`
+- `devstack kill [--run <id>]` (if hung)
 - `devstack gc [--older-than 7d] [--all]`
 
 ## Log format
@@ -187,6 +188,8 @@ Set `auto_restart = true` to enable live file watching + automatic service resta
 
 ## CLI flag reference
 
+Flag names below are the canonical form. Common aliases: `--run-id` → `--run`, `--tail` → `--last`, `--q` → `--search`, `--no-health` → `--no-noise`.
+
 ### Global flags
 - `--pretty` — Force pretty JSON even when non-interactive
 
@@ -197,45 +200,50 @@ Set `auto_restart = true` to enable live file watching + automatic service resta
 - `--new` — Force new run (don't reuse existing)
 - `--force` — Restart all services even if unchanged
 - `--project <path>` — Project directory
-- `--run-id <id>` — Specific run ID
+- `--run <id>` — Specific run ID (alias: `--run-id`)
 - `--file <path>` — Config file path
 - `--no-wait` — Don't wait for readiness
 
 ### devstack status
-- `--run-id <id>` — Specific run
+- `--run <id>` — Specific run (alias: `--run-id`)
 - `--json` — Force JSON output (even on TTY)
 
+### devstack watch
+- _(no flags)_ — Show auto-restart watcher status per service
+- `pause [--service <name>]` — Pause auto-restart for one or all services
+- `resume [--service <name>]` — Resume auto-restart for one or all services
+
 ### devstack diagnose
-- `--run-id <id>` — Specific run
+- `--run <id>` — Specific run (alias: `--run-id`)
 - `--service <name>` — Diagnose specific service only
 
 ### devstack logs
-- `--run-id <id>` — Run scope
-- `--source <name>` — Query external source (conflicts with run flags)
-- `--facets` — Show available field values (conflicts with follow/tail/q/task)
+- `--run <id>` — Run scope (alias: `--run-id`)
+- `--source <name>` — Query external source (conflicts with `--run`, `--all`, `--task`)
+- `--facets` — Show available field values (conflicts with `--follow`, `--last`, `--task`)
 - `--all` — Search all services in run
-- `--service <name>` — Specific service
+- `--service <name>` — Specific service (works with both run-scoped and source-scoped queries)
 - `--task <name>` — Show task logs
-- `--tail <N>` — Last N lines (default: 500, or 200 with --follow)
-- `--q <query>` — Tantivy query string (boolean ops, phrases)
+- `--last <N>` — Last N lines (default: 500, or 200 with `--follow`; alias: `--tail`)
+- `--search <query>` — Tantivy query string (boolean ops, phrases; alias: `--q`)
 - `--level <all|warn|error>` — Filter by level
 - `--errors` — Alias for `--level error`
 - `--stream <stdout|stderr>` — Filter by stream
 - `--since <timestamp|duration>` — RFC3339 or duration like "5m", "1h"
-- `--no-health` — Filter health check noise
-- `--follow` — Stream new logs (requires --service)
+- `--no-noise` — Filter health check noise (alias: `--no-health`)
+- `--follow` — Stream new logs (requires `--service`)
 - `--follow-for <duration>` — Follow timeout (default: 15s in non-interactive)
 - `--json` — Output JSON
 
 ### devstack down
-- `--run-id <id>` — Specific run
+- `--run <id>` — Specific run (alias: `--run-id`)
 - `--purge` — Remove run directory after stopping
 
 ### devstack kill
-- `--run-id <id>` — Specific run
+- `--run <id>` — Specific run (alias: `--run-id`)
 
 ### devstack exec
-- `--run-id <id>` — Run to use for environment
+- `--run <id>` — Run to use for environment (alias: `--run-id`)
 - `-- <command...>` — Command and arguments (required)
 
 ### devstack lint
@@ -247,13 +255,13 @@ Set `auto_restart = true` to enable live file watching + automatic service resta
 - `--all` — Remove all stopped runs
 
 ### devstack show
-- `--run <id>` — Target run
+- `--run <id>` — Target run (alias: `--run-id`)
 - `--service <name>` — Filter to a specific service
-- `--search <query>` — Full-text search query
+- `--search <query>` — Full-text search query (alias: `--q`)
 - `--level <all|warn|error>` — Filter by level
 - `--stream <stdout|stderr>` — Filter by stream
 - `--since <timestamp|duration>` — Time filter (e.g. "5m", "1h", RFC3339)
-- `--last <N>` — Show last N lines
+- `--last <N>` — Show last N lines (alias: `--tail`)
 
 ### devstack init
 - `--project <path>` — Project directory
@@ -262,7 +270,7 @@ Set `auto_restart = true` to enable live file watching + automatic service resta
 ### devstack run
 - `[<task>]` — Task name (omit to list available)
 - `--init` — Run all init tasks for the stack
-- `--stack <name>` — Stack for init tasks (requires --init)
+- `--stack <name>` — Stack for init tasks (requires `--init`)
 - `--project <path>` — Project directory
 - `--file <path>` — Config file
 - `--verbose` — Stream stdout/stderr to terminal (default: capture to log)
@@ -282,7 +290,7 @@ Set `auto_restart = true` to enable live file watching + automatic service resta
 - Prefer `devstack init` to create a baseline config, then fill in services based on repo signals (package.json scripts, docker-compose, etc.).
 - On macOS, LaunchAgents inherit a minimal PATH; use absolute command paths or ensure tools like `pnpm`/`poetry` are on PATH for the daemon.
 - `devstack ls` filters to the current project by default; use `--all` to see everything.
-- If `--run-id` is omitted, the most recent run for the current project is used.
+- If `--run` is omitted, the most recent run for the current project is used.
 - If `--stack` is omitted and the config defines exactly one stack, that stack is used.
 - You can set `default_stack = "<name>"` to choose the default when multiple stacks exist.
 - `devstack up --all` starts every stack in the config.
@@ -293,8 +301,8 @@ Set `auto_restart = true` to enable live file watching + automatic service resta
 - Use `devstack lint` to validate config changes without starting services.
 - Default output is pretty JSON on a TTY and compact JSON when non-interactive (`--pretty` forces pretty).
 - `devstack logs --follow` defaults to a 15s timeout in non-interactive shells; use `--follow-for` to override.
-- Use `--facets` to discover what's queryable before writing `--q` filters. Works with both `--source` and run-scoped logs.
-- Use `--no-health` to filter out repetitive health check requests from logs.
+- Use `--facets` to discover what's queryable before writing `--search` filters. Works with both `--source` and run-scoped logs.
+- Use `--no-noise` (alias `--no-health`) to filter out repetitive health check requests from logs.
 - Use `--errors` as a quick alias for `--level error`.
 - **Use `devstack show` to share log views with the user.** Instead of pasting log output, send a filtered dashboard view — the user sees it live in their browser. Example: `devstack show --service api --level error --since 5m`.
 

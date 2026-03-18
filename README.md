@@ -127,17 +127,17 @@ All service output is captured as JSONL with timestamps, stream labels, and leve
 ![log search with highlighted matches](docs/assets/dashboard-search.png)
 
 ```bash
-devstack logs --service api --errors            # show only errors
-devstack logs --q "connection refused" --last 50 # full-text search
-devstack logs --service api --follow             # stream in real-time
-devstack logs --facets                           # discover queryable fields
+devstack logs --service api --errors                 # show only errors
+devstack logs --search "connection refused" --last 50 # full-text search
+devstack logs --service api --follow                  # stream in real-time
+devstack logs --all --facets                          # discover queryable fields
 ```
 
 External JSONL files can be registered as sources and queried with the same interface:
 
 ```bash
 devstack sources add app-logs /var/log/myapp/*.jsonl
-devstack logs --source app-logs --q "timeout" --since 1h
+devstack logs --source app-logs --search "timeout" --since 1h
 ```
 
 ### Incremental Restarts & File Watching
@@ -254,6 +254,7 @@ Service fields:
 | `env` | map | `{}` | Inline env vars (templated values) |
 | `watch` | string[] | all files under cwd | Paths/patterns to hash for refresh decisions |
 | `ignore` | string[] | `[]` | Extra ignore patterns on top of ignore files |
+| `auto_restart` | bool | `false` | Live file watching + automatic restart (requires `watch`) |
 | `init` | string[] | none | Tasks to run before service start |
 
 ### Globals
@@ -301,23 +302,28 @@ ignore = ["**/*.test.ts", "**/node_modules"]
 
 ## CLI Reference
 
+Flag names below are the canonical form. Common aliases: `--run-id` → `--run`, `--tail` → `--last`, `--q` → `--search`, `--no-health` → `--no-noise`.
+
 ### Lifecycle
 
 | Command | Key flags |
 |---------|-----------|
-| `devstack up [STACK]` | `--stack`, `--all`, `--new`, `--force`, `--no-wait`, `--run-id`, `--project`, `--file` |
-| `devstack down` | `--run-id`, `--purge` |
-| `devstack kill` | `--run-id` |
+| `devstack up [STACK]` | `--stack`, `--all`, `--new`, `--force`, `--no-wait`, `--run`, `--project`, `--file` |
+| `devstack down` | `--run`, `--purge` |
+| `devstack kill` | `--run` |
 | `devstack daemon` | Run daemon in foreground (useful for debugging) |
 
 ### Inspection & Logs
 
 | Command | Key flags |
 |---------|-----------|
-| `devstack status` | `--run-id`, `--json` |
+| `devstack status` | `--run`, `--json` |
 | `devstack ls` | `--all` |
-| `devstack diagnose` | `--run-id`, `--service` |
-| `devstack logs` | `--service`, `--task`, `--all`, `--source`, `--tail`, `--q`, `--level`, `--errors`, `--stream`, `--since`, `--facets`, `--follow`, `--follow-for`, `--no-health`, `--json` |
+| `devstack diagnose` | `--run`, `--service` |
+| `devstack watch` | Show file-watch status per service |
+| `devstack watch pause` | `--service` — pause auto-restart for one or all services |
+| `devstack watch resume` | `--service` — resume auto-restart for one or all services |
+| `devstack logs` | `--service`, `--task`, `--all`, `--source`, `--last`, `--search`, `--level`, `--errors`, `--stream`, `--since`, `--facets`, `--no-noise`, `--follow`, `--follow-for`, `--json` |
 
 ### Agent
 
@@ -354,7 +360,7 @@ ignore = ["**/*.test.ts", "**/node_modules"]
 ### Common flags
 
 - `--pretty` is available on all commands.
-- `--run-id`, `--project`, and `--file` are command-specific (not global), mainly on lifecycle/config-sensitive commands.
+- `--run`, `--project`, and `--file` are command-specific (not global), mainly on lifecycle/config-sensitive commands.
 
 ## Agent Skills
 

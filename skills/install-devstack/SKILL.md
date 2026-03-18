@@ -9,6 +9,14 @@ metadata:
 
 This is an interactive, agent-led installation. Walk the user through each step, confirming choices before proceeding.
 
+## Prerequisites
+
+- **Rust toolchain** — needed for building from source. Install via [rustup](https://rustup.rs/) if missing.
+- **Node.js + pnpm (or npm)** — required for the web dashboard. The install script runs `pnpm install` (or falls back to `npm ci`) to set up dashboard dependencies.
+- **Git** — to clone the repo.
+- **Linux**: systemd with user session support (most distros).
+- **macOS**: No extra requirements. The daemon runs as a LaunchAgent.
+
 ## Step 1: Check if already installed
 
 Run silently — don't ask the user, just check:
@@ -91,6 +99,8 @@ cd ~/tools/devstack
 ./scripts/install-cli.sh
 ```
 
+This builds the CLI binary to `~/.local/bin/devstack` and installs the web dashboard to `~/.local/share/devstack/dashboard` (Linux) or `~/Library/Application Support/devstack/dashboard` (macOS).
+
 If `~/.local/bin` is not on PATH, same guidance as Option 1.
 
 ## Step 4: Install and start the daemon
@@ -142,11 +152,138 @@ devstack completions zsh > ~/.zsh/completions/_devstack
 devstack completions fish > ~/.config/fish/completions/devstack.fish
 ```
 
-## Done
+## Step 7 (optional): initialize a project
 
-Confirm to the user that devstack is installed and ready. Suggest next steps:
-- `cd <project> && devstack init` to create a config
-- Load the `devstack` skill for help setting up services
+Confirm to the user that devstack is installed and healthy. Ask if they want to set up a project now.
+
+### 7a. Identify the project
+
+Ask the user which project to set up. If they give a name instead of a path, look for it relative to cwd or common locations (`~/`, `~/projects/`, `~/code/`, `~/repos/`). Then `cd` into the project root.
+
+### 7b. Read project context
+
+Before writing any config, understand the project. Read these files (whichever exist):
+
+```bash
+# Project docs — understand what the project does and how it runs
+cat README.md AGENTS.md CLAUDE.md .github/CONTRIBUTING.md
+
+# Package manifests — identify apps, scripts, and dependencies
+cat package.json                  # Node.js: look at "scripts" for dev/start commands
+cat apps/*/package.json           # Monorepo: check each app/package
+cat pyproject.toml                # Python: look for scripts, entry points
+cat Cargo.toml                    # Rust: binary targets
+cat Makefile                      # Make targets (dev, run, serve, etc.)
+cat docker-compose.yml            # Existing service definitions — good mapping source
+cat Procfile                      # Heroku-style process definitions
+
+# Existing env and config
+cat .env .env.example .env.local  # Default env vars, required config
+cat prisma/schema.prisma          # Database schema → need a db service + migrations
+```
+
+From this context, identify:
+- **Services**: each long-running process the project needs (web servers, API servers, workers, databases, caches, message brokers)
+- **Dependencies between services**: which services need to talk to each other (e.g. web → api → db)
+- **Infrastructure**: databases, Redis, etc. that should be globals
+- **Tasks**: one-shot commands (migrations, codegen, seed scripts, linting, builds)
+- **Init tasks**: tasks that must run before a service starts (e.g. migrations before the API)
+
+### 7c. Generate the config
+
+```bash
+devstack init   # creates a starter devstack.toml
+```
+
+Then edit `devstack.toml` based on what you discovered. Load the `devstack` skill for full config reference. Key decisions:
+
+**Services**: For each app, create a service entry with:
+- `cmd` — the dev-mode start command (e.g. `pnpm dev`, `cargo run`, `python manage.py runserver`)
+- `deps` — services this one depends on (e.g. api depends on db)
+- `watch` — source file patterns for change detection (e.g. `["src/**", "package.json"]`)
+- `auto_restart = true` — if you want live file watching to auto-restart the service
+- `readiness` — how to know the service is healthy:
+  - Web servers / APIs → `readiness = { http = { path = "/health" } }` or `{ tcp = {} }`
+  - Workers with no port → `readiness = { log_regex = "ready" }` or `{ delay_ms = 2000 }`
+  - One-shot setup → `readiness = { exit = {} }` with `port = "none"`
+
+**Environment wiring**: Services reference each other via templates:
+```toml
+[stacks.dev.services.web.env]
+VITE_API_URL = "{{ services.api.url }}"
+DATABASE_URL = "postgres://localhost:{{ services.db.port }}/myapp"
+```
+
+**Globals**: Infrastructure shared across stacks (databases, caches):
+```toml
+[globals.db]
+cmd = "docker run --rm -p $PORT:5432 -e POSTGRES_HOST_AUTH_METHOD=trust postgres:16"
+readiness = { tcp = {} }
+
+[globals.redis]
+cmd = "redis-server --port $PORT"
+readiness = { tcp = {} }
+```
+
+**Tasks**: Migrations, codegen, builds:
+```toml
+[tasks.migrate]
+cmd = "prisma migrate dev"
+watch = ["prisma/schema.prisma"]
+
+[stacks.dev.services.api]
+cmd = "pnpm dev"
+init = ["migrate"]   # runs migrate before api starts
+```
+
+### 7d. Validate
+
+```bash
+devstack lint
+```
+
+Fix any errors. Then ask the user to review — are there services to add or remove? Apply their feedback and re-lint.
+
+### 7e. Start the stack
+
+Ask if they want to start:
+
+```bash
+devstack up
+```
+
+If services fail, debug systematically:
+
+```bash
+devstack status                          # which services are unhealthy?
+devstack diagnose                        # port binding, systemd state, recent errors
+devstack logs --service <name> --last 50 # check the failing service's output
+```
+
+Common issues to fix:
+- **Port conflicts**: service binds to a hardcoded port → remove the hardcoded port and use `$PORT` (devstack allocates ports automatically)
+- **Missing env vars**: service needs config that isn't wired up → add to `[stacks.dev.services.<name>.env]`
+- **Wrong readiness probe**: service is running but devstack thinks it's not ready → adjust the `readiness` config (check what the service actually exposes)
+- **Dependency ordering**: service starts before its dependency is ready → add to `deps`
+- **macOS PATH**: command not found → use absolute path in `cmd` or set PATH in env
+
+Iterate until `devstack status` shows all services healthy.
+
+### 7f. Show the user around
+
+Once the stack is running:
+
+```bash
+devstack ui                              # open the dashboard
+devstack show --service api              # navigate dashboard to a specific service
+```
+
+Explain what they now have:
+- `devstack up` to start, `devstack down` to stop
+- `devstack status` to check health at a glance
+- `devstack logs --service <name>` to query logs (with full-text search via `--search`)
+- `devstack ui` for the web dashboard with real-time logs, facet filtering, and service management
+- `devstack agent -- <cmd>` to wrap their AI agent with two-way dashboard integration
 
 ---
 
@@ -167,9 +304,7 @@ git pull
 ./scripts/install-cli.sh
 ```
 
-The install script automatically restarts the daemon after building.
-
----
+The install script automatically restarts the daemon after upgrading.
 
 ## Troubleshooting
 
@@ -183,13 +318,14 @@ devstack daemon
 
 ### macOS PATH issues
 
-LaunchAgents inherit a minimal PATH. If services need tools like `pnpm` or `poetry`:
+LaunchAgents inherit a minimal PATH. If services need tools like `pnpm` or `poetry`, either:
+
 - Use absolute paths in `devstack.toml` commands (e.g. `/opt/homebrew/bin/pnpm dev`)
-- Or set PATH in your service's `env` config
+- Or add a PATH override to the LaunchAgent plist
 
 ### Linux: "systemd user instance unavailable"
 
-Enable lingering so user services run without an active login session:
+Ensure lingering is enabled so user services run without an active login:
 
 ```bash
 loginctl enable-linger $(whoami)
@@ -210,6 +346,6 @@ rm ~/Library/LaunchAgents/devstack.plist
 
 # Both
 rm ~/.local/bin/devstack
-rm -rf ~/.local/share/devstack        # Linux data
+rm -rf ~/.local/share/devstack  # Linux data
 rm -rf ~/Library/Application\ Support/devstack  # macOS data
 ```
