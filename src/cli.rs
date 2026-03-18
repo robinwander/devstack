@@ -17,10 +17,9 @@ use tokio::net::UnixStream;
 use tokio::time::timeout;
 
 use crate::api::{
-    DownRequest, FacetValueCount, GcRequest, KillRequest, LogEntry, LogFacetsQuery,
-    LogFacetsResponse, LogSearchQuery, LogSearchResponse, LogsResponse, PingResponse,
-    ProjectsResponse, RegisterProjectResponse, RunListResponse, RunSummary, RunWatchResponse,
-    SetNavigationIntentRequest, UpRequest, WatchControlRequest,
+    DownRequest, FacetValueCount, GcRequest, KillRequest, LogEntry, LogViewQuery, LogViewResponse,
+    LogsResponse, PingResponse, ProjectsResponse, RegisterProjectResponse, RunListResponse,
+    RunSummary, RunWatchResponse, SetNavigationIntentRequest, UpRequest, WatchControlRequest,
 };
 use crate::config::ConfigFile;
 use crate::log_index::{LogIndex, LogSource};
@@ -142,16 +141,16 @@ pub enum Commands {
         #[arg(long = "run", alias = "run-id", help = "Target run id")]
         run_id: Option<String>,
         /// Query a registered external source.
-        #[arg(long, conflicts_with_all = ["run_id", "all", "service", "task"], help = "Query a registered external source")]
+        #[arg(long, conflicts_with_all = ["run_id", "all", "task"], help = "Query a registered external source")]
         source: Option<String>,
         /// Show available facet values for discoverability.
-        #[arg(long, conflicts_with_all = ["follow", "tail", "q", "task"], help = "Show available facet values for discoverability")]
+        #[arg(long, conflicts_with_all = ["follow", "tail", "task"], help = "Show available facet values for discoverability")]
         facets: bool,
         /// Search all services in the run (cannot be combined with --follow).
         #[arg(long, conflicts_with_all = ["service", "task", "source"], help = "Search all services in the run (cannot be combined with --follow)")]
         all: bool,
         /// Filter to a specific service.
-        #[arg(long, required_unless_present_any = ["all", "task", "source", "facets"], conflicts_with_all = ["all", "task", "source"], help = "Filter to a specific service")]
+        #[arg(long, required_unless_present_any = ["all", "task", "source", "facets"], conflicts_with_all = ["all", "task"], help = "Filter to a specific service")]
         service: Option<String>,
         /// Show logs for a named task.
         #[arg(long, conflicts_with_all = ["all", "service", "source"], help = "Show logs for a named task")]
@@ -640,48 +639,41 @@ pub async fn run() -> Result<()> {
             } else {
                 level
             };
+            let view_query =
+                |tail: Option<usize>, include_entries: bool, include_facets: bool| LogViewQuery {
+                    last: tail,
+                    since: since.clone(),
+                    search: q.clone(),
+                    level: level.clone(),
+                    stream: stream.clone(),
+                    service: service.clone(),
+                    include_entries,
+                    include_facets,
+                };
 
             if let Some(source_name) = source {
-                if facets {
-                    let response = query_source_log_facets(
-                        &source_name,
-                        level.as_deref(),
-                        stream.as_deref(),
-                        since.as_deref(),
-                    )
-                    .await?;
-                    emit_log_facets(&format!("Source: {source_name}"), &response, json)?;
-                    return Ok(());
-                }
-
                 if follow {
                     return Err(anyhow!("--follow is not supported with --source"));
                 }
-                let response = query_source_logs(
+
+                let response = query_source_log_view(
                     &source_name,
-                    tail.unwrap_or(500),
-                    q.as_deref(),
-                    level.as_deref(),
-                    stream.as_deref(),
-                    since.as_deref(),
+                    view_query(tail.or(Some(500)), !facets, facets),
                 )
                 .await?;
-                for entry in &response.entries {
-                    emit_entry(entry, json, no_health)?;
+                if facets {
+                    emit_log_facets(&format!("Source: {source_name}"), &response, json)?;
+                } else {
+                    for entry in &response.entries {
+                        emit_entry(entry, json, no_health)?;
+                    }
                 }
                 return Ok(());
             }
 
             if facets {
                 let run_id = resolve_run_id(&project_dir, run_id).await?;
-                let response = fetch_run_log_facets(
-                    &run_id,
-                    service.as_deref(),
-                    level.as_deref(),
-                    stream.as_deref(),
-                    since.as_deref(),
-                )
-                .await?;
+                let response = fetch_run_log_view(&run_id, view_query(None, false, true)).await?;
                 emit_log_facets(&format!("Run: {run_id}"), &response, json)?;
                 return Ok(());
             }
@@ -729,15 +721,8 @@ pub async fn run() -> Result<()> {
                     ));
                 }
                 let tail = tail.unwrap_or(500);
-                let response = fetch_run_log_search(
-                    &run_id,
-                    tail,
-                    q.as_deref(),
-                    level.as_deref(),
-                    stream.as_deref(),
-                    since.as_deref(),
-                )
-                .await?;
+                let response =
+                    fetch_run_log_view(&run_id, view_query(Some(tail), true, false)).await?;
                 for entry in &response.entries {
                     emit_entry(entry, json, no_health)?;
                 }
@@ -1101,62 +1086,36 @@ async fn fetch_service_logs_api(
     Ok(serde_json::from_value(value)?)
 }
 
-async fn fetch_run_log_search(
-    run_id: &str,
-    tail: usize,
-    q: Option<&str>,
-    level: Option<&str>,
-    stream: Option<&str>,
-    since: Option<&str>,
-) -> Result<LogSearchResponse> {
+async fn fetch_run_log_view(run_id: &str, query: LogViewQuery) -> Result<LogViewResponse> {
     let mut params = Vec::new();
-    params.push(("last", tail.to_string()));
-    if let Some(q) = q {
+    if let Some(last) = query.last {
+        params.push(("last", last.to_string()));
+    }
+    if let Some(q) = query.search.as_deref() {
         params.push(("search", q.to_string()));
     }
-    if let Some(level) = level
+    if let Some(level) = query.level.as_deref()
         && level != "all"
     {
         params.push(("level", level.to_string()));
     }
-    if let Some(stream) = stream {
+    if let Some(stream) = query.stream.as_deref() {
         params.push(("stream", stream.to_string()));
     }
-    if let Some(since) = since {
+    if let Some(service) = query.service.as_deref() {
+        params.push(("service", service.to_string()));
+    }
+    if let Some(since) = query.since.as_deref() {
         params.push(("since", since.to_string()));
+    }
+    if !query.include_entries {
+        params.push(("include_entries", "false".to_string()));
+    }
+    if query.include_facets {
+        params.push(("include_facets", "true".to_string()));
     }
     let query = build_query_string(params);
     let path = format!("/v1/runs/{run_id}/logs{query}");
-    let value =
-        call_daemon::<serde_json::Value>("GET", &path, None, Some(DAEMON_LONG_TIMEOUT)).await?;
-    Ok(serde_json::from_value(value)?)
-}
-
-async fn fetch_run_log_facets(
-    run_id: &str,
-    service: Option<&str>,
-    level: Option<&str>,
-    stream: Option<&str>,
-    since: Option<&str>,
-) -> Result<LogFacetsResponse> {
-    let mut params = Vec::new();
-    if let Some(since) = since {
-        params.push(("since", since.to_string()));
-    }
-    if let Some(service) = service {
-        params.push(("service", service.to_string()));
-    }
-    if let Some(level) = level
-        && level != "all"
-    {
-        params.push(("level", level.to_string()));
-    }
-    if let Some(stream) = stream {
-        params.push(("stream", stream.to_string()));
-    }
-
-    let query = build_query_string(params);
-    let path = format!("/v1/runs/{run_id}/logs/facets{query}");
     let value =
         call_daemon::<serde_json::Value>("GET", &path, None, Some(DAEMON_LONG_TIMEOUT)).await?;
     Ok(serde_json::from_value(value)?)
@@ -1192,139 +1151,72 @@ fn source_log_sources(ledger: &SourcesLedger, source_name: &str) -> Result<Vec<L
         .collect())
 }
 
-fn search_source_logs(
+fn query_source_log_view_local(
     index: &LogIndex,
     ledger: &SourcesLedger,
     source_name: &str,
-    query: LogSearchQuery,
-) -> Result<LogSearchResponse> {
+    query: LogViewQuery,
+) -> Result<LogViewResponse> {
     let sources = source_log_sources(ledger, source_name)?;
     if sources.is_empty() {
-        return Ok(LogSearchResponse {
+        return Ok(LogViewResponse {
             entries: Vec::new(),
             truncated: false,
             total: 0,
-            error_count: 0,
-            warn_count: 0,
-            matched_total: 0,
+            filters: Vec::new(),
         });
     }
 
     index.ingest_sources(&sources)?;
     let run_id = source_run_id(source_name);
-    index.search_run(&run_id, &sources, query)
+    index.query_view(&run_id, query)
 }
 
-fn search_source_log_facets(
-    index: &LogIndex,
-    ledger: &SourcesLedger,
-    source_name: &str,
-    query: LogFacetsQuery,
-) -> Result<LogFacetsResponse> {
-    let sources = source_log_sources(ledger, source_name)?;
-    if !sources.is_empty() {
-        index.ingest_sources(&sources)?;
-    }
-    let run_id = source_run_id(source_name);
-    index.facets_run(&run_id, &sources, query)
-}
-
-async fn query_source_logs(
-    source_name: &str,
-    tail: usize,
-    q: Option<&str>,
-    level: Option<&str>,
-    stream: Option<&str>,
-    since: Option<&str>,
-) -> Result<LogSearchResponse> {
+async fn query_source_log_view(source_name: &str, query: LogViewQuery) -> Result<LogViewResponse> {
     if daemon_is_running().await {
         let mut params = Vec::new();
-        params.push(("last", tail.to_string()));
-        if let Some(q) = q {
+        if let Some(last) = query.last {
+            params.push(("last", last.to_string()));
+        }
+        if let Some(q) = query.search.as_deref() {
             params.push(("search", q.to_string()));
         }
-        if let Some(level) = level
+        if let Some(level) = query.level.as_deref()
             && level != "all"
         {
             params.push(("level", level.to_string()));
         }
-        if let Some(stream) = stream {
+        if let Some(stream) = query.stream.as_deref() {
             params.push(("stream", stream.to_string()));
         }
-        if let Some(since) = since {
+        if let Some(service) = query.service.as_deref() {
+            params.push(("service", service.to_string()));
+        }
+        if let Some(since) = query.since.as_deref() {
             params.push(("since", since.to_string()));
+        }
+        if !query.include_entries {
+            params.push(("include_entries", "false".to_string()));
+        }
+        if query.include_facets {
+            params.push(("include_facets", "true".to_string()));
         }
         let query_str = build_query_string(params);
         let path = format!("/v1/sources/{source_name}/logs{query_str}");
         let value =
             call_daemon::<serde_json::Value>("GET", &path, None, Some(DAEMON_LONG_TIMEOUT)).await?;
-        let response: LogSearchResponse = serde_json::from_value(value)?;
+        let response: LogViewResponse = serde_json::from_value(value)?;
         return Ok(response);
     }
 
     let source_name = source_name.to_string();
-    let query = LogSearchQuery {
-        last: Some(tail),
-        since: since.map(|value| value.to_string()),
-        search: q.map(|value| value.to_string()),
-        level: level.map(|value| value.to_string()),
-        stream: stream.map(|value| value.to_string()),
-        service: None,
-    };
-
     let response = tokio::task::spawn_blocking(move || {
         let ledger = SourcesLedger::load()?;
         let index = LogIndex::open_or_create()?;
-        search_source_logs(&index, &ledger, &source_name, query)
+        query_source_log_view_local(&index, &ledger, &source_name, query)
     })
     .await
-    .map_err(|e| anyhow!("source log search task failed: {e}"))??;
-
-    Ok(response)
-}
-
-async fn query_source_log_facets(
-    source_name: &str,
-    level: Option<&str>,
-    stream: Option<&str>,
-    since: Option<&str>,
-) -> Result<LogFacetsResponse> {
-    if daemon_is_running().await {
-        let mut params = Vec::new();
-        if let Some(since) = since {
-            params.push(("since", since.to_string()));
-        }
-        if let Some(level) = level
-            && level != "all"
-        {
-            params.push(("level", level.to_string()));
-        }
-        if let Some(stream) = stream {
-            params.push(("stream", stream.to_string()));
-        }
-
-        let query_str = build_query_string(params);
-        let path = format!("/v1/sources/{source_name}/facets{query_str}");
-        let value =
-            call_daemon::<serde_json::Value>("GET", &path, None, Some(DAEMON_LONG_TIMEOUT)).await?;
-        return Ok(serde_json::from_value(value)?);
-    }
-
-    let source_name = source_name.to_string();
-    let query = LogFacetsQuery {
-        since: since.map(|value| value.to_string()),
-        service: None,
-        level: level.map(|value| value.to_string()),
-        stream: stream.map(|value| value.to_string()),
-    };
-
-    let response = tokio::task::spawn_blocking(move || {
-        let ledger = SourcesLedger::load()?;
-        let index = LogIndex::open_or_create()?;
-        search_source_log_facets(&index, &ledger, &source_name, query)
-    })
-    .await
-    .map_err(|e| anyhow!("source log facets task failed: {e}"))??;
+    .map_err(|e| anyhow!("source log view task failed: {e}"))??;
 
     Ok(response)
 }
@@ -1368,7 +1260,7 @@ fn absolutize_source_patterns(paths: Vec<String>) -> Result<Vec<String>> {
         .collect())
 }
 
-fn emit_log_facets(label: &str, response: &LogFacetsResponse, json: bool) -> Result<()> {
+fn emit_log_facets(label: &str, response: &LogViewResponse, json: bool) -> Result<()> {
     if json {
         println!("{}", serde_json::to_string(response)?);
     } else {
@@ -1377,7 +1269,7 @@ fn emit_log_facets(label: &str, response: &LogFacetsResponse, json: bool) -> Res
     Ok(())
 }
 
-fn format_log_facets(label: &str, response: &LogFacetsResponse) -> String {
+fn format_log_facets(label: &str, response: &LogViewResponse) -> String {
     let mut out = String::new();
     out.push_str(label);
     out.push_str("\n\n");
@@ -3009,7 +2901,7 @@ async fn handle_sources(action: Option<SourcesAction>, pretty: bool) -> Result<(
                     "POST",
                     "/v1/sources",
                     Some(req),
-                    Some(DAEMON_TIMEOUT),
+                    Some(DAEMON_LONG_TIMEOUT),
                 )
                 .await?;
             } else {
@@ -3029,7 +2921,7 @@ async fn handle_sources(action: Option<SourcesAction>, pretty: bool) -> Result<(
                     "DELETE",
                     &format!("/v1/sources/{name}"),
                     None,
-                    Some(DAEMON_TIMEOUT),
+                    Some(DAEMON_LONG_TIMEOUT),
                 )
                 .await?;
             } else {
@@ -3625,8 +3517,42 @@ mod tests {
     }
 
     #[test]
+    fn logs_facets_accepts_search_and_source_service() {
+        let cli = Cli::try_parse_from([
+            "devstack",
+            "logs",
+            "--source",
+            "ext",
+            "--service",
+            "api",
+            "--facets",
+            "--search",
+            "timeout",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Logs {
+                source,
+                service,
+                facets,
+                q,
+                ..
+            } => {
+                assert_eq!(source.as_deref(), Some("ext"));
+                assert_eq!(service.as_deref(), Some("api"));
+                assert!(facets);
+                assert_eq!(q.as_deref(), Some("timeout"));
+            }
+            other => panic!("expected logs command, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn format_log_facets_pretty_output() {
-        let response = LogFacetsResponse {
+        let response = LogViewResponse {
+            entries: Vec::new(),
+            truncated: false,
             total: 1756,
             filters: vec![
                 crate::api::FacetFilter {
@@ -3755,17 +3681,19 @@ mod tests {
         );
 
         let index = LogIndex::open_or_create_in(dir.path()).unwrap();
-        let response = search_source_logs(
+        let response = query_source_log_view_local(
             &index,
             &ledger,
             "ext",
-            LogSearchQuery {
+            LogViewQuery {
                 last: Some(10),
                 since: None,
                 search: None,
                 level: None,
                 stream: None,
                 service: None,
+                include_entries: true,
+                include_facets: false,
             },
         )
         .unwrap();
@@ -3800,33 +3728,36 @@ mod tests {
         );
 
         let index = LogIndex::open_or_create_in(dir.path()).unwrap();
-        let _ = search_source_logs(
+        let _ = query_source_log_view_local(
             &index,
             &ledger,
             "ext",
-            LogSearchQuery {
+            LogViewQuery {
                 last: Some(10),
                 since: None,
                 search: None,
                 level: None,
                 stream: None,
                 service: None,
+                include_entries: true,
+                include_facets: false,
             },
         )
         .unwrap();
 
         let run_id = source_run_id("ext");
         let before = index
-            .search_run(
+            .query_view(
                 &run_id,
-                &[],
-                LogSearchQuery {
+                LogViewQuery {
                     last: Some(10),
                     since: None,
                     search: None,
                     level: None,
                     stream: None,
                     service: None,
+                    include_entries: true,
+                    include_facets: false,
                 },
             )
             .unwrap();
@@ -3836,16 +3767,17 @@ mod tests {
         index.delete_run(&run_id).unwrap();
 
         let after = index
-            .search_run(
+            .query_view(
                 &run_id,
-                &[],
-                LogSearchQuery {
+                LogViewQuery {
                     last: Some(10),
                     since: None,
                     search: None,
                     level: None,
                     stream: None,
                     service: None,
+                    include_entries: true,
+                    include_facets: false,
                 },
             )
             .unwrap();

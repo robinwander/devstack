@@ -106,13 +106,11 @@ export interface LogEntry {
   attributes?: Record<string, string>
 }
 
-export interface LogSearchResponse {
+export interface LogViewResponse {
   entries: LogEntry[]
   truncated: boolean
   total: number
-  error_count: number
-  warn_count: number
-  matched_total: number
+  filters: FacetFilter[]
 }
 
 export interface FacetValueCount {
@@ -124,11 +122,6 @@ export interface FacetFilter {
   field: string
   kind: string
   values: FacetValueCount[]
-}
-
-export interface LogFacetsResponse {
-  total: number
-  filters: FacetFilter[]
 }
 
 export interface ProjectSummary {
@@ -147,6 +140,8 @@ export interface LogFilterParams {
   level?: string
   stream?: string
   service?: string
+  include_entries?: boolean
+  include_facets?: boolean
 }
 
 export interface NavigationIntent {
@@ -242,8 +237,8 @@ export const api = {
       (r) => r.tasks,
     ),
 
-  searchRunLogs: (runId: string, params: LogFilterParams) =>
-    fetchApi<LogSearchResponse>(
+  runLogView: (runId: string, params: LogFilterParams) =>
+    fetchApi<LogViewResponse>(
       `/v1/runs/${runId}/logs${toQueryString({
         last: params.last,
         since: params.since,
@@ -251,24 +246,13 @@ export const api = {
         level: params.level,
         stream: params.stream,
         service: params.service,
+        include_entries: params.include_entries,
+        include_facets: params.include_facets,
       })}`,
     ),
 
-  runLogFacets: (
-    runId: string,
-    params: Omit<LogFilterParams, 'last' | 'search'>,
-  ) =>
-    fetchApi<LogFacetsResponse>(
-      `/v1/runs/${runId}/logs/facets${toQueryString({
-        since: params.since,
-        service: params.service,
-        level: params.level,
-        stream: params.stream,
-      })}`,
-    ),
-
-  searchSourceLogs: (name: string, params: LogFilterParams) =>
-    fetchApi<LogSearchResponse>(
+  sourceLogView: (name: string, params: LogFilterParams) =>
+    fetchApi<LogViewResponse>(
       `/v1/sources/${name}/logs${toQueryString({
         last: params.last,
         since: params.since,
@@ -276,19 +260,8 @@ export const api = {
         level: params.level,
         stream: params.stream,
         service: params.service,
-      })}`,
-    ),
-
-  sourceLogFacets: (
-    name: string,
-    params: Omit<LogFilterParams, 'last' | 'search'>,
-  ) =>
-    fetchApi<LogFacetsResponse>(
-      `/v1/sources/${name}/facets${toQueryString({
-        since: params.since,
-        service: params.service,
-        level: params.level,
-        stream: params.stream,
+        include_entries: params.include_entries,
+        include_facets: params.include_facets,
       })}`,
     ),
 
@@ -391,18 +364,10 @@ export const queryKeys = {
   runTasks: (runId: string) => ['runs', runId, 'tasks'] as const,
   serviceLogs: (runId: string, service: string) =>
     ['runs', runId, 'logs', service] as const,
-  runLogsSearch: (runId: string, params: LogFilterParams) =>
-    ['runs', runId, 'logs_search', params] as const,
-  runLogsFacets: (
-    runId: string,
-    params: Omit<LogFilterParams, 'last' | 'search'>,
-  ) => ['runs', runId, 'logs_facets', params] as const,
-  sourceLogsSearch: (name: string, params: LogFilterParams) =>
-    ['sources', name, 'logs_search', params] as const,
-  sourceLogsFacets: (
-    name: string,
-    params: Omit<LogFilterParams, 'last' | 'search'>,
-  ) => ['sources', name, 'logs_facets', params] as const,
+  runLogView: (runId: string, params: LogFilterParams) =>
+    ['runs', runId, 'log_view', params] as const,
+  sourceLogView: (name: string, params: LogFilterParams) =>
+    ['sources', name, 'log_view', params] as const,
   navigationIntent: ['navigation_intent'] as const,
   latestAgentSession: (projectDir: string) =>
     ['agent_session', 'latest', projectDir] as const,
@@ -478,10 +443,10 @@ export const queries = {
         error instanceof ApiError && error.status === 404 ? false : count < 3,
     }),
 
-  runLogsSearch: (runId: string, params: LogFilterParams) =>
+  runLogView: (runId: string, params: LogFilterParams) =>
     queryOptions({
-      queryKey: queryKeys.runLogsSearch(runId, params),
-      queryFn: () => api.searchRunLogs(runId, params),
+      queryKey: queryKeys.runLogView(runId, params),
+      queryFn: () => api.runLogView(runId, params),
       enabled: !!runId,
       refetchInterval: (query) =>
         query.state.error instanceof ApiError &&
@@ -493,27 +458,10 @@ export const queries = {
         error instanceof ApiError && error.status === 404 ? false : count < 3,
     }),
 
-  runLogsFacets: (
-    runId: string,
-    params: Omit<LogFilterParams, 'last' | 'search'>,
-  ) =>
+  sourceLogView: (name: string, params: LogFilterParams) =>
     queryOptions({
-      queryKey: queryKeys.runLogsFacets(runId, params),
-      queryFn: () => api.runLogFacets(runId, params),
-      enabled: !!runId,
-      refetchInterval: (query) =>
-        query.state.error instanceof ApiError &&
-        query.state.error.status === 404
-          ? false
-          : 5000,
-      retry: (count, error) =>
-        error instanceof ApiError && error.status === 404 ? false : count < 3,
-    }),
-
-  sourceLogsSearch: (name: string, params: LogFilterParams) =>
-    queryOptions({
-      queryKey: queryKeys.sourceLogsSearch(name, params),
-      queryFn: () => api.searchSourceLogs(name, params),
+      queryKey: queryKeys.sourceLogView(name, params),
+      queryFn: () => api.sourceLogView(name, params),
       enabled: !!name,
       refetchInterval: (query) =>
         query.state.error instanceof ApiError &&
@@ -521,23 +469,6 @@ export const queries = {
           ? false
           : 1500,
       refetchOnWindowFocus: true,
-      retry: (count, error) =>
-        error instanceof ApiError && error.status === 404 ? false : count < 3,
-    }),
-
-  sourceLogsFacets: (
-    name: string,
-    params: Omit<LogFilterParams, 'last' | 'search'>,
-  ) =>
-    queryOptions({
-      queryKey: queryKeys.sourceLogsFacets(name, params),
-      queryFn: () => api.sourceLogFacets(name, params),
-      enabled: !!name,
-      refetchInterval: (query) =>
-        query.state.error instanceof ApiError &&
-        query.state.error.status === 404
-          ? false
-          : 5000,
       retry: (count, error) =>
         error instanceof ApiError && error.status === 404 ? false : count < 3,
     }),

@@ -33,13 +33,13 @@ use crate::api::{
     AgentSessionMessageResponse, AgentSessionPollResponse, AgentSessionRegisterRequest,
     DoctorCheck, DoctorResponse, DownRequest, GcRequest, GcResponse, GlobalSummary,
     GlobalsResponse, HealthCheckStats, HealthStatus, KillRequest, LatestAgentSessionQuery,
-    LatestAgentSessionResponse, LogFacetsQuery, LogFacetsResponse, LogSearchQuery,
-    LogSearchResponse, LogsQuery, LogsResponse, NavigationIntent, NavigationIntentResponse,
-    PingResponse, ProjectsResponse, RecentErrorLine, RegisterProjectRequest,
-    RegisterProjectResponse, RestartServiceRequest, RunListResponse, RunStatusResponse, RunSummary,
-    RunWatchResponse, ServiceStatus, SetNavigationIntentRequest, ShareAgentMessageRequest,
-    ShareAgentMessageResponse, SourceSummary, SourcesResponse, SystemdStatus, TaskExecutionSummary,
-    TasksResponse, UpRequest, WatchControlRequest, WatchServiceStatus,
+    LatestAgentSessionResponse, LogViewQuery, LogViewResponse, LogsQuery, LogsResponse,
+    NavigationIntent, NavigationIntentResponse, PingResponse, ProjectsResponse, RecentErrorLine,
+    RegisterProjectRequest, RegisterProjectResponse, RestartServiceRequest, RunListResponse,
+    RunStatusResponse, RunSummary, RunWatchResponse, ServiceStatus, SetNavigationIntentRequest,
+    ShareAgentMessageRequest, ShareAgentMessageResponse, SourceSummary, SourcesResponse,
+    SystemdStatus, TaskExecutionSummary, TasksResponse, UpRequest, WatchControlRequest,
+    WatchServiceStatus,
 };
 use crate::config::{ConfigFile, ServiceConfig, StackPlan, TaskConfig};
 use crate::ids::{RunId, ServiceName};
@@ -319,8 +319,7 @@ pub async fn run_daemon() -> Result<()> {
         .route("/v1/runs/{run_id}/watch/pause", post(watch_pause))
         .route("/v1/runs/{run_id}/watch/resume", post(watch_resume))
         .route("/v1/runs/{run_id}/logs/{service}", get(logs))
-        .route("/v1/runs/{run_id}/logs", get(logs_search))
-        .route("/v1/runs/{run_id}/logs/facets", get(logs_facets))
+        .route("/v1/runs/{run_id}/logs", get(logs_view))
         .route("/v1/runs", get(list_runs))
         .route("/v1/globals", get(list_globals))
         .route("/v1/projects", get(list_projects))
@@ -328,8 +327,7 @@ pub async fn run_daemon() -> Result<()> {
         .route("/v1/projects/{project_id}", delete(remove_project))
         .route("/v1/sources", get(list_sources).post(add_source))
         .route("/v1/sources/{name}", delete(remove_source))
-        .route("/v1/sources/{name}/logs", get(source_logs))
-        .route("/v1/sources/{name}/facets", get(source_log_facets))
+        .route("/v1/sources/{name}/logs", get(source_logs_view))
         .route(
             "/v1/navigation/intent",
             get(get_navigation_intent)
@@ -941,106 +939,37 @@ fn discover_task_log_sources(run_id: &str) -> Result<Vec<LogSource>> {
         ("search" = Option<String>, Query, description = "Tantivy query string (legacy alias: q)"),
         ("level" = Option<String>, Query, description = "Filter by level: all, warn, error"),
         ("stream" = Option<String>, Query, description = "Filter by stream: stdout, stderr"),
-        ("service" = Option<String>, Query, description = "Filter by service name")
+        ("service" = Option<String>, Query, description = "Filter by service name"),
+        ("include_entries" = Option<bool>, Query, description = "Include log entries in the response (default true)"),
+        ("include_facets" = Option<bool>, Query, description = "Include dynamic facet counts for the current scope")
     ),
     responses(
-        (status = 200, description = "Log entries", body = LogSearchResponse),
+        (status = 200, description = "Combined log view", body = LogViewResponse),
         (status = 404, description = "Run not found", body = crate::api::ErrorResponse),
         (status = 400, description = "Bad request", body = crate::api::ErrorResponse),
         (status = 500, description = "Internal error", body = crate::api::ErrorResponse)
     ),
     tag = "daemon"
 )]
-pub(crate) async fn logs_search(
+pub(crate) async fn logs_view(
     State(state): State<AppState>,
     AxumPath(run_id): AxumPath<String>,
-    Query(query): Query<LogSearchQuery>,
-) -> Result<Json<LogSearchResponse>, AppError> {
-    let service_sources = {
+    Query(query): Query<LogViewQuery>,
+) -> Result<Json<LogViewResponse>, AppError> {
+    {
         let guard = state.state.lock().await;
-        let run = guard
+        guard
             .runs
             .get(&run_id)
             .ok_or_else(|| AppError::not_found(format!("run {run_id} not found")))?;
-        run_service_log_sources(&run_id, run)
-    };
-
-    let mut sources: Vec<LogSource> = match query.service.as_deref() {
-        Some(service) if service.starts_with("task:") => discover_task_log_sources(&run_id)?
-            .into_iter()
-            .filter(|source| source.service == service)
-            .collect(),
-        Some(service) => service_sources
-            .into_iter()
-            .filter(|source| source.service == service)
-            .collect(),
-        None => {
-            let mut all_sources = service_sources;
-            all_sources.extend(discover_task_log_sources(&run_id)?);
-            all_sources
-        }
-    };
-
-    if let Some(service) = query.service.as_deref()
-        && sources.is_empty()
-    {
-        return Err(AppError::not_found(format!("service {service} not found")));
     }
 
-    sources.sort_by(|left, right| left.service.cmp(&right.service));
-
     let index = state.log_index.clone();
     let run_id_for_task = run_id.clone();
-    let response =
-        tokio::task::spawn_blocking(move || index.search_run(&run_id_for_task, &sources, query))
-            .await
-            .map_err(|e| AppError::Internal(anyhow!("log search task failed: {e}")))?
-            .map_err(map_log_index_error)?;
-
-    Ok(Json(response))
-}
-
-#[utoipa::path(
-    get,
-    path = "/v1/runs/{run_id}/logs/facets",
-    params(
-        ("run_id" = String, Path, description = "Run id"),
-        ("since" = Option<String>, Query, description = "ISO8601 timestamp to scope facets after"),
-        ("service" = Option<String>, Query, description = "Optional service filter (ignored for services facet list)"),
-        ("level" = Option<String>, Query, description = "Optional level filter (ignored for levels facet list)"),
-        ("stream" = Option<String>, Query, description = "Optional stream filter (ignored for streams facet list)")
-    ),
-    responses(
-        (status = 200, description = "Facet counts for logs", body = LogFacetsResponse),
-        (status = 404, description = "Run not found", body = crate::api::ErrorResponse),
-        (status = 400, description = "Bad request", body = crate::api::ErrorResponse),
-        (status = 500, description = "Internal error", body = crate::api::ErrorResponse)
-    ),
-    tag = "daemon"
-)]
-pub(crate) async fn logs_facets(
-    State(state): State<AppState>,
-    AxumPath(run_id): AxumPath<String>,
-    Query(query): Query<LogFacetsQuery>,
-) -> Result<Json<LogFacetsResponse>, AppError> {
-    let mut sources: Vec<LogSource> = {
-        let guard = state.state.lock().await;
-        let run = guard
-            .runs
-            .get(&run_id)
-            .ok_or_else(|| AppError::not_found(format!("run {run_id} not found")))?;
-        run_service_log_sources(&run_id, run)
-    };
-    sources.extend(discover_task_log_sources(&run_id)?);
-    sources.sort_by(|left, right| left.service.cmp(&right.service));
-
-    let index = state.log_index.clone();
-    let run_id_for_task = run_id.clone();
-    let response =
-        tokio::task::spawn_blocking(move || index.facets_run(&run_id_for_task, &sources, query))
-            .await
-            .map_err(|e| AppError::Internal(anyhow!("log facets task failed: {e}")))?
-            .map_err(map_log_index_error)?;
+    let response = tokio::task::spawn_blocking(move || index.query_view(&run_id_for_task, query))
+        .await
+        .map_err(|e| AppError::Internal(anyhow!("log view task failed: {e}")))?
+        .map_err(map_log_index_error)?;
 
     Ok(Json(response))
 }
@@ -1394,98 +1323,34 @@ pub(crate) async fn remove_source(
         ("since" = Option<String>, Query, description = "ISO8601 timestamp to filter logs after"),
         ("search" = Option<String>, Query, description = "Tantivy query string (legacy alias: q)"),
         ("level" = Option<String>, Query, description = "Filter by level: all, warn, error"),
-        ("stream" = Option<String>, Query, description = "Filter by stream: stdout, stderr")
+        ("stream" = Option<String>, Query, description = "Filter by stream: stdout, stderr"),
+        ("service" = Option<String>, Query, description = "Filter by service name"),
+        ("include_entries" = Option<bool>, Query, description = "Include log entries in the response (default true)"),
+        ("include_facets" = Option<bool>, Query, description = "Include dynamic facet counts for the current scope")
     ),
     responses(
-        (status = 200, description = "Source log lines", body = LogsResponse),
+        (status = 200, description = "Combined source log view", body = LogViewResponse),
         (status = 404, description = "Source not found", body = crate::api::ErrorResponse),
         (status = 400, description = "Bad request", body = crate::api::ErrorResponse),
         (status = 500, description = "Internal error", body = crate::api::ErrorResponse)
     ),
     tag = "daemon"
 )]
-pub(crate) async fn source_logs(
+pub(crate) async fn source_logs_view(
     State(state): State<AppState>,
     AxumPath(name): AxumPath<String>,
-    Query(query): Query<LogsQuery>,
-) -> Result<Json<LogSearchResponse>, AppError> {
-    if query.after.is_some() {
-        return Err(AppError::bad_request(
-            "after cursor is not supported for source logs",
-        ));
-    }
-
-    let ledger = SourcesLedger::load().map_err(AppError::from)?;
-    if ledger.get(&name).is_none() {
-        return Err(AppError::not_found(format!("source {} not found", name)));
-    }
-    let sources = source_log_sources(&ledger, &name).map_err(AppError::from)?;
-    if sources.is_empty() {
-        return Ok(Json(LogSearchResponse {
-            entries: Vec::new(),
-            truncated: false,
-            total: 0,
-            error_count: 0,
-            warn_count: 0,
-            matched_total: 0,
-        }));
-    }
-
-    let run_id = source_run_id(&name);
-    let search_query = LogSearchQuery {
-        last: query.last,
-        since: query.since,
-        search: query.search,
-        level: query.level,
-        stream: query.stream,
-        service: None,
-    };
-
-    let index = state.log_index.clone();
-    let response =
-        tokio::task::spawn_blocking(move || index.search_run(&run_id, &sources, search_query))
-            .await
-            .map_err(|e| AppError::Internal(anyhow!("source log search task failed: {e}")))?
-            .map_err(map_log_index_error)?;
-
-    Ok(Json(response))
-}
-
-#[utoipa::path(
-    get,
-    path = "/v1/sources/{name}/facets",
-    params(
-        ("name" = String, Path, description = "Source name"),
-        ("since" = Option<String>, Query, description = "ISO8601 timestamp to scope facets after"),
-        ("service" = Option<String>, Query, description = "Optional service filter (ignored for services facet list)"),
-        ("level" = Option<String>, Query, description = "Optional level filter (ignored for levels facet list)"),
-        ("stream" = Option<String>, Query, description = "Optional stream filter (ignored for streams facet list)")
-    ),
-    responses(
-        (status = 200, description = "Facet counts for source logs", body = LogFacetsResponse),
-        (status = 404, description = "Source not found", body = crate::api::ErrorResponse),
-        (status = 400, description = "Bad request", body = crate::api::ErrorResponse),
-        (status = 500, description = "Internal error", body = crate::api::ErrorResponse)
-    ),
-    tag = "daemon"
-)]
-pub(crate) async fn source_log_facets(
-    State(state): State<AppState>,
-    AxumPath(name): AxumPath<String>,
-    Query(query): Query<LogFacetsQuery>,
-) -> Result<Json<LogFacetsResponse>, AppError> {
+    Query(query): Query<LogViewQuery>,
+) -> Result<Json<LogViewResponse>, AppError> {
     let ledger = SourcesLedger::load().map_err(AppError::from)?;
     if ledger.get(&name).is_none() {
         return Err(AppError::not_found(format!("source {} not found", name)));
     }
 
-    let sources = source_log_sources(&ledger, &name).map_err(AppError::from)?;
-
     let run_id = source_run_id(&name);
     let index = state.log_index.clone();
-    let response = tokio::task::spawn_blocking(move || index.facets_run(&run_id, &sources, query))
+    let response = tokio::task::spawn_blocking(move || index.query_view(&run_id, query))
         .await
-        .map_err(|e| AppError::Internal(anyhow!("source log facets task failed: {e}")))?
+        .map_err(|e| AppError::Internal(anyhow!("source log view task failed: {e}")))?
         .map_err(map_log_index_error)?;
 
     Ok(Json(response))
@@ -4058,45 +3923,10 @@ fn spawn_periodic_gc(state: AppState) {
 fn spawn_periodic_run_ingest(state: AppState) {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(5));
-        interval.tick().await;
         loop {
             interval.tick().await;
-            let active_runs: Vec<(String, Vec<LogSource>)> = {
-                let guard = state.state.lock().await;
-                guard
-                    .runs
-                    .iter()
-                    .filter(|(_, run)| run.state != RunLifecycle::Stopped)
-                    .map(|(run_id, run)| (run_id.clone(), run_service_log_sources(run_id, run)))
-                    .collect()
-            };
-
-            let index = state.log_index.clone();
-            let ingest_result = tokio::task::spawn_blocking(move || {
-                let mut run_ids = Vec::new();
-                let mut sources = Vec::new();
-                for (run_id, service_sources) in active_runs {
-                    run_ids.push(run_id.clone());
-                    sources.extend(service_sources);
-                    sources.extend(discover_task_log_sources(&run_id)?);
-                }
-                if !sources.is_empty() {
-                    index.ingest_sources(&sources).with_context(|| {
-                        format!("ingest logs for active runs [{}]", run_ids.join(", "))
-                    })?;
-                }
-                Ok::<Vec<String>, anyhow::Error>(run_ids)
-            })
-            .await;
-
-            match ingest_result {
-                Ok(Ok(_)) => {}
-                Ok(Err(err)) => {
-                    eprintln!("devstack: periodic run ingest failed: {err}");
-                }
-                Err(err) => {
-                    eprintln!("devstack: periodic run ingest worker failed: {err}");
-                }
+            if let Err(err) = ingest_active_runs_once(&state).await {
+                eprintln!("devstack: periodic run ingest failed: {err}");
             }
         }
     });
@@ -4105,36 +3935,64 @@ fn spawn_periodic_run_ingest(state: AppState) {
 fn spawn_periodic_source_ingest(state: AppState) {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(5));
-        interval.tick().await;
         loop {
             interval.tick().await;
-            let index = state.log_index.clone();
-            let ingest_result = tokio::task::spawn_blocking(move || {
-                let ledger = SourcesLedger::load()?;
-                let source_names: Vec<String> = ledger.sources.keys().cloned().collect();
-                let sources = all_source_log_sources(&ledger).with_context(|| {
-                    format!("resolve source paths for [{}]", source_names.join(", "))
-                })?;
-                if !sources.is_empty() {
-                    index.ingest_sources(&sources).with_context(|| {
-                        format!("ingest logs for [{}]", source_names.join(", "))
-                    })?;
-                }
-                Ok::<Vec<String>, anyhow::Error>(source_names)
-            })
-            .await;
-
-            match ingest_result {
-                Ok(Ok(_)) => {}
-                Ok(Err(err)) => {
-                    eprintln!("devstack: periodic source ingest failed: {err}");
-                }
-                Err(err) => {
-                    eprintln!("devstack: periodic source ingest worker failed: {err}");
-                }
+            if let Err(err) = ingest_sources_once(&state).await {
+                eprintln!("devstack: periodic source ingest failed: {err}");
             }
         }
     });
+}
+
+async fn ingest_active_runs_once(state: &AppState) -> Result<()> {
+    let active_runs: Vec<(String, Vec<LogSource>)> = {
+        let guard = state.state.lock().await;
+        guard
+            .runs
+            .iter()
+            .filter(|(_, run)| run.state != RunLifecycle::Stopped)
+            .map(|(run_id, run)| (run_id.clone(), run_service_log_sources(run_id, run)))
+            .collect()
+    };
+
+    let index = state.log_index.clone();
+    tokio::task::spawn_blocking(move || {
+        let mut run_ids = Vec::new();
+        let mut sources = Vec::new();
+        for (run_id, service_sources) in active_runs {
+            run_ids.push(run_id.clone());
+            sources.extend(service_sources);
+            sources.extend(discover_task_log_sources(&run_id)?);
+        }
+        if !sources.is_empty() {
+            index.ingest_sources(&sources)
+                .with_context(|| format!("ingest logs for active runs [{}]", run_ids.join(", ")))?;
+        }
+        Ok::<(), anyhow::Error>(())
+    })
+    .await
+    .map_err(|err| anyhow!("run ingest worker failed: {err}"))??;
+
+    Ok(())
+}
+
+async fn ingest_sources_once(state: &AppState) -> Result<()> {
+    let index = state.log_index.clone();
+    tokio::task::spawn_blocking(move || {
+        let ledger = SourcesLedger::load()?;
+        let source_names: Vec<String> = ledger.sources.keys().cloned().collect();
+        let sources = all_source_log_sources(&ledger)
+            .with_context(|| format!("resolve source paths for [{}]", source_names.join(", ")))?;
+        if !sources.is_empty() {
+            index.ingest_sources(&sources)
+                .with_context(|| format!("ingest logs for [{}]", source_names.join(", ")))?;
+        }
+        Ok::<(), anyhow::Error>(())
+    })
+    .await
+    .map_err(|err| anyhow!("source ingest worker failed: {err}"))??;
+
+    Ok(())
 }
 
 async fn run_gc(state: &AppState, req: GcRequest) -> AppResult<GcResponse> {
@@ -5154,14 +5012,18 @@ mod tests {
             }])
             .unwrap();
 
-        let response = logs_facets(
+        let response = logs_view(
             State(state),
             AxumPath("run-1".to_string()),
-            Query(LogFacetsQuery {
+            Query(LogViewQuery {
+                last: None,
                 since: None,
+                search: None,
                 service: None,
                 level: None,
                 stream: None,
+                include_entries: false,
+                include_facets: true,
             }),
         )
         .await

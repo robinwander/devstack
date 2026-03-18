@@ -342,7 +342,7 @@ pub struct LogEntry {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
-pub struct LogSearchQuery {
+pub struct LogViewQuery {
     #[serde(default, alias = "tail")]
     pub last: Option<usize>,
     #[serde(default)]
@@ -354,39 +354,18 @@ pub struct LogSearchQuery {
     pub level: Option<String>,
     #[serde(default)]
     pub stream: Option<String>,
-    /// Optional service filter; if omitted, searches across all services in the run.
     #[serde(default)]
     pub service: Option<String>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
-pub struct LogSearchResponse {
-    pub entries: Vec<LogEntry>,
-    pub truncated: bool,
-    pub total: usize,
-    pub error_count: usize,
-    pub warn_count: usize,
-    pub matched_total: usize,
+    #[serde(default = "default_true")]
+    pub include_entries: bool,
+    #[serde(default)]
+    pub include_facets: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct FacetValueCount {
     pub value: String,
     pub count: usize,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
-pub struct LogFacetsQuery {
-    #[serde(default)]
-    pub since: Option<String>,
-    /// Optional filters applied to facet counts. Facet counts for a given field do not apply that
-    /// field's filter (e.g. `service` filter does not affect the returned `services` facet list).
-    #[serde(default)]
-    pub service: Option<String>,
-    #[serde(default)]
-    pub level: Option<String>,
-    #[serde(default)]
-    pub stream: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
@@ -397,9 +376,15 @@ pub struct FacetFilter {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
-pub struct LogFacetsResponse {
+pub struct LogViewResponse {
+    pub entries: Vec<LogEntry>,
+    pub truncated: bool,
     pub total: usize,
     pub filters: Vec<FacetFilter>,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
@@ -452,7 +437,7 @@ pub struct AddSourceResponse {
 
 #[cfg(test)]
 mod tests {
-    use super::{LogSearchQuery, LogsQuery};
+    use super::{LogViewQuery, LogsQuery};
 
     #[test]
     fn logs_query_accepts_new_and_legacy_params() {
@@ -475,22 +460,27 @@ mod tests {
 
     #[test]
     fn log_search_query_accepts_new_and_legacy_params() {
-        let modern: LogSearchQuery = serde_json::from_value(serde_json::json!({
+        let modern: LogViewQuery = serde_json::from_value(serde_json::json!({
             "last": 50,
             "search": "worker",
-            "service": "api"
+            "service": "api",
+            "include_facets": true
         }))
         .unwrap();
         assert_eq!(modern.last, Some(50));
         assert_eq!(modern.search.as_deref(), Some("worker"));
         assert_eq!(modern.service.as_deref(), Some("api"));
+        assert!(modern.include_entries);
+        assert!(modern.include_facets);
 
-        let legacy: LogSearchQuery = serde_json::from_value(serde_json::json!({
+        let legacy: LogViewQuery = serde_json::from_value(serde_json::json!({
             "tail": 5,
             "q": "panic"
         }))
         .unwrap();
         assert_eq!(legacy.last, Some(5));
         assert_eq!(legacy.search.as_deref(), Some("panic"));
+        assert!(legacy.include_entries);
+        assert!(!legacy.include_facets);
     }
 }

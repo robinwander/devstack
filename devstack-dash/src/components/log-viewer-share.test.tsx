@@ -61,9 +61,7 @@ const logSearchResponse = {
   entries: [],
   truncated: false,
   total: 0,
-  error_count: 0,
-  warn_count: 0,
-  matched_total: 0,
+  filters: [],
 }
 
 const detailLogSearchResponse = {
@@ -83,9 +81,7 @@ const detailLogSearchResponse = {
   ],
   truncated: false,
   total: 1,
-  error_count: 1,
-  warn_count: 0,
-  matched_total: 0,
+  filters: [],
 }
 
 const facetsResponse = {
@@ -103,11 +99,8 @@ describe('LogViewer share button', () => {
   it('is only visible when an agent session exists', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = typeof input === 'string' ? input : input instanceof Request ? input.url : String(input)
-      if (url.includes('/api/v1/runs/run-1/logs/facets')) {
-        return jsonResponse(facetsResponse)
-      }
       if (url.includes('/api/v1/runs/run-1/logs')) {
-        return jsonResponse(logSearchResponse)
+        return jsonResponse({ ...logSearchResponse, filters: facetsResponse.filters })
       }
       if (url.includes('/api/v1/agent/sessions/latest')) {
         return jsonResponse({ session: null })
@@ -134,11 +127,8 @@ describe('LogViewer share button', () => {
       const url = typeof input === 'string' ? input : input instanceof Request ? input.url : String(input)
       const method = init?.method ?? (input instanceof Request ? input.method : 'GET')
 
-      if (url.includes('/api/v1/runs/run-1/logs/facets')) {
-        return jsonResponse(facetsResponse)
-      }
       if (url.includes('/api/v1/runs/run-1/logs')) {
-        return jsonResponse(logSearchResponse)
+        return jsonResponse({ ...logSearchResponse, filters: facetsResponse.filters })
       }
       if (url.includes('/api/v1/agent/sessions/latest')) {
         return jsonResponse({
@@ -186,11 +176,8 @@ describe('LogViewer share button', () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = typeof input === 'string' ? input : input instanceof Request ? input.url : String(input)
 
-      if (url.includes('/api/v1/runs/run-1/logs/facets')) {
-        return jsonResponse(facetsResponse)
-      }
       if (url.includes('/api/v1/runs/run-1/logs')) {
-        return jsonResponse(detailLogSearchResponse)
+        return jsonResponse({ ...detailLogSearchResponse, filters: facetsResponse.filters })
       }
       if (url.includes('/api/v1/agent/sessions/latest')) {
         return jsonResponse({ session: null })

@@ -70,9 +70,7 @@ const logSearchResponse = {
   entries: [],
   truncated: false,
   total: 0,
-  error_count: 0,
-  warn_count: 0,
-  matched_total: 0,
+  filters: [],
 }
 
 const facetsResponse = {
@@ -158,6 +156,17 @@ const dynamicFacetsResponse = {
   ],
 }
 
+function buildLogViewResponse(
+  overrides?: Partial<typeof logSearchResponse>,
+  filters = facetsResponse.filters,
+) {
+  return {
+    ...logSearchResponse,
+    ...overrides,
+    filters,
+  }
+}
+
 describe('LogViewer dynamic field facets', () => {
   beforeEach(() => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
@@ -167,11 +176,10 @@ describe('LogViewer dynamic field facets', () => {
           : input instanceof Request
             ? input.url
             : String(input)
-      if (url.includes('/api/v1/runs/run-1/logs/facets')) {
-        return jsonResponse(dynamicFacetsResponse)
-      }
       if (url.includes('/api/v1/runs/run-1/logs')) {
-        return jsonResponse(logSearchResponse)
+        return jsonResponse(
+          buildLogViewResponse({ total: dynamicFacetsResponse.total }, dynamicFacetsResponse.filters),
+        )
       }
       if (url.includes('/api/v1/agent/sessions/latest')) {
         return jsonResponse({ session: null })
@@ -253,11 +261,8 @@ describe('LogViewer source routing', () => {
           : input instanceof Request
             ? input.url
             : String(input)
-      if (url.includes('/api/v1/sources/ext-logs/facets')) {
-        return jsonResponse(facetsResponse)
-      }
       if (url.includes('/api/v1/sources/ext-logs/logs')) {
-        return jsonResponse(logSearchResponse)
+        return jsonResponse(buildLogViewResponse())
       }
       if (url.includes('/api/v1/agent/sessions/latest')) {
         return jsonResponse({ session: null })
@@ -285,10 +290,6 @@ describe('LogViewer source routing', () => {
 
     const fetchMock = vi.mocked(globalThis.fetch)
     expect(fetchMock).toHaveBeenCalledWith(
-      expect.stringContaining('/api/v1/sources/ext-logs/facets'),
-      expect.anything(),
-    )
-    expect(fetchMock).toHaveBeenCalledWith(
       expect.stringContaining('/api/v1/sources/ext-logs/logs'),
       expect.anything(),
     )
@@ -304,11 +305,8 @@ describe('LogViewer facets + URL params', () => {
           : input instanceof Request
             ? input.url
             : String(input)
-      if (url.includes('/api/v1/runs/run-1/logs/facets')) {
-        return jsonResponse(facetsResponse)
-      }
       if (url.includes('/api/v1/runs/run-1/logs')) {
-        return jsonResponse(logSearchResponse)
+        return jsonResponse(buildLogViewResponse())
       }
       if (url.includes('/api/v1/agent/sessions/latest')) {
         return jsonResponse({ session: null })
@@ -428,9 +426,7 @@ describe('LogViewer view toggles', () => {
     ],
     truncated: false,
     total: 2,
-    error_count: 0,
-    warn_count: 0,
-    matched_total: 0,
+    filters: facetsResponse.filters,
   }
 
   beforeEach(() => {
@@ -441,9 +437,6 @@ describe('LogViewer view toggles', () => {
           : input instanceof Request
             ? input.url
             : String(input)
-      if (url.includes('/api/v1/runs/run-1/logs/facets')) {
-        return jsonResponse(facetsResponse)
-      }
       if (url.includes('/api/v1/runs/run-1/logs')) {
         return jsonResponse(logEntries)
       }
@@ -559,9 +552,7 @@ describe('LogViewer detail actions, selection, and custom time range', () => {
     ],
     truncated: false,
     total: 3,
-    error_count: 1,
-    warn_count: 1,
-    matched_total: 0,
+    filters: dynamicFacetsResponse.filters,
   }
 
   beforeEach(() => {
@@ -572,9 +563,6 @@ describe('LogViewer detail actions, selection, and custom time range', () => {
           : input instanceof Request
             ? input.url
             : String(input)
-      if (url.includes('/api/v1/runs/run-1/logs/facets')) {
-        return jsonResponse(dynamicFacetsResponse)
-      }
       if (url.includes('/api/v1/runs/run-1/logs')) {
         return jsonResponse(detailEntries)
       }

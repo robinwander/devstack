@@ -161,7 +161,7 @@ function escapeTantivyPhrase(s: string): string {
   return `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
 }
 
-function simpleTantivyQuery(input: string, facetFields: Set<string>): string {
+function simpleTantivyQuery(input: string): string {
   const terms = input.trim().split(/\s+/).filter(Boolean)
   if (terms.length === 0) return ''
   return terms
@@ -172,7 +172,7 @@ function simpleTantivyQuery(input: string, facetFields: Set<string>): string {
       if (colon > 0) {
         const field = raw.slice(0, colon).toLowerCase()
         const rest = raw.slice(colon + 1)
-        if (facetFields.has(field) && !rest.startsWith('//'))
+        if (/^[a-z0-9_]+$/.test(field) && !rest.startsWith('//'))
           return (neg ? '-' : '') + raw
         return escapeTantivyPhrase(t)
       }
@@ -453,51 +453,12 @@ export function LogViewer({
     })
   }, [searchInput, timeRange, customTimeRange, last, defaultLast])
 
-  // Facet/filter params — level and stream derived from search tokens
-  const facetFilters: Omit<LogFilterParams, 'last' | 'search'> = useMemo(() => {
-    const p: Omit<LogFilterParams, 'last' | 'search'> = {}
-    const since = timeRangeToSince(timeRange, resolvedCustomTimeRange.fromIso)
-    if (since) p.since = since
-    if (activeTab !== '__all__') p.service = activeTab
-    if (derivedLevel) p.level = derivedLevel
-    if (derivedStream) p.stream = derivedStream
-    return p
-  }, [
-    timeRange,
-    resolvedCustomTimeRange.fromIso,
-    activeTab,
-    derivedLevel,
-    derivedStream,
-  ])
-
-  const facetsQuery = useQuery({
-    queryKey: isSourceView
-      ? queryKeys.sourceLogsFacets(activeSourceName || '', facetFilters)
-      : queryKeys.runLogsFacets(runId, facetFilters),
-    queryFn: () =>
-      isSourceView
-        ? api.sourceLogFacets(activeSourceName || '', facetFilters)
-        : api.runLogFacets(runId, facetFilters),
-    enabled: isSourceView ? !!activeSourceName : !!runId,
-    refetchInterval: (query) =>
-      query.state.error instanceof ApiError && query.state.error.status === 404
-        ? false
-        : 5000,
-    retry: (count, error) =>
-      error instanceof ApiError && error.status === 404 ? false : count < 3,
-  })
-
-  const facetFieldSet = useMemo(() => {
-    const fields = facetsQuery.data?.filters.map((filter) => filter.field) ?? []
-    return new Set(fields)
-  }, [facetsQuery.data])
-
   const serverQuery = useMemo(() => {
     if (!debouncedSearch) return undefined
     return isAdvancedQuery
       ? debouncedSearch
-      : simpleTantivyQuery(debouncedSearch, facetFieldSet)
-  }, [debouncedSearch, isAdvancedQuery, facetFieldSet])
+      : simpleTantivyQuery(debouncedSearch)
+  }, [debouncedSearch, isAdvancedQuery])
 
   const filterParams: LogFilterParams = useMemo(() => {
     const p: LogFilterParams = { last }
@@ -518,14 +479,23 @@ export function LogViewer({
     activeTab,
   ])
 
-  const logsQuery = useQuery({
+  const viewQueryParams: LogFilterParams = useMemo(
+    () => ({
+      ...filterParams,
+      include_entries: true,
+      include_facets: true,
+    }),
+    [filterParams],
+  )
+
+  const viewQuery = useQuery({
     queryKey: isSourceView
-      ? queryKeys.sourceLogsSearch(activeSourceName || '', filterParams)
-      : queryKeys.runLogsSearch(runId, filterParams),
+      ? queryKeys.sourceLogView(activeSourceName || '', viewQueryParams)
+      : queryKeys.runLogView(runId, viewQueryParams),
     queryFn: () =>
       isSourceView
-        ? api.searchSourceLogs(activeSourceName || '', filterParams)
-        : api.searchRunLogs(runId, filterParams),
+        ? api.sourceLogView(activeSourceName || '', viewQueryParams)
+        : api.runLogView(runId, viewQueryParams),
     enabled: isSourceView ? !!activeSourceName : !!runId,
     refetchInterval: (query) =>
       query.state.error instanceof ApiError && query.state.error.status === 404
@@ -591,7 +561,7 @@ export function LogViewer({
 
 
   const { logs, matchCount, truncated, matchedTotal } = useMemo(() => {
-    const entries = logsQuery.data?.entries ?? []
+    const entries = viewQuery.data?.entries ?? []
     const upperBound = resolvedCustomTimeRange.toIso
       ? new Date(resolvedCustomTimeRange.toIso).getTime()
       : null
@@ -633,10 +603,10 @@ export function LogViewer({
     return {
       logs: result,
       matchCount: debouncedSearch ? result.length : 0,
-      truncated: logsQuery.data?.truncated ?? false,
-      matchedTotal: logsQuery.data?.matched_total ?? 0,
+      truncated: viewQuery.data?.truncated ?? false,
+      matchedTotal: viewQuery.data?.total ?? 0,
     }
-  }, [logsQuery.data, debouncedSearch, resolvedCustomTimeRange.toIso, sortDirection, columnSort])
+  }, [viewQuery.data, debouncedSearch, resolvedCustomTimeRange.toIso, sortDirection, columnSort])
 
   const logServiceNames = useMemo(
     () => Array.from(new Set(logs.map((log) => log.service))),
@@ -665,7 +635,7 @@ export function LogViewer({
 
   // ── Column detection and management ──
   const columnStorageKey = `devstack:columns:${activeSourceName || projectDir || 'default'}`
-  const rawEntries = logsQuery.data?.entries ?? []
+  const rawEntries = viewQuery.data?.entries ?? []
 
   const [columnConfig, setColumnConfig] = useState<ColumnConfig[]>(() => {
     const saved = loadColumnConfig(columnStorageKey)
@@ -1114,9 +1084,9 @@ export function LogViewer({
   )
 
   const hasEverLoadedRef = useRef(false)
-  if (logsQuery.data) hasEverLoadedRef.current = true
+  if (viewQuery.data) hasEverLoadedRef.current = true
   const isInitialLoad =
-    logsQuery.isLoading && !logsQuery.data && !hasEverLoadedRef.current
+    viewQuery.isLoading && !viewQuery.data && !hasEverLoadedRef.current
 
   /* ─── Time range options ─── */
   const timeRangeOptions = [
@@ -1136,9 +1106,9 @@ export function LogViewer({
           </span>
           <div className="flex items-center gap-2">
             <span className="text-[11px] text-ink-tertiary tabular-nums">
-              {facetsQuery.data
-                ? facetsQuery.data.total
-                : facetsQuery.isLoading
+              {viewQuery.data
+                ? viewQuery.data.total
+                : viewQuery.isLoading
                   ? '…'
                   : 0}
             </span>
@@ -1154,17 +1124,17 @@ export function LogViewer({
             )}
           </div>
         </div>
-        {facetsQuery.isError && (
+        {viewQuery.isError && (
           <div className="mt-1.5 text-[11px] text-status-red-text">
             Facets unavailable
           </div>
         )}
       </div>
-      {(facetsQuery.data?.filters ?? []).map((filter: FacetFilter) => (
+      {(viewQuery.data?.filters ?? []).map((filter: FacetFilter) => (
         <FacetSection
           key={filter.field}
           filter={filter}
-          loading={facetsQuery.isLoading && !facetsQuery.data}
+          loading={viewQuery.isLoading && !viewQuery.data}
           onPick={(value: string) => toggleFacet(filter.field, value)}
           isActive={(value: string) =>
             isFacetValueActive(filter.field, value)
@@ -1442,7 +1412,7 @@ export function LogViewer({
             value={searchInput}
             onChange={setSearchInput}
             onActiveMatchIndexReset={resetActiveMatchIndex}
-            facetData={facetsQuery.data?.filters ?? []}
+            facetData={viewQuery.data?.filters ?? []}
             isAdvancedQuery={isAdvancedQuery}
             onToggleAdvancedQuery={() => setIsAdvancedQuery((v) => !v)}
             matchCount={matchCount}
@@ -1550,9 +1520,9 @@ export function LogViewer({
         >
           {isInitialLoad ? (
             <LogSkeleton />
-          ) : logsQuery.isError &&
-            logsQuery.error instanceof ApiError &&
-            logsQuery.error.status === 404 ? (
+          ) : viewQuery.isError &&
+            viewQuery.error instanceof ApiError &&
+            viewQuery.error.status === 404 ? (
             <div className="flex flex-col items-center justify-center h-full text-ink-secondary gap-3 px-8">
               <div className="w-12 h-12 bg-status-red-tint border border-line rounded-lg flex items-center justify-center mb-1">
                 <AlertTriangle className="w-5 h-5 text-status-red-text" />
@@ -1566,7 +1536,7 @@ export function LogViewer({
                   : 'Logs are no longer available for this run.'}
               </p>
             </div>
-          ) : logsQuery.isError ? (
+          ) : viewQuery.isError ? (
             <div className="flex flex-col items-center justify-center h-full text-ink-secondary gap-3 px-8">
               <div className="w-12 h-12 bg-status-red-tint border border-line rounded-lg flex items-center justify-center mb-1">
                 <AlertTriangle className="w-5 h-5 text-status-red-text" />
@@ -1575,8 +1545,8 @@ export function LogViewer({
                 Log search failed
               </span>
               <pre className="max-w-[600px] w-full whitespace-pre-wrap break-words text-xs text-ink-tertiary bg-surface-sunken border border-line rounded-md p-3 font-mono">
-                {logsQuery.error instanceof Error
-                  ? logsQuery.error.message
+                {viewQuery.error instanceof Error
+                  ? viewQuery.error.message
                   : 'Unknown error'}
               </pre>
               <div className="flex items-center gap-3">

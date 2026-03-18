@@ -8,18 +8,14 @@ use std::sync::{Mutex, RwLock};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use tantivy::aggregation::AggregationCollector;
-use tantivy::aggregation::agg_req::{Aggregation, AggregationVariants, Aggregations};
-use tantivy::aggregation::agg_result::{AggregationResult, AggregationResults, BucketResult};
-use tantivy::aggregation::bucket::TermsAggregation as TantivyTermsAgg;
-use tantivy::collector::{Count, TopDocs};
+use tantivy::collector::{Count, Collector, SegmentCollector, TopDocs};
 use tantivy::query::{AllQuery, BooleanQuery, Occur, Query, QueryParser, RangeQuery, TermQuery};
 use tantivy::schema::{FAST, Field, FieldType, INDEXED, STORED, STRING, TEXT, Value};
-use tantivy::{DocAddress, Index, IndexReader, IndexWriter, ReloadPolicy, Term};
+use tantivy::store::StoreReader;
+use tantivy::{DocAddress, DocId, Index, IndexReader, IndexWriter, ReloadPolicy, Score, SegmentReader, Term};
 
 use crate::api::{
-    FacetFilter, FacetValueCount, LogEntry, LogFacetsQuery, LogFacetsResponse, LogSearchQuery,
-    LogSearchResponse, LogsQuery, LogsResponse,
+    FacetFilter, FacetValueCount, LogEntry, LogViewQuery, LogViewResponse, LogsQuery, LogsResponse,
 };
 use crate::logfmt::{
     classify_line_level, extract_log_content, extract_timestamp_str, parse_timestamp_nanos,
@@ -27,8 +23,234 @@ use crate::logfmt::{
 use crate::paths;
 use crate::util::{atomic_write, contains_ansi, strip_ansi};
 
-const CURRENT_SCHEMA_VERSION: &str = "3";
+const CURRENT_SCHEMA_VERSION: &str = "4";
 const FACET_TERMS_LIMIT: u32 = 50;
+const FACET_STORE_CACHE_BLOCKS: usize = 32;
+
+type FacetTermCounts = HashMap<String, HashMap<String, usize>>;
+
+#[derive(Default)]
+struct ServiceScopeStats {
+    total: usize,
+    error_count: usize,
+    warn_count: usize,
+}
+
+struct FacetCountCollector {
+    field_names: Vec<String>,
+}
+
+struct ScopeStatsCollector {
+    level_field: Field,
+}
+
+struct SegmentFacetFieldCounter {
+    name: String,
+    field: Field,
+    counts: HashMap<String, usize>,
+}
+
+struct FacetCountSegmentCollector {
+    store_reader: StoreReader,
+    fields: Vec<SegmentFacetFieldCounter>,
+    error: Option<tantivy::TantivyError>,
+}
+
+struct ScopeStatsSegmentCollector {
+    store_reader: StoreReader,
+    level_field: Field,
+    stats: ServiceScopeStats,
+    error: Option<tantivy::TantivyError>,
+}
+
+impl FacetCountCollector {
+    fn new(field_names: &[String]) -> Self {
+        Self {
+            field_names: field_names.to_vec(),
+        }
+    }
+}
+
+impl ScopeStatsCollector {
+    fn new(level_field: Field) -> Self {
+        Self { level_field }
+    }
+}
+
+impl Collector for FacetCountCollector {
+    type Fruit = FacetTermCounts;
+    type Child = FacetCountSegmentCollector;
+
+    fn for_segment(
+        &self,
+        _segment_local_id: u32,
+        segment: &SegmentReader,
+    ) -> tantivy::Result<Self::Child> {
+        let store_reader = segment
+            .get_store_reader(FACET_STORE_CACHE_BLOCKS)
+            .map_err(tantivy::TantivyError::from)?;
+        let fields = self
+            .field_names
+            .iter()
+            .filter_map(|field_name| {
+                segment
+                    .schema()
+                    .get_field(field_name)
+                    .ok()
+                    .map(|field| SegmentFacetFieldCounter {
+                        name: field_name.clone(),
+                        field,
+                        counts: HashMap::new(),
+                    })
+            })
+            .collect();
+        Ok(FacetCountSegmentCollector {
+            store_reader,
+            fields,
+            error: None,
+        })
+    }
+
+    fn requires_scoring(&self) -> bool {
+        false
+    }
+
+    fn merge_fruits(
+        &self,
+        segment_fruits: Vec<tantivy::Result<FacetTermCounts>>,
+    ) -> tantivy::Result<Self::Fruit> {
+        let mut merged = HashMap::new();
+        for segment_counts in segment_fruits {
+            for (field, values) in segment_counts? {
+                let merged_values = merged.entry(field).or_insert_with(HashMap::new);
+                for (value, count) in values {
+                    *merged_values.entry(value).or_insert(0) += count;
+                }
+            }
+        }
+        Ok(merged)
+    }
+}
+
+impl SegmentCollector for FacetCountSegmentCollector {
+    type Fruit = tantivy::Result<FacetTermCounts>;
+
+    fn collect(&mut self, doc: DocId, _score: Score) {
+        if self.error.is_some() {
+            return;
+        }
+
+        let stored_doc: tantivy::TantivyDocument = match self.store_reader.get(doc) {
+            Ok(doc) => doc,
+            Err(err) => {
+                self.error = Some(err);
+                return;
+            }
+        };
+
+        for field in &mut self.fields {
+            if let Some(value) = stored_doc.get_first(field.field).and_then(|v| v.as_str()) {
+                if value.is_empty() {
+                    continue;
+                }
+                if let Some(count) = field.counts.get_mut(value) {
+                    *count += 1;
+                } else {
+                    field.counts.insert(value.to_string(), 1);
+                }
+            }
+        }
+    }
+
+    fn harvest(self) -> Self::Fruit {
+        if let Some(err) = self.error {
+            return Err(err);
+        }
+
+        let mut counts = HashMap::new();
+        for field in self.fields {
+            if !field.counts.is_empty() {
+                counts.insert(field.name, field.counts);
+            }
+        }
+        Ok(counts)
+    }
+}
+
+impl Collector for ScopeStatsCollector {
+    type Fruit = ServiceScopeStats;
+    type Child = ScopeStatsSegmentCollector;
+
+    fn for_segment(
+        &self,
+        _segment_local_id: u32,
+        segment: &SegmentReader,
+    ) -> tantivy::Result<Self::Child> {
+        let store_reader = segment
+            .get_store_reader(FACET_STORE_CACHE_BLOCKS)
+            .map_err(tantivy::TantivyError::from)?;
+        Ok(ScopeStatsSegmentCollector {
+            store_reader,
+            level_field: self.level_field,
+            stats: ServiceScopeStats::default(),
+            error: None,
+        })
+    }
+
+    fn requires_scoring(&self) -> bool {
+        false
+    }
+
+    fn merge_fruits(
+        &self,
+        segment_fruits: Vec<tantivy::Result<ServiceScopeStats>>,
+    ) -> tantivy::Result<Self::Fruit> {
+        let mut merged = ServiceScopeStats::default();
+        for stats in segment_fruits {
+            let stats = stats?;
+            merged.total += stats.total;
+            merged.error_count += stats.error_count;
+            merged.warn_count += stats.warn_count;
+        }
+        Ok(merged)
+    }
+}
+
+impl SegmentCollector for ScopeStatsSegmentCollector {
+    type Fruit = tantivy::Result<ServiceScopeStats>;
+
+    fn collect(&mut self, doc: DocId, _score: Score) {
+        if self.error.is_some() {
+            return;
+        }
+
+        self.stats.total += 1;
+
+        let stored_doc: tantivy::TantivyDocument = match self.store_reader.get(doc) {
+            Ok(doc) => doc,
+            Err(err) => {
+                self.error = Some(err);
+                return;
+            }
+        };
+
+        match stored_doc
+            .get_first(self.level_field)
+            .and_then(|value| value.as_str())
+        {
+            Some("error") => self.stats.error_count += 1,
+            Some("warn") => self.stats.warn_count += 1,
+            _ => {}
+        }
+    }
+
+    fn harvest(self) -> Self::Fruit {
+        if let Some(err) = self.error {
+            return Err(err);
+        }
+        Ok(self.stats)
+    }
+}
 
 #[derive(Clone, Debug)]
 pub(crate) struct LogSource {
@@ -41,6 +263,8 @@ pub(crate) struct LogSource {
 struct IngestStateFile {
     version: u32,
     sources: HashMap<String, IngestCursor>,
+    #[serde(default)]
+    facet_fields: HashMap<String, BTreeSet<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -394,6 +618,7 @@ impl LogIndex {
             let mut ingest = self.ingest.lock().unwrap();
             let prefix = format!("{run_id}/");
             ingest.sources.retain(|k, _| !k.starts_with(&prefix));
+            ingest.facet_fields.retain(|k, _| !k.starts_with(&prefix));
             let bytes = serde_json::to_vec_pretty(&*ingest)?;
             atomic_write(&self.ingest_state_path, &bytes)?;
         }
@@ -444,6 +669,7 @@ impl LogIndex {
         let mut pending_updates = Vec::new();
         let mut pending_docs = Vec::new();
         let mut dynamic_field_names = BTreeSet::new();
+        let mut dynamic_field_names_by_source: HashMap<String, BTreeSet<String>> = HashMap::new();
 
         for source in sources {
             if !source.path.exists() {
@@ -503,6 +729,10 @@ impl LogIndex {
 
                 for (field_name, _) in &dynamic_fields {
                     dynamic_field_names.insert(field_name.clone());
+                    dynamic_field_names_by_source
+                        .entry(key.clone())
+                        .or_default()
+                        .insert(field_name.clone());
                 }
 
                 pending_docs.push(PendingDoc {
@@ -615,6 +845,13 @@ impl LogIndex {
             for update in pending_updates {
                 ingest.sources.insert(update.key, update.cursor);
             }
+            for (key, field_names) in dynamic_field_names_by_source {
+                ingest
+                    .facet_fields
+                    .entry(key)
+                    .or_default()
+                    .extend(field_names);
+            }
             let bytes = serde_json::to_vec_pretty(&*ingest)?;
             atomic_write(&self.ingest_state_path, &bytes)?;
         }
@@ -675,49 +912,25 @@ impl LogIndex {
         }
 
         let searcher = self.reader.read().unwrap().searcher();
-        let total: usize = searcher.search(&scope_query, &Count)?;
-
-        let error_count: usize = {
-            let term = Term::from_field_text(fields.level, "error");
-            let q = BooleanQuery::new(vec![
-                (Occur::Must, scope_query.box_clone()),
-                (
-                    Occur::Must,
-                    Box::new(TermQuery::new(
-                        term,
-                        tantivy::schema::IndexRecordOption::Basic,
-                    )),
-                ),
-            ]);
-            searcher.search(&q, &Count)?
-        };
-        let warn_count: usize = {
-            let term = Term::from_field_text(fields.level, "warn");
-            let q = BooleanQuery::new(vec![
-                (Occur::Must, scope_query.box_clone()),
-                (
-                    Occur::Must,
-                    Box::new(TermQuery::new(
-                        term,
-                        tantivy::schema::IndexRecordOption::Basic,
-                    )),
-                ),
-            ]);
-            searcher.search(&q, &Count)?
-        };
-
-        let matched_total: usize = searcher.search(&result_query, &Count)?;
+        let scope_stats = searcher.search(&scope_query, &ScopeStatsCollector::new(fields.level))?;
+        let total = scope_stats.total;
+        let error_count = scope_stats.error_count;
+        let warn_count = scope_stats.warn_count;
 
         let mut lines: Vec<(i64, u64, String)> = Vec::new();
         let mut next_after: Option<u64> = None;
 
-        if tail > 0 {
+        let matched_total = if tail > 0 {
             if after.is_some() {
-                // Follow mode: order by seq ascending.
-                let top_docs: Vec<(u64, DocAddress)> = searcher.search(
+                let (matched_total, top_docs): (usize, Vec<(u64, DocAddress)>) = searcher.search(
                     &result_query,
-                    &TopDocs::with_limit(tail).order_by_fast_field("seq", tantivy::Order::Asc),
+                    &(
+                        Count,
+                        TopDocs::with_limit(tail)
+                            .order_by_fast_field::<u64>("seq", tantivy::Order::Asc),
+                    ),
                 )?;
+                // Follow mode: order by seq ascending.
                 for (_sort, addr) in top_docs {
                     let doc: tantivy::TantivyDocument = searcher.doc(addr)?;
                     let raw = doc
@@ -736,14 +949,17 @@ impl LogIndex {
                     next_after = Some(next_after.map(|value| value.max(seq)).unwrap_or(seq));
                     lines.push((ts, seq, raw));
                 }
-                // Already sorted by seq asc.
+                matched_total
             } else {
-                // Tail mode: order by timestamp descending, then reverse to chrono.
-                let top_docs: Vec<(i64, DocAddress)> = searcher.search(
+                let (matched_total, top_docs): (usize, Vec<(i64, DocAddress)>) = searcher.search(
                     &result_query,
-                    &TopDocs::with_limit(tail)
-                        .order_by_fast_field("ts_nanos", tantivy::Order::Desc),
+                    &(
+                        Count,
+                        TopDocs::with_limit(tail)
+                            .order_by_fast_field::<i64>("ts_nanos", tantivy::Order::Desc),
+                    ),
                 )?;
+                // Tail mode: order by timestamp descending, then reverse to chrono.
                 for (_sort, addr) in top_docs {
                     let doc: tantivy::TantivyDocument = searcher.doc(addr)?;
                     let raw = doc
@@ -763,8 +979,11 @@ impl LogIndex {
                     lines.push((ts, seq, raw));
                 }
                 lines.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+                matched_total
             }
-        }
+        } else {
+            searcher.search(&result_query, &Count)?
+        };
 
         let out_lines: Vec<String> = lines.into_iter().map(|(_, _, line)| line).collect();
         Ok(LogsResponse {
@@ -778,12 +997,7 @@ impl LogIndex {
         })
     }
 
-    pub(crate) fn search_run(
-        &self,
-        run_id: &str,
-        _sources: &[LogSource],
-        query: LogSearchQuery,
-    ) -> Result<LogSearchResponse> {
+    pub(crate) fn query_view(&self, run_id: &str, query: LogViewQuery) -> Result<LogViewResponse> {
         let tail = query.last.unwrap_or(500);
         let level_filter = query.level.as_deref().unwrap_or("all");
         let stream_filter = query.stream.as_deref();
@@ -791,7 +1005,7 @@ impl LogIndex {
         let since_nanos = query.since.as_deref().and_then(parse_timestamp_nanos);
         let fields = self.fields.clone();
 
-        let scope_query = Self::build_scope_query(
+        let mut view_query = Self::build_scope_query(
             &fields,
             run_id,
             service_filter,
@@ -800,68 +1014,71 @@ impl LogIndex {
             None,
             None,
         )?;
+        view_query = Self::add_level_filter(fields.level, view_query, level_filter)?;
 
-        let mut result_query = Self::build_scope_query(
-            &fields,
-            run_id,
-            service_filter,
-            since_nanos,
-            stream_filter,
-            None,
-            None,
-        )?;
-        result_query = Self::add_level_filter(fields.level, result_query, level_filter)?;
-
-        let attribute_fields = {
+        let (all_dynamic_fields, facet_fields) = {
             let index = self.index.read().unwrap();
-            result_query = Self::add_text_query(
-                &index,
-                fields.message,
-                result_query,
-                query.search.as_deref(),
-            )?;
-            Self::dynamic_attribute_fields(&index.schema())
+            view_query =
+                Self::add_text_query(&index, fields.message, view_query, query.search.as_deref())?;
+            let all_dynamic_fields = if query.include_entries || query.include_facets {
+                Self::dynamic_attribute_fields(&index.schema())
+            } else {
+                Vec::new()
+            };
+            let facet_fields = if query.include_facets {
+                self.facet_fields_for_scope(run_id, service_filter)
+            } else {
+                Vec::new()
+            };
+            (all_dynamic_fields, facet_fields)
+        };
+        let attribute_fields = if query.include_entries {
+            all_dynamic_fields.clone()
+        } else {
+            Vec::new()
         };
 
         let searcher = self.reader.read().unwrap().searcher();
-        let total: usize = searcher.search(&scope_query, &Count)?;
-        let error_count: usize = {
-            let term = Term::from_field_text(fields.level, "error");
-            let q = BooleanQuery::new(vec![
-                (Occur::Must, scope_query.box_clone()),
-                (
-                    Occur::Must,
-                    Box::new(TermQuery::new(
-                        term,
-                        tantivy::schema::IndexRecordOption::Basic,
-                    )),
-                ),
-            ]);
-            searcher.search(&q, &Count)?
-        };
-        let warn_count: usize = {
-            let term = Term::from_field_text(fields.level, "warn");
-            let q = BooleanQuery::new(vec![
-                (Occur::Must, scope_query.box_clone()),
-                (
-                    Occur::Must,
-                    Box::new(TermQuery::new(
-                        term,
-                        tantivy::schema::IndexRecordOption::Basic,
-                    )),
-                ),
-            ]);
-            searcher.search(&q, &Count)?
-        };
 
-        let matched_total: usize = searcher.search(&result_query, &Count)?;
+        let (total, top_docs, facet_counts) = match (
+            query.include_entries && tail > 0,
+            query.include_facets && !facet_fields.is_empty(),
+        ) {
+            (true, true) => {
+                let (total, top_docs, facet_counts) = searcher.search(
+                    view_query.as_ref(),
+                    &(
+                        Count,
+                        TopDocs::with_limit(tail)
+                            .order_by_fast_field::<i64>("ts_nanos", tantivy::Order::Desc),
+                        FacetCountCollector::new(&facet_fields),
+                    ),
+                )?;
+                (total, top_docs, facet_counts)
+            }
+            (true, false) => {
+                let (total, top_docs) = searcher.search(
+                    view_query.as_ref(),
+                    &(
+                        Count,
+                        TopDocs::with_limit(tail)
+                            .order_by_fast_field::<i64>("ts_nanos", tantivy::Order::Desc),
+                    ),
+                )?;
+                (total, top_docs, HashMap::new())
+            }
+            (false, true) => {
+                let (total, facet_counts) = searcher.search(
+                    view_query.as_ref(),
+                    &(Count, FacetCountCollector::new(&facet_fields)),
+                )?;
+                (total, Vec::new(), facet_counts)
+            }
+            (false, false) => (searcher.search(view_query.as_ref(), &Count)?, Vec::new(), HashMap::new()),
+        };
 
         let mut entries: Vec<(i64, u64, LogEntry)> = Vec::new();
-        if tail > 0 {
-            let top_docs: Vec<(i64, DocAddress)> = searcher.search(
-                &result_query,
-                &TopDocs::with_limit(tail).order_by_fast_field("ts_nanos", tantivy::Order::Desc),
-            )?;
+        if query.include_entries && tail > 0 {
             for (_sort, addr) in top_docs {
                 let doc: tantivy::TantivyDocument = searcher.doc(addr)?;
                 let ts = doc
@@ -929,136 +1146,60 @@ impl LogIndex {
             entries.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
         }
 
-        Ok(LogSearchResponse {
-            entries: entries.into_iter().map(|(_, _, entry)| entry).collect(),
-            truncated: matched_total > tail && tail > 0,
-            total,
-            error_count,
-            warn_count,
-            matched_total,
-        })
-    }
-
-    pub(crate) fn facets_run(
-        &self,
-        run_id: &str,
-        _sources: &[LogSource],
-        query: LogFacetsQuery,
-    ) -> Result<LogFacetsResponse> {
-        let since_nanos = query.since.as_deref().and_then(parse_timestamp_nanos);
-        let service_filter = query.service.as_deref();
-        let level_filter = query.level.as_deref();
-        let stream_filter = query.stream.as_deref();
-        let fields = self.fields.clone();
-        let facet_fields = {
-            let index = self.index.read().unwrap();
-            Self::facet_fields(&index.schema())
-        };
-        let searcher = self.reader.read().unwrap().searcher();
-
-        let total_query =
-            Self::build_scope_query(&fields, run_id, None, since_nanos, None, None, None)?;
-        let total: usize = searcher.search(&total_query, &Count)?;
-
-        #[derive(Clone, Debug, Eq, Hash, PartialEq)]
-        struct FacetScopeKey {
-            service: Option<String>,
-            level: Option<String>,
-            stream: Option<String>,
-        }
-
-        let mut fields_by_scope: HashMap<FacetScopeKey, Vec<String>> = HashMap::new();
-        for field_name in &facet_fields {
-            let scope_key = FacetScopeKey {
-                service: if field_name == "service" {
-                    None
-                } else {
-                    service_filter.map(str::to_string)
-                },
-                level: if field_name == "level" {
-                    None
-                } else {
-                    level_filter.map(str::to_string)
-                },
-                stream: if field_name == "stream" {
-                    None
-                } else {
-                    stream_filter.map(str::to_string)
-                },
-            };
-            fields_by_scope
-                .entry(scope_key)
-                .or_default()
-                .push(field_name.clone());
-        }
-
-        let mut facet_values_by_field = HashMap::new();
-        for (scope_key, field_names) in fields_by_scope {
-            let mut scope = Self::build_scope_query(
-                &fields,
-                run_id,
-                scope_key.service.as_deref(),
-                since_nanos,
-                scope_key.stream.as_deref(),
-                None,
-                None,
-            )?;
-            if let Some(level) = scope_key.level.as_deref() {
-                scope = Self::add_level_filter(fields.level, scope, level)?;
-            }
-
-            let agg_results =
-                Self::collect_terms_aggregations(&searcher, scope.as_ref(), &field_names)?;
-            for field_name in field_names {
-                let values = Self::facet_values_from_aggregation_results(&agg_results, &field_name);
-                if !values.is_empty() {
-                    facet_values_by_field.insert(field_name, values);
-                }
-            }
-        }
-
         let mut filters = Vec::new();
-        for field_name in facet_fields {
-            if let Some(values) = facet_values_by_field.remove(&field_name) {
+        if query.include_facets {
+            for field_name in facet_fields {
+                let values = Self::facet_values_from_counts(facet_counts.get(&field_name));
+                if values.is_empty() {
+                    continue;
+                }
                 filters.push(FacetFilter {
                     field: field_name.clone(),
                     kind: Self::facet_kind_for(&field_name).to_string(),
                     values,
                 });
             }
+            filters.sort_by(|a, b| {
+                Self::facet_sort_rank(&a.field)
+                    .cmp(&Self::facet_sort_rank(&b.field))
+                    .then(a.field.cmp(&b.field))
+            });
         }
 
-        filters.sort_by(|a, b| {
-            Self::facet_sort_rank(&a.field)
-                .cmp(&Self::facet_sort_rank(&b.field))
-                .then(a.field.cmp(&b.field))
-        });
-
-        Ok(LogFacetsResponse { total, filters })
+        Ok(LogViewResponse {
+            entries: entries.into_iter().map(|(_, _, entry)| entry).collect(),
+            truncated: query.include_entries && total > tail && tail > 0,
+            total,
+            filters,
+        })
     }
 
-    fn facet_fields(schema: &tantivy::schema::Schema) -> Vec<String> {
-        let mut seen = BTreeSet::new();
-        schema
-            .fields()
-            .filter_map(|(_field, entry)| {
-                if !entry.is_indexed() || !entry.is_stored() || !entry.is_fast() {
-                    return None;
+    fn facet_fields_for_scope(&self, run_id: &str, service: Option<&str>) -> Vec<String> {
+        let mut fields = vec![
+            "service".to_string(),
+            "level".to_string(),
+            "stream".to_string(),
+        ];
+        let prefix = format!("{run_id}/");
+        let ingest = self.ingest.lock().unwrap();
+        let mut dynamic_fields = BTreeSet::new();
+        match service {
+            Some(service) => {
+                let key = Self::source_key(run_id, service);
+                if let Some(field_names) = ingest.facet_fields.get(&key) {
+                    dynamic_fields.extend(field_names.iter().cloned());
                 }
-                if !matches!(entry.field_type(), FieldType::Str(_)) {
-                    return None;
+            }
+            None => {
+                for (key, field_names) in &ingest.facet_fields {
+                    if key.starts_with(&prefix) {
+                        dynamic_fields.extend(field_names.iter().cloned());
+                    }
                 }
-                let name = entry.name();
-                if matches!(name, "run_id" | "ts" | "raw" | "message") {
-                    return None;
-                }
-                let name = name.to_string();
-                if !seen.insert(name.clone()) {
-                    return None;
-                }
-                Some(name)
-            })
-            .collect()
+            }
+        }
+        fields.extend(dynamic_fields);
+        fields
     }
 
     fn dynamic_attribute_fields(schema: &tantivy::schema::Schema) -> Vec<(String, Field)> {
@@ -1083,58 +1224,27 @@ impl LogIndex {
             .collect()
     }
 
-    fn collect_terms_aggregations(
-        searcher: &tantivy::Searcher,
-        scope_query: &dyn Query,
-        field_names: &[String],
-    ) -> Result<AggregationResults> {
-        let mut aggs = Aggregations::default();
-        for field_name in field_names {
-            aggs.insert(
-                field_name.clone(),
-                Aggregation {
-                    agg: AggregationVariants::Terms(TantivyTermsAgg {
-                        field: field_name.clone(),
-                        size: Some(FACET_TERMS_LIMIT),
-                        ..Default::default()
-                    }),
-                    sub_aggregation: Aggregations::default(),
-                },
-            );
-        }
-
-        let collector = AggregationCollector::from_aggs(aggs, Default::default());
-        Ok(searcher.search(scope_query, &collector)?)
-    }
-
-    fn facet_values_from_aggregation_results(
-        agg_results: &AggregationResults,
-        field_name: &str,
+    fn facet_values_from_counts(
+        field_counts: Option<&HashMap<String, usize>>,
     ) -> Vec<FacetValueCount> {
-        let Some(result) = agg_results.0.get(field_name) else {
-            return Vec::new();
-        };
-        let AggregationResult::BucketResult(BucketResult::Terms { buckets, .. }) = result else {
+        let Some(field_counts) = field_counts else {
             return Vec::new();
         };
 
-        let mut values: Vec<FacetValueCount> = buckets
+        let mut values: Vec<FacetValueCount> = field_counts
             .iter()
-            .filter_map(|bucket| {
-                let value = bucket
-                    .key_as_string
-                    .clone()
-                    .unwrap_or_else(|| bucket.key.to_string());
+            .filter_map(|(value, count)| {
                 if value.is_empty() {
                     return None;
                 }
                 Some(FacetValueCount {
-                    value,
-                    count: bucket.doc_count as usize,
+                    value: value.clone(),
+                    count: *count,
                 })
             })
             .collect();
         values.sort_by(|a, b| b.count.cmp(&a.count).then(a.value.cmp(&b.value)));
+        values.truncate(FACET_TERMS_LIMIT as usize);
         values
     }
 
@@ -1308,7 +1418,28 @@ mod tests {
         }
     }
 
-    fn facet_values(response: &LogFacetsResponse, field: &str) -> Vec<(String, usize)> {
+    fn log_view_query(
+        last: Option<usize>,
+        search: Option<&str>,
+        level: Option<&str>,
+        stream: Option<&str>,
+        service: Option<&str>,
+        include_entries: bool,
+        include_facets: bool,
+    ) -> LogViewQuery {
+        LogViewQuery {
+            last,
+            since: None,
+            search: search.map(str::to_string),
+            level: level.map(str::to_string),
+            stream: stream.map(str::to_string),
+            service: service.map(str::to_string),
+            include_entries,
+            include_facets,
+        }
+    }
+
+    fn facet_values(response: &LogViewResponse, field: &str) -> Vec<(String, usize)> {
         response
             .filters
             .iter()
@@ -1385,17 +1516,9 @@ mod tests {
         ingest(&index, &sources);
 
         let resp = index
-            .search_run(
+            .query_view(
                 "run-1",
-                &sources,
-                LogSearchQuery {
-                    last: Some(10),
-                    since: None,
-                    search: Some("error".to_string()),
-                    level: None,
-                    stream: None,
-                    service: None,
-                },
+                log_view_query(Some(10), Some("error"), None, None, None, true, false),
             )
             .unwrap();
 
@@ -1412,39 +1535,19 @@ mod tests {
         let log_path = dir.path().join("api.log");
         std::fs::write(&log_path, "[2025-01-01T00:00:00Z] [stdout] hello\n").unwrap();
 
-        let sources = vec![LogSource {
-            run_id: "run-no-auto-ingest".to_string(),
-            service: "api".to_string(),
-            path: log_path,
-        }];
-
         let search = index
-            .search_run(
+            .query_view(
                 "run-no-auto-ingest",
-                &sources,
-                LogSearchQuery {
-                    last: Some(10),
-                    since: None,
-                    search: None,
-                    level: None,
-                    stream: None,
-                    service: None,
-                },
+                log_view_query(Some(10), None, None, None, None, true, false),
             )
             .unwrap();
         assert_eq!(search.total, 0);
         assert!(search.entries.is_empty());
 
         let facets = index
-            .facets_run(
+            .query_view(
                 "run-no-auto-ingest",
-                &sources,
-                LogFacetsQuery {
-                    since: None,
-                    service: None,
-                    level: None,
-                    stream: None,
-                },
+                log_view_query(None, None, None, None, None, false, true),
             )
             .unwrap();
         assert_eq!(facets.total, 0);
@@ -1473,17 +1576,9 @@ mod tests {
         ingest(&index, &sources);
 
         let resp = index
-            .search_run(
+            .query_view(
                 "run-json",
-                &sources,
-                LogSearchQuery {
-                    last: Some(10),
-                    since: None,
-                    search: None,
-                    level: None,
-                    stream: None,
-                    service: None,
-                },
+                log_view_query(Some(10), None, None, None, None, true, false),
             )
             .unwrap();
 
@@ -1538,22 +1633,14 @@ mod tests {
         ingest(&index, &sources);
 
         let errors = index
-            .search_run(
+            .query_view(
                 "run-level",
-                &sources,
-                LogSearchQuery {
-                    last: Some(10),
-                    since: None,
-                    search: None,
-                    level: Some("error".to_string()),
-                    stream: None,
-                    service: None,
-                },
+                log_view_query(Some(10), None, Some("error"), None, None, true, false),
             )
             .unwrap();
 
         assert_eq!(errors.entries.len(), 0);
-        assert_eq!(errors.error_count, 0);
+        assert_eq!(errors.total, 0);
     }
 
     #[test]
@@ -1578,17 +1665,9 @@ mod tests {
         ingest(&index, &sources);
 
         let resp = index
-            .search_run(
+            .query_view(
                 "run-order",
-                &sources,
-                LogSearchQuery {
-                    last: Some(10),
-                    since: None,
-                    search: None,
-                    level: None,
-                    stream: None,
-                    service: None,
-                },
+                log_view_query(Some(10), None, None, None, None, true, false),
             )
             .unwrap();
 
@@ -1631,15 +1710,9 @@ mod tests {
         ingest(&index, &sources);
 
         let response = index
-            .facets_run(
+            .query_view(
                 "run-facets",
-                &sources,
-                LogFacetsQuery {
-                    since: None,
-                    service: None,
-                    level: None,
-                    stream: None,
-                },
+                log_view_query(None, None, None, None, None, false, true),
             )
             .unwrap();
 
@@ -1714,15 +1787,9 @@ mod tests {
         ingest(&index, &sources);
 
         let response = index
-            .facets_run(
+            .query_view(
                 "run-dynamic-facets",
-                &sources,
-                LogFacetsQuery {
-                    since: None,
-                    service: None,
-                    level: None,
-                    stream: None,
-                },
+                log_view_query(None, None, None, None, None, false, true),
             )
             .unwrap();
 
@@ -1766,7 +1833,7 @@ mod tests {
     }
 
     #[test]
-    fn facets_exclude_active_filter_from_its_own_counts() {
+    fn facets_reflect_full_current_scope() {
         let dir = tempfile::tempdir().unwrap();
         let index = LogIndex::open_or_create_in(dir.path()).unwrap();
 
@@ -1802,15 +1869,66 @@ mod tests {
         ingest(&index, &sources);
 
         let response = index
-            .facets_run(
+            .query_view(
                 "run-filtered-facets",
-                &sources,
-                LogFacetsQuery {
-                    since: None,
-                    service: Some("api".to_string()),
-                    level: Some("error".to_string()),
-                    stream: None,
-                },
+                log_view_query(None, None, Some("error"), None, Some("api"), false, true),
+            )
+            .unwrap();
+
+        assert_eq!(
+            facet_values(&response, "service"),
+            vec![("api".to_string(), 1)]
+        );
+        assert_eq!(
+            facet_values(&response, "level"),
+            vec![("error".to_string(), 1)]
+        );
+        assert_eq!(
+            facet_values(&response, "stream"),
+            vec![("stderr".to_string(), 1)]
+        );
+    }
+
+    #[test]
+    fn facets_respect_search_query_scope() {
+        let dir = tempfile::tempdir().unwrap();
+        let index = LogIndex::open_or_create_in(dir.path()).unwrap();
+
+        let api_log = dir.path().join("api.log");
+        let worker_log = dir.path().join("worker.log");
+
+        std::fs::write(
+            &api_log,
+            concat!(
+                "{\"time\":\"2025-01-01T00:00:00Z\",\"stream\":\"stdout\",\"level\":\"info\",\"msg\":\"fetch ok\",\"method\":\"GET\"}\n",
+                "{\"time\":\"2025-01-01T00:00:01Z\",\"stream\":\"stderr\",\"level\":\"error\",\"msg\":\"timeout\",\"method\":\"POST\"}\n",
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            &worker_log,
+            "{\"time\":\"2025-01-01T00:00:02Z\",\"stream\":\"stderr\",\"level\":\"error\",\"msg\":\"timeout\",\"method\":\"POST\"}\n",
+        )
+        .unwrap();
+
+        let sources = vec![
+            LogSource {
+                run_id: "run-search-facets".to_string(),
+                service: "api".to_string(),
+                path: api_log,
+            },
+            LogSource {
+                run_id: "run-search-facets".to_string(),
+                service: "worker".to_string(),
+                path: worker_log,
+            },
+        ];
+        ingest(&index, &sources);
+
+        let response = index
+            .query_view(
+                "run-search-facets",
+                log_view_query(None, Some("timeout"), None, None, None, false, true),
             )
             .unwrap();
 
@@ -1819,12 +1937,12 @@ mod tests {
             vec![("api".to_string(), 1), ("worker".to_string(), 1)]
         );
         assert_eq!(
-            facet_values(&response, "level"),
-            vec![("error".to_string(), 1), ("info".to_string(), 1)]
+            facet_values(&response, "method"),
+            vec![("POST".to_string(), 2)]
         );
         assert_eq!(
-            facet_values(&response, "stream"),
-            vec![("stderr".to_string(), 1)]
+            facet_values(&response, "level"),
+            vec![("error".to_string(), 2)]
         );
     }
 
