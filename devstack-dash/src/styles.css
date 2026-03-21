@@ -297,7 +297,16 @@
    LOG VIEWER COMPONENTS
    ═══════════════════════════════════════════════════════════════════ */
 
-.log-line { transition: background-color var(--duration-instant) ease; }
+.log-line {
+  transition: background-color var(--duration-instant) ease;
+}
+.log-line-new {
+  animation: log-row-highlight 3000ms var(--ease-out) both;
+}
+@keyframes log-row-highlight {
+  from { background-color: oklch(from var(--accent) l c h / 20%); }
+  30% { background-color: oklch(from var(--accent) l c h / 12%); }
+}
 .log-line:hover { background: oklch(from var(--text-primary) l c h / 3%); }
 .log-line:hover .log-ts { color: var(--text-secondary); }
 

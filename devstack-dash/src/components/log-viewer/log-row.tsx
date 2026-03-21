@@ -19,6 +19,7 @@ interface LogRowProps {
   isActiveMatch: boolean
   isExpanded: boolean
   isSelected: boolean
+  isNew?: boolean
   lineWrap: boolean
   canShare: boolean
   isMobile?: boolean
@@ -48,6 +49,7 @@ export const LogRow = memo(function LogRow({
   isActiveMatch,
   isExpanded,
   isSelected,
+  isNew,
   lineWrap,
   canShare,
   isMobile,
@@ -110,9 +112,11 @@ export const LogRow = memo(function LogRow({
     >
       <div
         onClick={handleClick}
+        data-new={isNew || undefined}
         className={cn(
           'log-line cursor-pointer flex',
           svcColorClass,
+          isNew && 'log-line-new',
           hasBorderTop && 'border-t border-line-subtle',
           isActiveMatch && '!bg-accent/8',
           isExpanded && '!bg-surface-sunken',

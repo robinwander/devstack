@@ -661,6 +661,37 @@ export function LogViewer({
   )
   const logKeys = useMemo(() => logs.map((log) => buildLogKey(log)), [logs])
   const logKeySet = useMemo(() => new Set(logKeys), [logKeys])
+
+  // Track which log keys are "new" (just arrived) for entrance highlight.
+  // Seeded with initial keys so they don't animate on mount.
+  const seenKeysRef = useRef<Set<string> | null>(null)
+  const [newKeySet, setNewKeySet] = useState<Set<string>>(new Set())
+
+  useEffect(() => {
+    if (!isLiveMode) {
+      seenKeysRef.current = null
+      setNewKeySet(new Set())
+      return
+    }
+    // First render in live mode — seed with current keys, don't animate
+    if (seenKeysRef.current === null) {
+      seenKeysRef.current = new Set(logKeys)
+      return
+    }
+    const seen = seenKeysRef.current
+    const fresh = new Set<string>()
+    for (const key of logKeys) {
+      if (!seen.has(key)) fresh.add(key)
+    }
+    for (const key of logKeys) seen.add(key)
+
+    if (fresh.size > 0) {
+      setNewKeySet(fresh)
+      const timer = setTimeout(() => setNewKeySet(new Set()), 3000)
+      return () => clearTimeout(timer)
+    }
+  }, [logKeys, isLiveMode])
+
   const selectedRowKeySet = useMemo(
     () => new Set(selectedRowKeys),
     [selectedRowKeys],
@@ -871,6 +902,7 @@ export function LogViewer({
     getScrollElement: () => containerRef.current,
     estimateSize: () => 24,
     overscan: 30,
+    getItemKey: (index) => logKeys[index],
   })
 
   useEffect(() => {
@@ -906,15 +938,18 @@ export function LogViewer({
   }, [autoScroll, sortDirection])
 
   const scrollToLatest = useCallback(() => {
-    if (logs.length > 0) {
-      virtualizer.scrollToIndex(sortDirection === 'desc' ? 0 : logs.length - 1, {
-        align: sortDirection === 'desc' ? 'start' : 'end',
-      })
+    const el = containerRef.current
+    if (logs.length > 0 && el) {
+      if (sortDirection === 'desc') {
+        el.scrollTo({ top: 0, behavior: 'smooth' })
+      } else {
+        el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+      }
     }
     setAutoScroll(true)
     setNewLogCount(0)
     prevLogCountRef.current = logs.length
-  }, [logs.length, sortDirection, virtualizer])
+  }, [logs.length, sortDirection])
 
   const nextMatch = useCallback(() => {
     if (matchCount === 0) return
@@ -1721,6 +1756,7 @@ export function LogViewer({
                       isActiveMatch={!!debouncedSearch && i === activeMatchIndex}
                       isExpanded={expandedRow === i}
                       isSelected={selectedRowKeySet.has(logKeys[i])}
+                      isNew={newKeySet.has(logKeys[i])}
                       lineWrap={lineWrap}
                       canShare={true}
                       isMobile={isMobile}
@@ -1737,6 +1773,15 @@ export function LogViewer({
             </>
           )}
         </div>
+
+        {/* New logs toast — positioned inside the log content area */}
+        <LogScrollControls
+          newLogCount={newLogCount}
+          isAtLatest={isAtLatest}
+          hasSearch={!!debouncedSearch}
+          newestFirst={sortDirection === 'desc'}
+          onScrollToLatest={scrollToLatest}
+        />
       </div>
 
       {selectedLogs.length > 0 && (
@@ -1774,15 +1819,6 @@ export function LogViewer({
           </button>
         </div>
       )}
-
-      {/* New logs toast */}
-      <LogScrollControls
-        newLogCount={newLogCount}
-        isAtLatest={isAtLatest}
-        hasSearch={!!debouncedSearch}
-        newestFirst={sortDirection === 'desc'}
-        onScrollToLatest={scrollToLatest}
-      />
 
       {/* Keyboard hints — desktop only */}
       <div className="desktop-only-hints absolute bottom-2 left-3 flex items-center gap-3 text-[11px] text-ink-tertiary pointer-events-none select-none opacity-50">
