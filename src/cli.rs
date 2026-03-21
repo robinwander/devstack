@@ -19,7 +19,8 @@ use tokio::time::timeout;
 use crate::api::{
     DownRequest, FacetValueCount, GcRequest, KillRequest, LogEntry, LogViewQuery, LogViewResponse,
     LogsResponse, PingResponse, ProjectsResponse, RegisterProjectResponse, RunListResponse,
-    RunSummary, RunWatchResponse, SetNavigationIntentRequest, UpRequest, WatchControlRequest,
+    RunSummary, RunWatchResponse, SetNavigationIntentRequest, StartTaskRequest, StartTaskResponse,
+    TaskStatusResponse, UpRequest, WatchControlRequest,
 };
 use crate::config::ConfigFile;
 use crate::log_index::{LogIndex, LogSource};
@@ -335,6 +336,12 @@ pub enum Commands {
         /// Explicit config file path.
         #[arg(long, help = "Explicit config file path")]
         file: Option<PathBuf>,
+        /// Hand the task to the daemon and return immediately with an execution id.
+        #[arg(long, conflicts_with_all = ["init", "status", "verbose"], help = "Hand the task to the daemon and return immediately with an execution id")]
+        detach: bool,
+        /// Query a detached task execution by id.
+        #[arg(long, value_name = "TASK_ID", conflicts_with_all = ["name", "init", "stack", "project", "file", "verbose", "detach", "args"], help = "Query a detached task execution by id")]
+        status: Option<String>,
         /// Stream task stdout/stderr directly to the terminal.
         #[arg(long, help = "Stream task stdout/stderr directly to the terminal")]
         verbose: bool,
@@ -905,12 +912,16 @@ pub async fn run() -> Result<()> {
             stack,
             project,
             file,
+            detach,
+            status,
             verbose,
             json,
             args,
         } => {
-            run_task_command_cli(name, init, stack, project, file, verbose, json, pretty, args)
-                .await
+            run_task_command_cli(
+                name, init, stack, project, file, detach, status, verbose, json, pretty, args,
+            )
+            .await
         }
         Commands::Openapi { out, watch } => {
             if watch {
@@ -2269,6 +2280,8 @@ fn options_for_subcommand(sub: &str) -> Vec<String> {
             "--stack".to_string(),
             "--project".to_string(),
             "--file".to_string(),
+            "--detach".to_string(),
+            "--status".to_string(),
             "--verbose".to_string(),
             "--json".to_string(),
         ],
@@ -2643,11 +2656,51 @@ async fn run_task_command_cli(
     stack: Option<String>,
     project: Option<PathBuf>,
     file: Option<PathBuf>,
+    detach: bool,
+    status: Option<String>,
     verbose: bool,
     json: bool,
     pretty: bool,
     trailing_args: Vec<String>,
 ) -> Result<()> {
+    if let Some(execution_id) = status {
+        let path = format!("/v1/tasks/{execution_id}");
+        let value =
+            call_daemon::<serde_json::Value>("GET", &path, None, Some(DAEMON_TIMEOUT)).await?;
+        let status: TaskStatusResponse = serde_json::from_value(value)?;
+        if json {
+            print_json(serde_json::to_value(status)?, pretty);
+        } else {
+            let duration =
+                crate::tasks::format_task_duration(Duration::from_millis(status.duration_ms));
+            match status.state {
+                crate::api::TaskExecutionState::Running => {
+                    eprintln!(
+                        "{} [{}] running for {duration}",
+                        status.task, status.execution_id
+                    );
+                }
+                crate::api::TaskExecutionState::Completed => {
+                    eprintln!(
+                        "{} [{}] completed in {duration}",
+                        status.task, status.execution_id
+                    );
+                }
+                crate::api::TaskExecutionState::Failed => {
+                    let exit_code = status
+                        .exit_code
+                        .map(|code| format!("exit code {code}"))
+                        .unwrap_or_else(|| "failed to start".to_string());
+                    eprintln!(
+                        "{} [{}] failed ({exit_code}) after {duration}",
+                        status.task, status.execution_id
+                    );
+                }
+            }
+        }
+        return Ok(());
+    }
+
     let context = resolve_project_context(project, file)?;
     let config_path = context
         .config_path
@@ -2660,7 +2713,6 @@ async fn run_task_command_cli(
     }
     let config = ConfigFile::load_from_path(&config_path)?;
     let project_dir = context.project_dir;
-    let task_target = resolve_task_execution_target(&project_dir).await?;
 
     let tasks_map = config
         .tasks
@@ -2668,8 +2720,8 @@ async fn run_task_command_cli(
         .map(|t| t.as_map().clone())
         .unwrap_or_default();
 
-    // devstack run --init: run all init tasks for the stack
     if init {
+        let task_target = resolve_task_execution_target(&project_dir).await?;
         let stack_name = resolve_stack_name(stack, Some(&config_path))?;
         let stack_plan = config
             .stack_plan(&stack_name)
@@ -2705,7 +2757,10 @@ async fn run_task_command_cli(
         return Ok(());
     }
 
-    // devstack run (no name): list available tasks
+    if detach && name.is_none() {
+        return Err(anyhow!("--detach requires a task name"));
+    }
+
     let Some(task_name) = name else {
         if tasks_map.is_empty() {
             eprintln!("no tasks defined in {}", config_path.to_string_lossy());
@@ -2727,7 +2782,25 @@ async fn run_task_command_cli(
         return Ok(());
     };
 
-    // devstack run <name>: execute a specific task
+    if detach {
+        let request = StartTaskRequest {
+            project_dir: project_dir.to_string_lossy().to_string(),
+            file: Some(config_path.to_string_lossy().to_string()),
+            task: task_name,
+            args: trailing_args,
+        };
+        let value =
+            call_daemon("POST", "/v1/tasks/run", Some(request), Some(DAEMON_TIMEOUT)).await?;
+        let response: StartTaskResponse = serde_json::from_value(value)?;
+        if json {
+            print_json(serde_json::to_value(response)?, pretty);
+        } else {
+            println!("{}", response.execution_id);
+        }
+        return Ok(());
+    }
+
+    let task_target = resolve_task_execution_target(&project_dir).await?;
     let task = tasks_map
         .get(&task_name)
         .ok_or_else(|| anyhow!("unknown task '{task_name}'"))?;

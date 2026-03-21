@@ -10,6 +10,46 @@ import {
 } from '@/lib/api'
 import { getServiceColorIndex } from '@/lib/service-colors'
 
+function taskStatusLabel(task: TaskExecutionSummary): string {
+  switch (task.state) {
+    case 'running':
+      return 'running'
+    case 'completed':
+      return 'passed'
+    case 'failed':
+      return 'failed'
+  }
+}
+
+function taskStatusIcon(task: TaskExecutionSummary): string {
+  switch (task.state) {
+    case 'running':
+      return '…'
+    case 'completed':
+      return '✓'
+    case 'failed':
+      return '✗'
+  }
+}
+
+function taskStatusClassName(task: TaskExecutionSummary): string {
+  switch (task.state) {
+    case 'running':
+      return 'text-amber-400'
+    case 'completed':
+      return 'text-emerald-500'
+    case 'failed':
+      return 'text-red-400'
+  }
+}
+
+function formatTaskDuration(task: TaskExecutionSummary): string {
+  if (task.duration_ms == null) {
+    return '—'
+  }
+  return `${(task.duration_ms / 1000).toFixed(1)}s`
+}
+
 export function ServicePanel({
   run,
   status,
@@ -130,18 +170,13 @@ export function ServicePanel({
                           ? 'bg-surface-sunken'
                           : 'hover:bg-surface-sunken/50',
                       )}
-                      title={`${task.task} — ${task.exit_code === 0 ? 'passed' : 'failed'}`}
-                      aria-label={`${task.task} — ${task.exit_code === 0 ? 'passed' : 'failed'}`}
+                      title={`${task.task} — ${taskStatusLabel(task)}`}
+                      aria-label={`${task.task} — ${taskStatusLabel(task)}`}
                     >
                       <span
-                        className={cn(
-                          'text-xs',
-                          task.exit_code === 0
-                            ? 'text-emerald-500'
-                            : 'text-red-400',
-                        )}
+                        className={cn('text-xs', taskStatusClassName(task))}
                       >
-                        {task.exit_code === 0 ? '✓' : '✗'}
+                        {taskStatusIcon(task)}
                       </span>
                     </button>
                   )
@@ -196,20 +231,15 @@ export function ServicePanel({
                       )}
                     >
                       <span
-                        className={cn(
-                          'text-xs',
-                          task.exit_code === 0
-                            ? 'text-emerald-500'
-                            : 'text-red-400',
-                        )}
+                        className={cn('text-xs', taskStatusClassName(task))}
                       >
-                        {task.exit_code === 0 ? '✓' : '✗'}
+                        {taskStatusIcon(task)}
                       </span>
                       <span className="text-ink-secondary truncate">
                         {task.task}
                       </span>
                       <span className="text-ink-tertiary text-[11px] ml-auto">
-                        {(task.duration_ms / 1000).toFixed(1)}s
+                        {formatTaskDuration(task)}
                       </span>
                     </button>
                   )

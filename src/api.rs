@@ -245,18 +245,66 @@ pub struct RunStatusResponse {
     pub services: BTreeMap<String, ServiceStatus>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskExecutionState {
+    Running,
+    Completed,
+    Failed,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct TaskExecutionSummary {
     pub task: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_id: Option<String>,
+    pub state: TaskExecutionState,
     pub started_at: String,
-    pub finished_at: String,
-    pub exit_code: i32,
-    pub duration_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct TasksResponse {
     pub tasks: Vec<TaskExecutionSummary>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+pub struct StartTaskRequest {
+    pub project_dir: String,
+    #[serde(default)]
+    pub file: Option<String>,
+    pub task: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+pub struct StartTaskResponse {
+    pub execution_id: String,
+    pub task: String,
+    #[serde(default)]
+    pub run_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+pub struct TaskStatusResponse {
+    pub execution_id: String,
+    pub task: String,
+    pub state: TaskExecutionState,
+    pub project_dir: String,
+    #[serde(default)]
+    pub run_id: Option<String>,
+    pub started_at: String,
+    #[serde(default)]
+    pub finished_at: Option<String>,
+    #[serde(default)]
+    pub exit_code: Option<i32>,
+    pub duration_ms: u64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
@@ -278,6 +326,7 @@ pub struct GlobalsResponse {
 pub enum DaemonEvent {
     Run(DaemonRunEvent),
     Service(DaemonServiceEvent),
+    Task(DaemonTaskEvent),
     Global(DaemonGlobalEvent),
     Log(DaemonLogEvent),
 }
@@ -287,6 +336,7 @@ impl DaemonEvent {
         match self {
             Self::Run(_) => "run",
             Self::Service(_) => "service",
+            Self::Task(_) => "task",
             Self::Global(_) => "global",
             Self::Log(_) => "log",
         }
@@ -296,6 +346,7 @@ impl DaemonEvent {
         match self {
             Self::Run(event) => serde_json::to_string(event),
             Self::Service(event) => serde_json::to_string(event),
+            Self::Task(event) => serde_json::to_string(event),
             Self::Global(event) => serde_json::to_string(event),
             Self::Log(event) => serde_json::to_string(event),
         }
@@ -304,6 +355,10 @@ impl DaemonEvent {
     pub fn should_deliver(&self, run_id: Option<&str>) -> bool {
         match self {
             Self::Log(event) => run_id == Some(event.run_id.as_str()),
+            Self::Task(event) => match run_id {
+                Some(filter) => event.run_id.as_deref() == Some(filter),
+                None => true,
+            },
             _ => true,
         }
     }
@@ -341,6 +396,31 @@ pub struct DaemonServiceEvent {
     pub run_id: String,
     pub service: String,
     pub state: ServiceState,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DaemonTaskEventKind {
+    Started,
+    Completed,
+    Failed,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DaemonTaskEvent {
+    pub kind: DaemonTaskEventKind,
+    pub execution_id: String,
+    pub task: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    pub state: TaskExecutionState,
+    pub started_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -532,7 +612,10 @@ pub struct AddSourceResponse {
 
 #[cfg(test)]
 mod tests {
-    use super::{LogViewQuery, LogsQuery};
+    use super::{
+        DaemonEvent, DaemonTaskEvent, DaemonTaskEventKind, LogViewQuery, LogsQuery,
+        TaskExecutionState,
+    };
 
     #[test]
     fn logs_query_accepts_new_and_legacy_params() {
@@ -577,5 +660,24 @@ mod tests {
         assert_eq!(legacy.search.as_deref(), Some("panic"));
         assert!(legacy.include_entries);
         assert!(!legacy.include_facets);
+    }
+
+    #[test]
+    fn task_events_respect_run_filters() {
+        let event = DaemonEvent::Task(DaemonTaskEvent {
+            kind: DaemonTaskEventKind::Started,
+            execution_id: "task-1".to_string(),
+            task: "migrate".to_string(),
+            run_id: Some("run-1".to_string()),
+            state: TaskExecutionState::Running,
+            started_at: "2025-01-01T00:00:00Z".to_string(),
+            finished_at: None,
+            exit_code: None,
+            duration_ms: None,
+        });
+
+        assert!(event.should_deliver(None));
+        assert!(event.should_deliver(Some("run-1")));
+        assert!(!event.should_deliver(Some("run-2")));
     }
 }

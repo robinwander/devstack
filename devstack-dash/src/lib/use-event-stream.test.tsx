@@ -132,6 +132,14 @@ describe('useEventStream', () => {
       service: 'api',
       state: 'ready',
     })
+    source.emit('task', {
+      kind: 'started',
+      execution_id: 'task-1',
+      task: 'migrate',
+      run_id: 'run-1',
+      state: 'running',
+      started_at: '2025-01-01T00:00:00Z',
+    })
     source.emit('global', {
       kind: 'state_changed',
       key: 'db',
@@ -155,6 +163,7 @@ describe('useEventStream', () => {
     expect(invalidateQueries).toHaveBeenCalledWith({
       queryKey: queryKeys.runStatus('run-1'),
     })
+    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ['runs', 'run-1'] })
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: queryKeys.globals })
 
     source.emit('error')

@@ -9,7 +9,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant as StdInstant, SystemTime};
 
 use anyhow::{Context, Result, anyhow};
 use axum::{
@@ -36,15 +36,17 @@ use crate::api::{
     AddSourceRequest, AddSourceResponse, AgentSession, AgentSessionMessageRequest,
     AgentSessionMessageResponse, AgentSessionPollResponse, AgentSessionRegisterRequest,
     DaemonEvent, DaemonGlobalEvent, DaemonGlobalEventKind, DaemonLogEvent, DaemonRunEvent,
-    DaemonRunEventKind, DaemonServiceEvent, DaemonServiceEventKind, DoctorCheck, DoctorResponse,
-    DownRequest, GcRequest, GcResponse, GlobalSummary, GlobalsResponse, HealthCheckStats,
-    HealthStatus, KillRequest, LatestAgentSessionQuery, LatestAgentSessionResponse, LogViewQuery,
-    LogViewResponse, LogsQuery, LogsResponse, NavigationIntent, NavigationIntentResponse,
-    PingResponse, ProjectsResponse, RecentErrorLine, RegisterProjectRequest,
-    RegisterProjectResponse, RestartServiceRequest, RunListResponse, RunStatusResponse, RunSummary,
-    RunWatchResponse, ServiceStatus, SetNavigationIntentRequest, ShareAgentMessageRequest,
-    ShareAgentMessageResponse, SourceSummary, SourcesResponse, SystemdStatus, TaskExecutionSummary,
-    TasksResponse, UpRequest, WatchControlRequest, WatchServiceStatus,
+    DaemonRunEventKind, DaemonServiceEvent, DaemonServiceEventKind, DaemonTaskEvent,
+    DaemonTaskEventKind, DoctorCheck, DoctorResponse, DownRequest, GcRequest, GcResponse,
+    GlobalSummary, GlobalsResponse, HealthCheckStats, HealthStatus, KillRequest,
+    LatestAgentSessionQuery, LatestAgentSessionResponse, LogViewQuery, LogViewResponse, LogsQuery,
+    LogsResponse, NavigationIntent, NavigationIntentResponse, PingResponse, ProjectsResponse,
+    RecentErrorLine, RegisterProjectRequest, RegisterProjectResponse, RestartServiceRequest,
+    RunListResponse, RunStatusResponse, RunSummary, RunWatchResponse, ServiceStatus,
+    SetNavigationIntentRequest, ShareAgentMessageRequest, ShareAgentMessageResponse, SourceSummary,
+    SourcesResponse, StartTaskRequest, StartTaskResponse, SystemdStatus, TaskExecutionState,
+    TaskExecutionSummary, TaskStatusResponse, TasksResponse, UpRequest, WatchControlRequest,
+    WatchServiceStatus,
 };
 use crate::config::{ConfigFile, ServiceConfig, StackPlan, TaskConfig};
 use crate::ids::{RunId, ServiceName};
@@ -83,6 +85,7 @@ type AppResult<T> = Result<T, AppError>;
 #[derive(Default)]
 struct DaemonState {
     runs: BTreeMap<String, RunState>,
+    detached_tasks: BTreeMap<String, DetachedTaskExecution>,
     agent_sessions: BTreeMap<String, AgentSessionState>,
     navigation_intent: Option<NavigationIntent>,
 }
@@ -143,6 +146,20 @@ struct RunState {
     state: RunLifecycle,
     created_at: String,
     stopped_at: Option<String>,
+}
+
+#[derive(Clone)]
+struct DetachedTaskExecution {
+    execution_id: String,
+    task: String,
+    project_dir: PathBuf,
+    run_id: Option<String>,
+    state: TaskExecutionState,
+    started_at: String,
+    started_at_instant: StdInstant,
+    finished_at: Option<String>,
+    exit_code: Option<i32>,
+    duration_ms: Option<u64>,
 }
 
 struct ServiceRuntime {
@@ -281,6 +298,105 @@ fn global_state_changed_event(key: &str, state: RunLifecycle) -> DaemonEvent {
         key: key.to_string(),
         state,
     })
+}
+
+fn task_event(task: &DetachedTaskExecution, kind: DaemonTaskEventKind) -> DaemonEvent {
+    DaemonEvent::Task(DaemonTaskEvent {
+        kind,
+        execution_id: task.execution_id.clone(),
+        task: task.task.clone(),
+        run_id: task.run_id.clone(),
+        state: task.state.clone(),
+        started_at: task.started_at.clone(),
+        finished_at: task.finished_at.clone(),
+        exit_code: task.exit_code,
+        duration_ms: task.duration_ms,
+    })
+}
+
+fn task_summary_from_history(execution: &crate::tasks::TaskExecution) -> TaskExecutionSummary {
+    TaskExecutionSummary {
+        task: execution.task.clone(),
+        execution_id: None,
+        state: if execution.exit_code == 0 {
+            TaskExecutionState::Completed
+        } else {
+            TaskExecutionState::Failed
+        },
+        started_at: execution.started_at.clone(),
+        finished_at: Some(execution.finished_at.clone()),
+        exit_code: Some(execution.exit_code),
+        duration_ms: Some(execution.duration_ms),
+    }
+}
+
+fn task_summary_from_detached(task: &DetachedTaskExecution) -> TaskExecutionSummary {
+    TaskExecutionSummary {
+        task: task.task.clone(),
+        execution_id: Some(task.execution_id.clone()),
+        state: task.state.clone(),
+        started_at: task.started_at.clone(),
+        finished_at: task.finished_at.clone(),
+        exit_code: task.exit_code,
+        duration_ms: Some(task_duration_ms(task)),
+    }
+}
+
+fn task_status_response(task: &DetachedTaskExecution) -> TaskStatusResponse {
+    TaskStatusResponse {
+        execution_id: task.execution_id.clone(),
+        task: task.task.clone(),
+        state: task.state.clone(),
+        project_dir: task.project_dir.to_string_lossy().to_string(),
+        run_id: task.run_id.clone(),
+        started_at: task.started_at.clone(),
+        finished_at: task.finished_at.clone(),
+        exit_code: task.exit_code,
+        duration_ms: task_duration_ms(task),
+    }
+}
+
+fn task_duration_ms(task: &DetachedTaskExecution) -> u64 {
+    task.duration_ms.unwrap_or_else(|| {
+        task.started_at_instant
+            .elapsed()
+            .as_millis()
+            .try_into()
+            .unwrap_or(u64::MAX)
+    })
+}
+
+fn detached_task_is_newer(
+    candidate: &TaskExecutionSummary,
+    current: &TaskExecutionSummary,
+) -> bool {
+    match candidate.started_at.cmp(&current.started_at) {
+        std::cmp::Ordering::Greater => true,
+        std::cmp::Ordering::Less => false,
+        std::cmp::Ordering::Equal => match candidate.finished_at.cmp(&current.finished_at) {
+            std::cmp::Ordering::Greater => true,
+            std::cmp::Ordering::Less => false,
+            std::cmp::Ordering::Equal => {
+                candidate.execution_id.is_some() && current.execution_id.is_none()
+            }
+        },
+    }
+}
+
+fn merge_task_summary(
+    tasks: &mut BTreeMap<String, TaskExecutionSummary>,
+    summary: TaskExecutionSummary,
+) {
+    match tasks.entry(summary.task.clone()) {
+        std::collections::btree_map::Entry::Vacant(slot) => {
+            slot.insert(summary);
+        }
+        std::collections::btree_map::Entry::Occupied(mut slot) => {
+            if detached_task_is_newer(&summary, slot.get()) {
+                slot.insert(summary);
+            }
+        }
+    }
 }
 
 fn set_service_state(
@@ -728,6 +844,8 @@ pub async fn run_daemon() -> Result<()> {
         .route("/v1/runs/kill", post(kill))
         .route("/v1/runs/{run_id}/restart-service", post(restart_service))
         .route("/v1/runs/{run_id}/status", get(status))
+        .route("/v1/tasks/run", post(start_task))
+        .route("/v1/tasks/{execution_id}", get(task_status))
         .route("/v1/runs/{run_id}/tasks", get(run_tasks))
         .route("/v1/runs/{run_id}/watch", get(watch_status))
         .route("/v1/runs/{run_id}/watch/pause", post(watch_pause))
@@ -1174,6 +1292,125 @@ pub(crate) async fn events(
 }
 
 #[utoipa::path(
+    post,
+    path = "/v1/tasks/run",
+    request_body = StartTaskRequest,
+    responses(
+        (status = 200, description = "Detached task accepted", body = StartTaskResponse),
+        (status = 400, description = "Bad request", body = crate::api::ErrorResponse),
+        (status = 500, description = "Internal error", body = crate::api::ErrorResponse)
+    ),
+    tag = "daemon"
+)]
+pub(crate) async fn start_task(
+    State(state): State<AppState>,
+    Json(req): Json<StartTaskRequest>,
+) -> Result<Json<StartTaskResponse>, AppError> {
+    let project_dir = PathBuf::from(&req.project_dir);
+    let config_path = req
+        .file
+        .as_ref()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| ConfigFile::default_path(&project_dir));
+    let config = ConfigFile::load_from_path(&config_path)
+        .map_err(|err| AppError::bad_request(err.to_string()))?;
+    let task = config
+        .tasks
+        .as_ref()
+        .and_then(|tasks| tasks.as_map().get(&req.task))
+        .cloned()
+        .ok_or_else(|| AppError::bad_request(format!("unknown task '{}'", req.task)))?;
+
+    let run_id = find_latest_active_run_for_project(&state, &project_dir)
+        .await
+        .map_err(AppError::from)?;
+    let execution_id = format!("task-{:016x}", rand::rng().random::<u64>());
+    let started_at = now_rfc3339();
+    let detached_task = DetachedTaskExecution {
+        execution_id: execution_id.clone(),
+        task: req.task.clone(),
+        project_dir: project_dir.clone(),
+        run_id: run_id.clone(),
+        state: TaskExecutionState::Running,
+        started_at: started_at.clone(),
+        started_at_instant: StdInstant::now(),
+        finished_at: None,
+        exit_code: None,
+        duration_ms: None,
+    };
+
+    {
+        let mut guard = state.state.lock().await;
+        let duplicate = guard.detached_tasks.values().any(|task| {
+            task.state == TaskExecutionState::Running
+                && task.task == req.task
+                && match (task.run_id.as_deref(), run_id.as_deref()) {
+                    (Some(existing), Some(candidate)) => existing == candidate,
+                    (None, None) => same_project_dir(&task.project_dir, &project_dir),
+                    _ => false,
+                }
+        });
+        if duplicate {
+            return Err(AppError::bad_request(format!(
+                "task '{}' is already running",
+                req.task
+            )));
+        }
+        guard
+            .detached_tasks
+            .insert(execution_id.clone(), detached_task.clone());
+    }
+
+    emit_event(
+        &state,
+        task_event(&detached_task, DaemonTaskEventKind::Started),
+    );
+
+    tokio::spawn(execute_detached_task(
+        state.clone(),
+        detached_task,
+        task,
+        req.args.clone(),
+    ));
+
+    Ok(Json(StartTaskResponse {
+        execution_id,
+        task: req.task,
+        run_id,
+    }))
+}
+
+#[utoipa::path(
+    get,
+    path = "/v1/tasks/{execution_id}",
+    params(
+        ("execution_id" = String, Path, description = "Task execution id")
+    ),
+    responses(
+        (status = 200, description = "Task execution status", body = TaskStatusResponse),
+        (status = 404, description = "Task execution not found", body = crate::api::ErrorResponse),
+        (status = 500, description = "Internal error", body = crate::api::ErrorResponse)
+    ),
+    tag = "daemon"
+)]
+pub(crate) async fn task_status(
+    State(state): State<AppState>,
+    AxumPath(execution_id): AxumPath<String>,
+) -> Result<Json<TaskStatusResponse>, AppError> {
+    let task = {
+        let guard = state.state.lock().await;
+        guard
+            .detached_tasks
+            .get(&execution_id)
+            .cloned()
+            .ok_or_else(|| {
+                AppError::not_found(format!("task execution {execution_id} not found"))
+            })?
+    };
+    Ok(Json(task_status_response(&task)))
+}
+
+#[utoipa::path(
     get,
     path = "/v1/runs/{run_id}/status",
     params(
@@ -1211,29 +1448,33 @@ pub(crate) async fn run_tasks(
     State(state): State<AppState>,
     AxumPath(run_id): AxumPath<String>,
 ) -> Result<Json<TasksResponse>, AppError> {
-    {
+    let detached_tasks = {
         let guard = state.state.lock().await;
         guard
             .runs
             .get(&run_id)
             .ok_or_else(|| AppError::not_found(format!("run {run_id} not found")))?;
-    }
+        guard
+            .detached_tasks
+            .values()
+            .filter(|task| task.run_id.as_deref() == Some(run_id.as_str()))
+            .cloned()
+            .collect::<Vec<_>>()
+    };
 
     let history = crate::tasks::TaskHistory::load(&paths::task_history_path(&RunId::new(&run_id))?)
         .map_err(AppError::from)?;
-    let tasks = history
-        .latest_by_task()
-        .into_values()
-        .map(|execution| TaskExecutionSummary {
-            task: execution.task.clone(),
-            started_at: execution.started_at.clone(),
-            finished_at: execution.finished_at.clone(),
-            exit_code: execution.exit_code,
-            duration_ms: execution.duration_ms,
-        })
-        .collect();
+    let mut tasks = BTreeMap::new();
+    for execution in history.latest_by_task().into_values() {
+        merge_task_summary(&mut tasks, task_summary_from_history(execution));
+    }
+    for task in detached_tasks {
+        merge_task_summary(&mut tasks, task_summary_from_detached(&task));
+    }
 
-    Ok(Json(TasksResponse { tasks }))
+    Ok(Json(TasksResponse {
+        tasks: tasks.into_values().collect(),
+    }))
 }
 
 #[utoipa::path(
@@ -2016,6 +2257,122 @@ async fn run_init_tasks_blocking(
     })
     .await
     .map_err(|err| anyhow!("init task worker failed: {err}"))?
+}
+
+async fn execute_detached_task(
+    state: AppState,
+    detached_task: DetachedTaskExecution,
+    task: TaskConfig,
+    args: Vec<String>,
+) {
+    let result = if let Some(run_id) = detached_task.run_id.clone() {
+        let run_id = RunId::new(run_id);
+        match paths::task_history_path(&run_id) {
+            Ok(history_path) => tokio::task::spawn_blocking({
+                let task_name = detached_task.task.clone();
+                let project_dir = detached_task.project_dir.clone();
+                let args = args.clone();
+                let task = task.clone();
+                move || {
+                    crate::tasks::run_task(
+                        &task_name,
+                        &task,
+                        &project_dir,
+                        crate::tasks::TaskLogScope::Run(&run_id),
+                        &history_path,
+                        false,
+                        &args,
+                    )
+                }
+            })
+            .await
+            .map_err(|err| anyhow!("task worker failed: {err}"))
+            .and_then(|result| result),
+            Err(err) => Err(err),
+        }
+    } else {
+        match paths::ad_hoc_task_history_path(&detached_task.project_dir) {
+            Ok(history_path) => tokio::task::spawn_blocking({
+                let task_name = detached_task.task.clone();
+                let project_dir = detached_task.project_dir.clone();
+                let args = args.clone();
+                move || {
+                    crate::tasks::run_task(
+                        &task_name,
+                        &task,
+                        &project_dir,
+                        crate::tasks::TaskLogScope::AdHoc,
+                        &history_path,
+                        false,
+                        &args,
+                    )
+                }
+            })
+            .await
+            .map_err(|err| anyhow!("task worker failed: {err}"))
+            .and_then(|result| result),
+            Err(err) => Err(err),
+        }
+    };
+
+    let updated_task = {
+        let mut guard = state.state.lock().await;
+        let Some(entry) = guard.detached_tasks.get_mut(&detached_task.execution_id) else {
+            return;
+        };
+        entry.finished_at = Some(now_rfc3339());
+        entry.duration_ms = Some(
+            detached_task
+                .started_at_instant
+                .elapsed()
+                .as_millis()
+                .try_into()
+                .unwrap_or(u64::MAX),
+        );
+        match result {
+            Ok(task_result) => {
+                entry.exit_code = Some(task_result.exit_code);
+                entry.state = if task_result.success() {
+                    TaskExecutionState::Completed
+                } else {
+                    TaskExecutionState::Failed
+                };
+            }
+            Err(err) => {
+                eprintln!(
+                    "devstack: detached task {} failed to execute: {err}",
+                    detached_task.execution_id
+                );
+                entry.state = TaskExecutionState::Failed;
+            }
+        }
+        entry.clone()
+    };
+
+    if let Some(run_id) = updated_task.run_id.clone() {
+        let task_name = updated_task.task.clone();
+        let log_index = state.log_index.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            let path = paths::task_log_path(&RunId::new(&run_id), &task_name)?;
+            if !path.exists() {
+                return Ok::<(), anyhow::Error>(());
+            }
+            log_index.ingest_sources(&[LogSource {
+                run_id: run_id.clone(),
+                service: format!("task:{task_name}"),
+                path,
+            }])?;
+            Ok(())
+        })
+        .await;
+    }
+
+    let kind = if updated_task.state == TaskExecutionState::Completed {
+        DaemonTaskEventKind::Completed
+    } else {
+        DaemonTaskEventKind::Failed
+    };
+    emit_event(&state, task_event(&updated_task, kind));
 }
 
 async fn persist_manifest_on_error(state: &AppState, run_id: &str) {
@@ -4050,6 +4407,41 @@ async fn stop_watchers(state: &AppState, run_id: &str) {
     }
 }
 
+fn same_project_dir(run_project_dir: &Path, project_dir: &Path) -> bool {
+    if run_project_dir == project_dir {
+        return true;
+    }
+    let run_canon =
+        std::fs::canonicalize(run_project_dir).unwrap_or_else(|_| run_project_dir.to_path_buf());
+    let project_canon =
+        std::fs::canonicalize(project_dir).unwrap_or_else(|_| project_dir.to_path_buf());
+    run_canon == project_canon
+}
+
+async fn find_latest_active_run_for_project(
+    state: &AppState,
+    project_dir: &Path,
+) -> Result<Option<String>> {
+    let mut candidates = Vec::new();
+    {
+        let guard = state.state.lock().await;
+        for run in guard.runs.values() {
+            if !same_project_dir(&run.project_dir, project_dir) {
+                continue;
+            }
+            if run.state == RunLifecycle::Stopped || run.stopped_at.is_some() {
+                continue;
+            }
+            candidates.push((run.created_at.clone(), run.run_id.clone()));
+        }
+    }
+    if candidates.is_empty() {
+        return Ok(None);
+    }
+    candidates.sort_by(|a, b| b.0.cmp(&a.0));
+    Ok(Some(candidates[0].1.clone()))
+}
+
 async fn find_latest_run_for_project_stack(
     state: &AppState,
     project_dir: &Path,
@@ -4062,14 +4454,8 @@ async fn find_latest_run_for_project_stack(
             if run.stack != stack {
                 continue;
             }
-            if run.project_dir != project_dir {
-                let run_canon = std::fs::canonicalize(&run.project_dir).ok();
-                let project_canon = std::fs::canonicalize(project_dir).ok();
-                if run_canon.is_some() && run_canon == project_canon {
-                    // matched via canonical path
-                } else {
-                    continue;
-                }
+            if !same_project_dir(&run.project_dir, project_dir) {
+                continue;
             }
             if run.state == RunLifecycle::Stopped || run.stopped_at.is_some() {
                 continue;
@@ -5865,6 +6251,42 @@ mod tests {
             new_messages,
             vec!["Can you look at this?\nRun `devstack logs --run run-1 --service api --level error`".to_string()]
         );
+    }
+
+    #[test]
+    fn merge_task_summaries_prefers_live_detached_execution() {
+        let mut tasks = BTreeMap::new();
+        merge_task_summary(
+            &mut tasks,
+            task_summary_from_history(&crate::tasks::TaskExecution {
+                task: "migrate".to_string(),
+                started_at: "2025-01-01T00:00:00Z".to_string(),
+                finished_at: "2025-01-01T00:00:03Z".to_string(),
+                exit_code: 0,
+                duration_ms: 3000,
+                log_file: "migrate.log".to_string(),
+                scope: "run:run-1".to_string(),
+            }),
+        );
+        merge_task_summary(
+            &mut tasks,
+            task_summary_from_detached(&DetachedTaskExecution {
+                execution_id: "task-1".to_string(),
+                task: "migrate".to_string(),
+                project_dir: PathBuf::from("/tmp/project"),
+                run_id: Some("run-1".to_string()),
+                state: TaskExecutionState::Running,
+                started_at: "2025-01-01T00:00:05Z".to_string(),
+                started_at_instant: StdInstant::now(),
+                finished_at: None,
+                exit_code: None,
+                duration_ms: None,
+            }),
+        );
+
+        let task = tasks.get("migrate").unwrap();
+        assert_eq!(task.execution_id.as_deref(), Some("task-1"));
+        assert_eq!(task.state, TaskExecutionState::Running);
     }
 
     #[tokio::test]

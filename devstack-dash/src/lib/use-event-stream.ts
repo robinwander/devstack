@@ -6,6 +6,7 @@ import {
   type DaemonLogEvent,
   type DaemonRunEvent,
   type DaemonServiceEvent,
+  type DaemonTaskEvent,
   type LogEntry,
 } from '@/lib/api'
 
@@ -79,6 +80,12 @@ export function useEventStream(activeRunId: string | null): {
       })
     }
 
+    const handleTask = (event: MessageEvent<string>) => {
+      const payload = JSON.parse(event.data) as DaemonTaskEvent
+      if (!payload.run_id) return
+      void queryClient.invalidateQueries({ queryKey: ['runs', payload.run_id] })
+    }
+
     const handleGlobal = (_event: MessageEvent<string>) => {
       const _payload = JSON.parse(_event.data) as DaemonGlobalEvent
       void queryClient.invalidateQueries({ queryKey: queryKeys.globals })
@@ -94,6 +101,7 @@ export function useEventStream(activeRunId: string | null): {
     eventSource.addEventListener('error', handleError as EventListener)
     eventSource.addEventListener('run', handleRun as EventListener)
     eventSource.addEventListener('service', handleService as EventListener)
+    eventSource.addEventListener('task', handleTask as EventListener)
     eventSource.addEventListener('global', handleGlobal as EventListener)
     eventSource.addEventListener('log', handleLog as EventListener)
 

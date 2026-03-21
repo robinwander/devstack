@@ -74,12 +74,16 @@ export interface SourceSummary {
   created_at: string
 }
 
+export type TaskExecutionState = 'running' | 'completed' | 'failed'
+
 export interface TaskExecutionSummary {
   task: string
+  execution_id?: string | null
+  state: TaskExecutionState
   started_at: string
-  finished_at: string
-  exit_code: number
-  duration_ms: number
+  finished_at?: string | null
+  exit_code?: number | null
+  duration_ms?: number | null
 }
 
 export interface PingResponse {
@@ -108,6 +112,7 @@ export interface LogEntry {
 
 export type DaemonRunEventKind = 'created' | 'state_changed' | 'removed'
 export type DaemonServiceEventKind = 'state_changed'
+export type DaemonTaskEventKind = 'started' | 'completed' | 'failed'
 export type DaemonGlobalEventKind = 'state_changed'
 
 export interface DaemonRunEvent {
@@ -123,6 +128,18 @@ export interface DaemonServiceEvent {
   run_id: string
   service: string
   state: ServiceState
+}
+
+export interface DaemonTaskEvent {
+  kind: DaemonTaskEventKind
+  execution_id: string
+  task: string
+  run_id?: string | null
+  state: TaskExecutionState
+  started_at: string
+  finished_at?: string | null
+  exit_code?: number | null
+  duration_ms?: number | null
 }
 
 export interface DaemonGlobalEvent {
