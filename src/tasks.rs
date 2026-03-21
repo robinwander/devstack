@@ -187,8 +187,15 @@ pub fn run_task(
     log_scope: TaskLogScope<'_>,
     history_path: &Path,
     verbose: bool,
+    trailing_args: &[String],
 ) -> Result<TaskResult> {
-    let (cmd, cwd, env, env_file) = task_cmd_parts(task);
+    let (mut cmd, cwd, env, env_file) = task_cmd_parts(task);
+    if !trailing_args.is_empty() {
+        for arg in trailing_args {
+            cmd.push(' ');
+            cmd.push_str(&shlex::try_quote(arg).map_err(|e| anyhow!("failed to shell-escape arg: {e}"))?);
+        }
+    }
     let cwd = match cwd {
         Some(p) if p.is_absolute() => p,
         Some(p) => project_dir.join(p),
@@ -318,7 +325,7 @@ pub fn run_init_tasks(
                 continue;
             }
 
-            let result = run_task(name, task, project_dir, log_scope, history_path, verbose)?;
+            let result = run_task(name, task, project_dir, log_scope, history_path, verbose, &[])?;
             if !result.success() {
                 emit_task_failure_summary(name, &result);
                 return Err(anyhow!(
@@ -332,7 +339,7 @@ pub fn run_init_tasks(
             continue;
         }
 
-        let result = run_task(name, task, project_dir, log_scope, history_path, verbose)?;
+        let result = run_task(name, task, project_dir, log_scope, history_path, verbose, &[])?;
         if !result.success() {
             emit_task_failure_summary(name, &result);
             return Err(anyhow!(
@@ -556,6 +563,7 @@ mod tests {
             TaskLogScope::AdHoc,
             &history_path,
             false,
+            &[],
         )
         .unwrap();
 

@@ -341,6 +341,9 @@ pub enum Commands {
         /// Output machine-readable JSON.
         #[arg(long, help = "Output machine-readable JSON")]
         json: bool,
+        /// Extra arguments passed to the task command (after --).
+        #[arg(last = true, allow_hyphen_values = true)]
+        args: Vec<String>,
     },
     /// Print the OpenAPI spec.
     Openapi {
@@ -904,7 +907,11 @@ pub async fn run() -> Result<()> {
             file,
             verbose,
             json,
-        } => run_task_command_cli(name, init, stack, project, file, verbose, json, pretty).await,
+            args,
+        } => {
+            run_task_command_cli(name, init, stack, project, file, verbose, json, pretty, args)
+                .await
+        }
         Commands::Openapi { out, watch } => {
             if watch {
                 watch_openapi(out)?;
@@ -2639,6 +2646,7 @@ async fn run_task_command_cli(
     verbose: bool,
     json: bool,
     pretty: bool,
+    trailing_args: Vec<String>,
 ) -> Result<()> {
     let context = resolve_project_context(project, file)?;
     let config_path = context
@@ -2732,6 +2740,7 @@ async fn run_task_command_cli(
         task_target.scope(),
         &history_path,
         verbose,
+        &trailing_args,
     )?;
 
     if json {
