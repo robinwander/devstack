@@ -17,8 +17,8 @@ import {
   ApiError,
   api,
   queries,
-  queryKeys,
   type FacetFilter,
+  type LogEntry,
   type LogFilterParams,
   type RunStatusResponse,
 } from '@/lib/api'
@@ -64,6 +64,7 @@ interface LogViewerProps {
   selectedService: string | null
   selectedSource?: string | null
   sourceName?: string | null
+  liveLogs: LogEntry[]
   onSelectService: (name: string | null) => void
   status?: RunStatusResponse
   isMobile?: boolean
@@ -307,6 +308,19 @@ function buildSharePayload(logs: ParsedLog[]): string {
   return logs.map((log) => log.raw).join('\n')
 }
 
+function matchesToken(entry: LogEntry, token: SearchToken): boolean {
+  const fieldValue =
+    token.field === 'service'
+      ? entry.service
+      : token.field === 'level'
+        ? entry.level
+        : token.field === 'stream'
+          ? entry.stream
+          : entry.attributes?.[token.field]
+
+  return fieldValue === token.value
+}
+
 /* ═══════════════════════════════════════════════════════════════ */
 
 export function LogViewer({
@@ -316,6 +330,7 @@ export function LogViewer({
   selectedService,
   selectedSource,
   sourceName,
+  liveLogs,
   onSelectService,
   status,
   isMobile,
@@ -460,6 +475,12 @@ export function LogViewer({
       : simpleTantivyQuery(debouncedSearch)
   }, [debouncedSearch, isAdvancedQuery])
 
+  const isLiveMode =
+    !isSourceView &&
+    timeRange === 'live' &&
+    !isAdvancedQuery &&
+    parsedSearchTokens.freeText.length === 0
+
   const filterParams: LogFilterParams = useMemo(() => {
     const p: LogFilterParams = { last }
     if (serverQuery) p.search = serverQuery
@@ -479,32 +500,36 @@ export function LogViewer({
     activeTab,
   ])
 
-  const viewQueryParams: LogFilterParams = useMemo(
+  const entriesQueryParams = useMemo(
     () => ({
       ...filterParams,
       include_entries: true,
+      include_facets: false,
+    }),
+    [filterParams],
+  )
+
+  const facetsQueryParams = useMemo(
+    () => ({
+      ...filterParams,
+      include_entries: false,
       include_facets: true,
     }),
     [filterParams],
   )
 
-  const viewQuery = useQuery({
-    queryKey: isSourceView
-      ? queryKeys.sourceLogView(activeSourceName || '', viewQueryParams)
-      : queryKeys.runLogView(runId, viewQueryParams),
-    queryFn: () =>
-      isSourceView
-        ? api.sourceLogView(activeSourceName || '', viewQueryParams)
-        : api.runLogView(runId, viewQueryParams),
-    enabled: isSourceView ? !!activeSourceName : !!runId,
-    refetchInterval: (query) =>
-      query.state.error instanceof ApiError && query.state.error.status === 404
-        ? false
-        : 1500,
-    refetchOnWindowFocus: true,
-    retry: (count, error) =>
-      error instanceof ApiError && error.status === 404 ? false : count < 3,
+  const entriesQuery = useQuery({
+    ...(isSourceView
+      ? queries.sourceLogEntries(activeSourceName || '', entriesQueryParams)
+      : queries.runLogEntries(runId, entriesQueryParams)),
+    enabled: (isSourceView ? !!activeSourceName : !!runId) && !isLiveMode,
   })
+
+  const facetsQuery = useQuery(
+    isSourceView
+      ? queries.sourceLogFacets(activeSourceName || '', facetsQueryParams)
+      : queries.runLogFacets(runId, facetsQueryParams),
+  )
 
   const latestAgentSessionQuery = useQuery({
     ...queries.latestAgentSession(projectDir),
@@ -560,21 +585,34 @@ export function LogViewer({
   }, [canShare, projectDir, shareCommand])
 
 
+  const rawEntries = useMemo(() => {
+    if (!isLiveMode) {
+      return entriesQuery.data?.entries ?? []
+    }
+
+    return liveLogs.filter((entry) => {
+      if (activeTab !== '__all__' && entry.service !== activeTab) {
+        return false
+      }
+
+      return parsedSearchTokens.tokens.every((token) =>
+        token.negated ? !matchesToken(entry, token) : matchesToken(entry, token),
+      )
+    })
+  }, [activeTab, entriesQuery.data?.entries, isLiveMode, liveLogs, parsedSearchTokens])
+
   const { logs, matchCount, truncated, matchedTotal } = useMemo(() => {
-    const entries = viewQuery.data?.entries ?? []
     const upperBound = resolvedCustomTimeRange.toIso
       ? new Date(resolvedCustomTimeRange.toIso).getTime()
       : null
     const filteredEntries =
       upperBound === null
-        ? entries
-        : entries.filter((entry) => new Date(entry.ts).getTime() <= upperBound)
+        ? rawEntries
+        : rawEntries.filter((entry) => new Date(entry.ts).getTime() <= upperBound)
 
-    // Primary time sort
     const timeSorted =
       sortDirection === 'desc' ? [...filteredEntries].reverse() : filteredEntries
 
-    // Column sort overrides time sort when a dynamic column is active
     let orderedEntries = timeSorted
     if (columnSort) {
       const field = columnSort.field
@@ -583,30 +621,39 @@ export function LogViewer({
         const aVal = a.attributes?.[field] ?? ''
         const bVal = b.attributes?.[field] ?? ''
         if (aVal === bVal) return 0
-        if (aVal === '') return 1  // empty values last
+        if (aVal === '') return 1
         if (bVal === '') return -1
         return aVal < bVal ? -dir : dir
       })
     }
 
-    const result: ParsedLog[] = orderedEntries.map((e) => ({
-      timestamp: formatTimestamp(e.ts),
-      rawTimestamp: e.ts,
-      content: stripAnsi(e.message),
-      service: e.service,
-      stream: e.stream,
-      level: (e.level as ParsedLog['level']) || 'info',
-      raw: stripAnsi(e.raw),
-      json: buildStructuredJson(e),
-      attributes: e.attributes,
+    const result: ParsedLog[] = orderedEntries.map((entry) => ({
+      timestamp: formatTimestamp(entry.ts),
+      rawTimestamp: entry.ts,
+      content: stripAnsi(entry.message),
+      service: entry.service,
+      stream: entry.stream,
+      level: (entry.level as ParsedLog['level']) || 'info',
+      raw: stripAnsi(entry.raw),
+      json: buildStructuredJson(entry),
+      attributes: entry.attributes,
     }))
+
     return {
       logs: result,
       matchCount: debouncedSearch ? result.length : 0,
-      truncated: viewQuery.data?.truncated ?? false,
-      matchedTotal: viewQuery.data?.total ?? 0,
+      truncated: isLiveMode ? false : entriesQuery.data?.truncated ?? false,
+      matchedTotal: isLiveMode ? result.length : entriesQuery.data?.total ?? 0,
     }
-  }, [viewQuery.data, debouncedSearch, resolvedCustomTimeRange.toIso, sortDirection, columnSort])
+  }, [
+    columnSort,
+    debouncedSearch,
+    entriesQuery.data,
+    isLiveMode,
+    rawEntries,
+    resolvedCustomTimeRange.toIso,
+    sortDirection,
+  ])
 
   const logServiceNames = useMemo(
     () => Array.from(new Set(logs.map((log) => log.service))),
@@ -627,15 +674,12 @@ export function LogViewer({
     setSelectedRowKeys((prev) => prev.filter((key) => logKeySet.has(key)))
   }, [logKeySet])
 
-  // Service color mapping — deterministic via hash
   const colorIndexMap = useMemo(
     () => buildColorIndexMap(services.length > 0 ? services : logServiceNames),
     [services, logServiceNames],
   )
 
-  // ── Column detection and management ──
   const columnStorageKey = `devstack:columns:${activeSourceName || projectDir || 'default'}`
-  const rawEntries = viewQuery.data?.entries ?? []
 
   const [columnConfig, setColumnConfig] = useState<ColumnConfig[]>(() => {
     const saved = loadColumnConfig(columnStorageKey)
@@ -1084,9 +1128,12 @@ export function LogViewer({
   )
 
   const hasEverLoadedRef = useRef(false)
-  if (viewQuery.data) hasEverLoadedRef.current = true
+  if (entriesQuery.data) hasEverLoadedRef.current = true
   const isInitialLoad =
-    viewQuery.isLoading && !viewQuery.data && !hasEverLoadedRef.current
+    !isLiveMode &&
+    entriesQuery.isLoading &&
+    !entriesQuery.data &&
+    !hasEverLoadedRef.current
 
   /* ─── Time range options ─── */
   const timeRangeOptions = [
@@ -1106,9 +1153,9 @@ export function LogViewer({
           </span>
           <div className="flex items-center gap-2">
             <span className="text-[11px] text-ink-tertiary tabular-nums">
-              {viewQuery.data
-                ? viewQuery.data.total
-                : viewQuery.isLoading
+              {facetsQuery.data
+                ? facetsQuery.data.total
+                : facetsQuery.isLoading
                   ? '…'
                   : 0}
             </span>
@@ -1124,17 +1171,17 @@ export function LogViewer({
             )}
           </div>
         </div>
-        {viewQuery.isError && (
+        {facetsQuery.isError && (
           <div className="mt-1.5 text-[11px] text-status-red-text">
             Facets unavailable
           </div>
         )}
       </div>
-      {(viewQuery.data?.filters ?? []).map((filter: FacetFilter) => (
+      {(facetsQuery.data?.filters ?? []).map((filter: FacetFilter) => (
         <FacetSection
           key={filter.field}
           filter={filter}
-          loading={viewQuery.isLoading && !viewQuery.data}
+          loading={facetsQuery.isLoading && !facetsQuery.data}
           onPick={(value: string) => toggleFacet(filter.field, value)}
           isActive={(value: string) =>
             isFacetValueActive(filter.field, value)
@@ -1412,7 +1459,7 @@ export function LogViewer({
             value={searchInput}
             onChange={setSearchInput}
             onActiveMatchIndexReset={resetActiveMatchIndex}
-            facetData={viewQuery.data?.filters ?? []}
+            facetData={facetsQuery.data?.filters ?? []}
             isAdvancedQuery={isAdvancedQuery}
             onToggleAdvancedQuery={() => setIsAdvancedQuery((v) => !v)}
             matchCount={matchCount}
@@ -1520,9 +1567,10 @@ export function LogViewer({
         >
           {isInitialLoad ? (
             <LogSkeleton />
-          ) : viewQuery.isError &&
-            viewQuery.error instanceof ApiError &&
-            viewQuery.error.status === 404 ? (
+          ) : !isLiveMode &&
+            entriesQuery.isError &&
+            entriesQuery.error instanceof ApiError &&
+            entriesQuery.error.status === 404 ? (
             <div className="flex flex-col items-center justify-center h-full text-ink-secondary gap-3 px-8">
               <div className="w-12 h-12 bg-status-red-tint border border-line rounded-lg flex items-center justify-center mb-1">
                 <AlertTriangle className="w-5 h-5 text-status-red-text" />
@@ -1536,7 +1584,7 @@ export function LogViewer({
                   : 'Logs are no longer available for this run.'}
               </p>
             </div>
-          ) : viewQuery.isError ? (
+          ) : !isLiveMode && entriesQuery.isError ? (
             <div className="flex flex-col items-center justify-center h-full text-ink-secondary gap-3 px-8">
               <div className="w-12 h-12 bg-status-red-tint border border-line rounded-lg flex items-center justify-center mb-1">
                 <AlertTriangle className="w-5 h-5 text-status-red-text" />
@@ -1545,8 +1593,8 @@ export function LogViewer({
                 Log search failed
               </span>
               <pre className="max-w-[600px] w-full whitespace-pre-wrap break-words text-xs text-ink-tertiary bg-surface-sunken border border-line rounded-md p-3 font-mono">
-                {viewQuery.error instanceof Error
-                  ? viewQuery.error.message
+                {entriesQuery.error instanceof Error
+                  ? entriesQuery.error.message
                   : 'Unknown error'}
               </pre>
               <div className="flex items-center gap-3">

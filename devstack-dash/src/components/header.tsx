@@ -18,7 +18,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { DaemonStatus } from './daemon-status'
+import { DaemonStatus, EventStreamStatus } from './daemon-status'
 import { LogoMark } from './logo'
 import { StatusDot } from './status-dot'
 import { HealthSummary } from './health-summary'
@@ -59,6 +59,7 @@ export function Header({
   sources,
   selectedSource,
   status,
+  eventStreamConnected,
   onSelectRun,
   onSelectSource,
   isMobile,
@@ -73,6 +74,7 @@ export function Header({
   sources: SourceSummary[]
   selectedSource: string | null
   status: RunStatusResponse | undefined
+  eventStreamConnected: boolean
   onSelectRun: (runId: string) => void
   onSelectSource: (name: string) => void
   isMobile?: boolean
@@ -331,7 +333,10 @@ export function Header({
         )}
       </div>
 
-      <DaemonStatus compact={isMobile} />
+      <div className="flex items-center gap-1">
+        <EventStreamStatus connected={eventStreamConnected} compact={isMobile} />
+        <DaemonStatus compact={isMobile} />
+      </div>
     </header>
   )
 }

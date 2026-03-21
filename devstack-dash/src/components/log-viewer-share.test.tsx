@@ -34,7 +34,10 @@ function jsonResponse(body: unknown): Response {
   })
 }
 
-function renderViewer(selectedService: string | null = null) {
+function renderViewer(
+  selectedService: string | null = null,
+  liveLogs = detailLogSearchResponse.entries,
+) {
   const client = new QueryClient({
     defaultOptions: {
       queries: {
@@ -51,6 +54,7 @@ function renderViewer(selectedService: string | null = null) {
         projectDir="/tmp/project"
         services={['api', 'worker']}
         selectedService={selectedService}
+        liveLogs={liveLogs}
         onSelectService={vi.fn()}
       />
     </QueryClientProvider>,

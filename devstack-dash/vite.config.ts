@@ -4,6 +4,7 @@ import viteTsConfigPaths from "vite-tsconfig-paths";
 import tailwindcss from "@tailwindcss/vite";
 import { request } from "undici";
 import { Agent } from "undici";
+import { Readable } from "stream";
 import { homedir } from "os";
 import { platform } from "process";
 
@@ -30,7 +31,8 @@ function unixSocketProxy(): Plugin {
         }
 
         const path = req.url.replace(/^\/api/, "");
-        
+        const isEventStream = path.startsWith("/v1/events");
+
         try {
           let body: string | undefined;
           if (req.method === "POST") {
@@ -48,10 +50,32 @@ function unixSocketProxy(): Plugin {
             headers: body ? { "Content-Type": "application/json" } : undefined,
           });
 
-          const responseBody = await response.body.text();
-          
           res.statusCode = response.statusCode;
-          res.setHeader("Content-Type", "application/json");
+
+          if (isEventStream && response.body) {
+            for (const [header, value] of Object.entries(response.headers)) {
+              if (value !== undefined) {
+                res.setHeader(header, value);
+              }
+            }
+            res.flushHeaders();
+
+            const stream = Readable.fromWeb(response.body as never);
+            req.on("close", () => stream.destroy());
+            stream.on("error", (error) => {
+              if (!res.writableEnded) {
+                res.destroy(error);
+              }
+            });
+            stream.pipe(res);
+            return;
+          }
+
+          const responseBody = await response.body.text();
+          res.setHeader(
+            "Content-Type",
+            response.headers["content-type"] ?? "application/json",
+          );
           res.end(responseBody);
         } catch (err) {
           console.error("[proxy] error:", err);

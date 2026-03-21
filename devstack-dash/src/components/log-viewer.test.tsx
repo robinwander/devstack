@@ -22,7 +22,7 @@ vi.mock('@/components/json-editor', () => ({
   ),
 }))
 
-import type { ComponentProps } from 'react'
+import { useState, type ComponentProps } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import {
   cleanup,
@@ -52,16 +52,27 @@ function renderViewer(options?: Partial<ComponentProps<typeof LogViewer>>) {
     },
   })
 
-  return render(
-    <QueryClientProvider client={client}>
+  function StatefulViewer() {
+    const [selectedService, setSelectedService] = useState(
+      options?.selectedService ?? null,
+    )
+
+    return (
       <LogViewer
         runId="run-1"
         projectDir="/tmp/project"
         services={['api', 'worker']}
-        selectedService={null}
-        onSelectService={vi.fn()}
+        selectedService={selectedService}
+        liveLogs={[]}
+        onSelectService={setSelectedService}
         {...options}
       />
+    )
+  }
+
+  return render(
+    <QueryClientProvider client={client}>
+      <StatefulViewer />
     </QueryClientProvider>,
   )
 }
@@ -404,6 +415,107 @@ describe('LogViewer facets + URL params', () => {
   })
 })
 
+describe('LogViewer live mode', () => {
+  beforeEach(() => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url =
+        typeof input === 'string'
+          ? input
+          : input instanceof Request
+            ? input.url
+            : String(input)
+      if (url.includes('/api/v1/runs/run-1/logs')) {
+        return jsonResponse(buildLogViewResponse())
+      }
+      if (url.includes('/api/v1/agent/sessions/latest')) {
+        return jsonResponse({ session: null })
+      }
+      throw new Error(`Unhandled fetch URL: ${url}`)
+    })
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+    window.history.replaceState({}, '', '/')
+  })
+
+  it('filters live logs client-side when switching services', async () => {
+    renderViewer({
+      liveLogs: [
+        {
+          ts: '2025-01-01T00:00:00.000Z',
+          service: 'api',
+          stream: 'stdout',
+          level: 'info',
+          message: 'api message',
+          raw: 'api message',
+        },
+        {
+          ts: '2025-01-01T00:00:01.000Z',
+          service: 'worker',
+          stream: 'stdout',
+          level: 'info',
+          message: 'worker message',
+          raw: 'worker message',
+        },
+      ],
+    })
+
+    expect(await screen.findByText('api message')).toBeTruthy()
+    expect(screen.getByText('worker message')).toBeTruthy()
+
+    const fetchMock = vi.mocked(globalThis.fetch)
+    expect(
+      fetchMock.mock.calls.some(([input]) =>
+        String(input).includes('include_entries=true'),
+      ),
+    ).toBe(false)
+
+    fireEvent.click(screen.getByRole('tab', { name: 'worker' }))
+
+    await waitFor(() => {
+      expect(screen.queryByText('api message')).toBeNull()
+      expect(screen.getByText('worker message')).toBeTruthy()
+    })
+
+    expect(
+      fetchMock.mock.calls.some(([input]) =>
+        String(input).includes('include_entries=true'),
+      ),
+    ).toBe(false)
+  })
+
+  it('switches to one-shot HTTP log fetches when a search query is entered', async () => {
+    renderViewer({
+      liveLogs: [
+        {
+          ts: '2025-01-01T00:00:00.000Z',
+          service: 'api',
+          stream: 'stdout',
+          level: 'info',
+          message: 'api message',
+          raw: 'api message',
+        },
+      ],
+    })
+
+    const search = await screen.findByLabelText('Search log lines')
+    fireEvent.change(search, { target: { value: 'panic' } })
+
+    await waitFor(() => {
+      expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledWith(
+        expect.stringContaining('include_entries=true'),
+        expect.anything(),
+      )
+      expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledWith(
+        expect.stringContaining('include_facets=false'),
+        expect.anything(),
+      )
+    })
+  })
+})
+
 describe('LogViewer view toggles', () => {
   const logEntries = {
     entries: [
@@ -455,7 +567,7 @@ describe('LogViewer view toggles', () => {
   })
 
   it('defaults to newest-first sorting and persists the toggle to localStorage', async () => {
-    renderViewer()
+    renderViewer({ liveLogs: logEntries.entries })
 
     const newest = await screen.findByText('newest message')
     const older = await screen.findByText('older message')
@@ -473,7 +585,7 @@ describe('LogViewer view toggles', () => {
     })
 
     cleanup()
-    renderViewer()
+    renderViewer({ liveLogs: logEntries.entries })
 
     const oldestFirstButton = await screen.findByRole('button', {
       name: 'Oldest first',
@@ -489,7 +601,7 @@ describe('LogViewer view toggles', () => {
   })
 
   it('toggles line wrapping and persists the preference', async () => {
-    renderViewer()
+    renderViewer({ liveLogs: logEntries.entries })
 
     const message = await screen.findByText('newest message')
     expect(message.className).toContain('whitespace-nowrap')
@@ -584,7 +696,7 @@ describe('LogViewer detail actions, selection, and custom time range', () => {
   })
 
   it('applies filter, exclude, and only actions from the detail panel into the search bar', async () => {
-    renderViewer()
+    renderViewer({ liveLogs: detailEntries.entries })
 
     fireEvent.click(await screen.findByText('third message'))
 
@@ -602,7 +714,8 @@ describe('LogViewer detail actions, selection, and custom time range', () => {
       'event:task_retried -toolname:bash',
     )
 
-    fireEvent.click(screen.getByRole('button', {
+    fireEvent.click(screen.getByRole('button', { name: /clear search/i }))
+    fireEvent.click(await screen.findByRole('button', {
       name: 'Only stream: stdout',
     }))
     expect((screen.getByLabelText('Search log lines') as HTMLInputElement).value).toBe(
@@ -611,7 +724,7 @@ describe('LogViewer detail actions, selection, and custom time range', () => {
   })
 
   it('supports selecting rows, shift-selecting ranges, and clearing the selection bar', async () => {
-    renderViewer()
+    renderViewer({ liveLogs: detailEntries.entries })
 
     fireEvent.click(await screen.findByRole('button', { name: 'Select row 1' }))
     fireEvent.click(screen.getByRole('button', { name: 'Select row 3' }), {
@@ -630,7 +743,7 @@ describe('LogViewer detail actions, selection, and custom time range', () => {
   })
 
   it('stores custom time ranges in the URL and applies the upper bound client-side', async () => {
-    renderViewer()
+    renderViewer({ liveLogs: detailEntries.entries })
 
     fireEvent.click(await screen.findByRole('radio', { name: 'Custom time range' }))
 

@@ -129,7 +129,7 @@ function renderDashboard() {
   )
 }
 
-describe('Dashboard navigation intent polling', () => {
+describe('Dashboard navigation intents', () => {
   beforeEach(() => {
     window.history.replaceState({}, '', '/')
   })
@@ -140,7 +140,7 @@ describe('Dashboard navigation intent polling', () => {
     window.history.replaceState({}, '', '/')
   })
 
-  it('polls for navigation intents', async () => {
+  it('fetches the current navigation intent on mount', async () => {
     let navigationIntentGets = 0
 
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
@@ -167,13 +167,7 @@ describe('Dashboard navigation intent polling', () => {
     renderDashboard()
 
     await waitFor(() => {
-      expect(navigationIntentGets).toBeGreaterThanOrEqual(1)
-    })
-
-    await new Promise((resolve) => setTimeout(resolve, 1100))
-
-    await waitFor(() => {
-      expect(navigationIntentGets).toBeGreaterThanOrEqual(2)
+      expect(navigationIntentGets).toBe(1)
     })
   })
 

@@ -5,6 +5,7 @@ import { AlertTriangle } from 'lucide-react'
 import { api, ApiError, queries, type RunSummary } from '@/lib/api'
 import { patchUrlParams, readUrlParam } from '@/lib/url-state'
 import { useIsMobile } from '@/lib/use-media-query'
+import { useEventStream } from '@/lib/use-event-stream'
 import { Header } from './header'
 import { ServicePanel } from './service-panel'
 import { EmptyDashboard } from './empty-dashboard'
@@ -70,7 +71,8 @@ export function Dashboard() {
     if (viewMode === 'source') return
 
     const selectionStillValid =
-      selectedRunId !== null && runs.some((r) => r.run_id === selectedRunId)
+      selectedRunId !== null &&
+      runs.some((r) => r.run_id === selectedRunId && r.state !== 'stopped')
 
     if (selectionStillValid) return
 
@@ -89,6 +91,13 @@ export function Dashboard() {
     }
     return null
   }, [selectedRunId, runs])
+
+  const liveRunId =
+    viewMode === 'run' && currentRun && currentRun.state !== 'stopped'
+      ? currentRun.run_id
+      : null
+  const { connected: eventStreamConnected, logs: liveLogs } =
+    useEventStream(liveRunId)
 
   useEffect(() => {
     patchUrlParams({ run: selectedRunId })
@@ -288,6 +297,7 @@ export function Dashboard() {
         sources={sources}
         selectedSource={selectedSource}
         status={status}
+        eventStreamConnected={eventStreamConnected}
         onSelectRun={selectRun}
         onSelectSource={selectSource}
         isMobile={isMobile}
@@ -360,6 +370,7 @@ export function Dashboard() {
                   services={Object.keys(status.services)}
                   selectedService={selectedService}
                   selectedSource={selectedSource}
+                  liveLogs={liveLogs}
                   onSelectService={setSelectedService}
                   status={status}
                   isMobile={isMobile}
@@ -384,6 +395,7 @@ export function Dashboard() {
                   selectedService={selectedService}
                   selectedSource={selectedSource}
                   sourceName={selectedSource}
+                  liveLogs={[]}
                   onSelectService={setSelectedService}
                   isMobile={isMobile}
                 />

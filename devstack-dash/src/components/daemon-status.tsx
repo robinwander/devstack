@@ -29,6 +29,35 @@ export function DaemonStatus({ compact }: { compact?: boolean }) {
   );
 }
 
+export function EventStreamStatus({
+  compact,
+  connected,
+}: {
+  compact?: boolean;
+  connected: boolean;
+}) {
+  return (
+    <div
+      className="flex items-center gap-1.5 px-2 h-8 text-xs font-medium shrink-0"
+      role="status"
+      aria-live="polite"
+      aria-label={connected ? "Live updates connected" : "Live updates reconnecting"}
+    >
+      <span
+        className={cn(
+          "w-1.5 h-1.5 rounded-full shrink-0",
+          connected ? "bg-accent" : "bg-status-amber pulse-dot",
+        )}
+      />
+      {!compact && (
+        <span className={cn("text-xs", connected ? "text-ink-tertiary" : "text-status-amber-text")}>
+          {connected ? "Live" : "Reconnecting…"}
+        </span>
+      )}
+    </div>
+  );
+}
+
 /** Error banner shown when daemon is unreachable */
 export function DaemonBanner({ onRetry }: { onRetry: () => void }) {
   return (

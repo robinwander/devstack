@@ -18,7 +18,8 @@ function useRunSelection(runs: RunSummary[], activeRuns: ActiveRun[]) {
   // Auto-select only when no valid selection exists
   useEffect(() => {
     const selectionStillValid =
-      selectedRunId !== null && runs.some((r) => r.run_id === selectedRunId);
+      selectedRunId !== null &&
+      runs.some((r) => r.run_id === selectedRunId && r.state !== "stopped");
 
     if (selectionStillValid) return;
 
@@ -168,8 +169,8 @@ describe("useRunSelection", () => {
     expect(result.current.currentRun?.run_id).toBe("a");
   });
 
-  it("allows viewing a stopped run", () => {
-    const runs1 = [makeRun("a", "running"), makeRun("b", "stopped")];
+  it("switches to the next active run when the selected run stops", () => {
+    const runs1 = [makeRun("a", "running"), makeRun("b", "running")];
     const active1 = toActiveRuns(runs1);
 
     const { result, rerender } = renderHook(
@@ -177,17 +178,13 @@ describe("useRunSelection", () => {
       { initialProps: { runs: runs1, active: active1 } },
     );
 
-    // User selects the stopped run
-    act(() => result.current.selectRun("b"));
-    expect(result.current.selectedRunId).toBe("b");
-    expect(result.current.currentRun?.run_id).toBe("b");
+    act(() => result.current.selectRun("a"));
+    expect(result.current.selectedRunId).toBe("a");
 
-    // Poll: same data
-    const runs2 = [makeRun("a", "running"), makeRun("b", "stopped")];
+    const runs2 = [makeRun("a", "stopped"), makeRun("b", "running")];
     const active2 = toActiveRuns(runs2);
     rerender({ runs: runs2, active: active2 });
 
-    // Should stay on the stopped run
     expect(result.current.selectedRunId).toBe("b");
     expect(result.current.currentRun?.run_id).toBe("b");
   });

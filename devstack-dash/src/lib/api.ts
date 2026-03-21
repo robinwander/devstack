@@ -106,6 +106,35 @@ export interface LogEntry {
   attributes?: Record<string, string>
 }
 
+export type DaemonRunEventKind = 'created' | 'state_changed' | 'removed'
+export type DaemonServiceEventKind = 'state_changed'
+export type DaemonGlobalEventKind = 'state_changed'
+
+export interface DaemonRunEvent {
+  kind: DaemonRunEventKind
+  run_id: string
+  state?: RunLifecycle
+  stack?: string
+  project_dir?: string
+}
+
+export interface DaemonServiceEvent {
+  kind: DaemonServiceEventKind
+  run_id: string
+  service: string
+  state: ServiceState
+}
+
+export interface DaemonGlobalEvent {
+  kind: DaemonGlobalEventKind
+  key: string
+  state: RunLifecycle
+}
+
+export interface DaemonLogEvent extends LogEntry {
+  run_id: string
+}
+
 export interface LogViewResponse {
   entries: LogEntry[]
   truncated: boolean
@@ -364,10 +393,14 @@ export const queryKeys = {
   runTasks: (runId: string) => ['runs', runId, 'tasks'] as const,
   serviceLogs: (runId: string, service: string) =>
     ['runs', runId, 'logs', service] as const,
-  runLogView: (runId: string, params: LogFilterParams) =>
-    ['runs', runId, 'log_view', params] as const,
-  sourceLogView: (name: string, params: LogFilterParams) =>
-    ['sources', name, 'log_view', params] as const,
+  runLogEntries: (runId: string, params: LogFilterParams) =>
+    ['runs', runId, 'log_entries', params] as const,
+  runLogFacets: (runId: string, params: LogFilterParams) =>
+    ['runs', runId, 'log_facets', params] as const,
+  sourceLogEntries: (name: string, params: LogFilterParams) =>
+    ['sources', name, 'log_entries', params] as const,
+  sourceLogFacets: (name: string, params: LogFilterParams) =>
+    ['sources', name, 'log_facets', params] as const,
   navigationIntent: ['navigation_intent'] as const,
   latestAgentSession: (projectDir: string) =>
     ['agent_session', 'latest', projectDir] as const,
@@ -379,27 +412,23 @@ export const queries = {
   ping: queryOptions({
     queryKey: queryKeys.ping,
     queryFn: api.ping,
-    refetchInterval: 5000,
   }),
 
   runs: queryOptions({
     queryKey: queryKeys.runs,
     queryFn: api.listRuns,
-    refetchInterval: 3000,
     refetchOnWindowFocus: true,
   }),
 
   sources: queryOptions({
     queryKey: queryKeys.sources,
     queryFn: api.listSources,
-    refetchInterval: 10000,
     refetchOnWindowFocus: true,
   }),
 
   navigationIntent: queryOptions({
     queryKey: queryKeys.navigationIntent,
     queryFn: api.getNavigationIntent,
-    refetchInterval: 1000,
     refetchOnWindowFocus: true,
     retry: false,
   }),
@@ -409,7 +438,6 @@ export const queries = {
       queryKey: queryKeys.latestAgentSession(projectDir),
       queryFn: () => api.getLatestAgentSession(projectDir),
       enabled: !!projectDir,
-      refetchInterval: 2000,
       refetchOnWindowFocus: true,
       retry: false,
     }),
@@ -418,11 +446,6 @@ export const queries = {
     queryOptions({
       queryKey: queryKeys.runStatus(runId),
       queryFn: () => api.getRunStatus(runId),
-      refetchInterval: (query) =>
-        query.state.error instanceof ApiError &&
-        query.state.error.status === 404
-          ? false
-          : 2000,
       refetchOnWindowFocus: true,
       retry: (count, error) =>
         error instanceof ApiError && error.status === 404 ? false : count < 3,
@@ -433,41 +456,56 @@ export const queries = {
       queryKey: queryKeys.runTasks(runId),
       queryFn: () => api.listRunTasks(runId),
       enabled: !!runId,
-      refetchInterval: (query) =>
-        query.state.error instanceof ApiError &&
-        query.state.error.status === 404
-          ? false
-          : 5000,
       refetchOnWindowFocus: true,
       retry: (count, error) =>
         error instanceof ApiError && error.status === 404 ? false : count < 3,
     }),
 
-  runLogView: (runId: string, params: LogFilterParams) =>
+  runLogEntries: (runId: string, params: LogFilterParams) =>
     queryOptions({
-      queryKey: queryKeys.runLogView(runId, params),
+      queryKey: queryKeys.runLogEntries(runId, params),
+      queryFn: () => api.runLogView(runId, params),
+      enabled: !!runId,
+      refetchOnWindowFocus: true,
+      retry: (count, error) =>
+        error instanceof ApiError && error.status === 404 ? false : count < 3,
+    }),
+
+  runLogFacets: (runId: string, params: LogFilterParams) =>
+    queryOptions({
+      queryKey: queryKeys.runLogFacets(runId, params),
       queryFn: () => api.runLogView(runId, params),
       enabled: !!runId,
       refetchInterval: (query) =>
         query.state.error instanceof ApiError &&
         query.state.error.status === 404
           ? false
-          : 1500,
+          : 10000,
       refetchOnWindowFocus: true,
       retry: (count, error) =>
         error instanceof ApiError && error.status === 404 ? false : count < 3,
     }),
 
-  sourceLogView: (name: string, params: LogFilterParams) =>
+  sourceLogEntries: (name: string, params: LogFilterParams) =>
     queryOptions({
-      queryKey: queryKeys.sourceLogView(name, params),
+      queryKey: queryKeys.sourceLogEntries(name, params),
+      queryFn: () => api.sourceLogView(name, params),
+      enabled: !!name,
+      refetchOnWindowFocus: true,
+      retry: (count, error) =>
+        error instanceof ApiError && error.status === 404 ? false : count < 3,
+    }),
+
+  sourceLogFacets: (name: string, params: LogFilterParams) =>
+    queryOptions({
+      queryKey: queryKeys.sourceLogFacets(name, params),
       queryFn: () => api.sourceLogView(name, params),
       enabled: !!name,
       refetchInterval: (query) =>
         query.state.error instanceof ApiError &&
         query.state.error.status === 404
           ? false
-          : 1500,
+          : 10000,
       refetchOnWindowFocus: true,
       retry: (count, error) =>
         error instanceof ApiError && error.status === 404 ? false : count < 3,
@@ -476,7 +514,6 @@ export const queries = {
   globals: queryOptions({
     queryKey: queryKeys.globals,
     queryFn: api.listGlobals,
-    refetchInterval: 5000,
     refetchOnWindowFocus: true,
   }),
 
@@ -484,14 +521,12 @@ export const queries = {
     queryOptions({
       queryKey: queryKeys.serviceLogs(runId, service),
       queryFn: () => api.getLogs(runId, service, last),
-      refetchInterval: 2000,
       refetchOnWindowFocus: true,
     }),
 
   projects: queryOptions({
     queryKey: queryKeys.projects,
     queryFn: api.listProjects,
-    refetchInterval: 10000,
     refetchOnWindowFocus: true,
   }),
 }
