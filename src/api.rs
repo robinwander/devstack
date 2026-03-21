@@ -274,6 +274,101 @@ pub struct GlobalsResponse {
     pub globals: Vec<GlobalSummary>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum DaemonEvent {
+    Run(DaemonRunEvent),
+    Service(DaemonServiceEvent),
+    Global(DaemonGlobalEvent),
+    Log(DaemonLogEvent),
+}
+
+impl DaemonEvent {
+    pub fn event_name(&self) -> &'static str {
+        match self {
+            Self::Run(_) => "run",
+            Self::Service(_) => "service",
+            Self::Global(_) => "global",
+            Self::Log(_) => "log",
+        }
+    }
+
+    pub fn payload_json(&self) -> serde_json::Result<String> {
+        match self {
+            Self::Run(event) => serde_json::to_string(event),
+            Self::Service(event) => serde_json::to_string(event),
+            Self::Global(event) => serde_json::to_string(event),
+            Self::Log(event) => serde_json::to_string(event),
+        }
+    }
+
+    pub fn should_deliver(&self, run_id: Option<&str>) -> bool {
+        match self {
+            Self::Log(event) => run_id == Some(event.run_id.as_str()),
+            _ => true,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DaemonRunEventKind {
+    Created,
+    StateChanged,
+    Removed,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DaemonRunEvent {
+    pub kind: DaemonRunEventKind,
+    pub run_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<RunLifecycle>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stack: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_dir: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DaemonServiceEventKind {
+    StateChanged,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DaemonServiceEvent {
+    pub kind: DaemonServiceEventKind,
+    pub run_id: String,
+    pub service: String,
+    pub state: ServiceState,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DaemonGlobalEventKind {
+    StateChanged,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DaemonGlobalEvent {
+    pub kind: DaemonGlobalEventKind,
+    pub key: String,
+    pub state: RunLifecycle,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DaemonLogEvent {
+    pub run_id: String,
+    pub service: String,
+    pub ts: String,
+    pub stream: String,
+    pub level: String,
+    pub message: String,
+    pub raw: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub attributes: BTreeMap<String, String>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct DoctorCheck {
     pub name: String,

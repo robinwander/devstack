@@ -1,6 +1,7 @@
-use std::collections::{BTreeMap, VecDeque};
-use std::fs::OpenOptions;
-use std::io::ErrorKind;
+use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::convert::Infallible;
+use std::fs::{File, OpenOptions};
+use std::io::{ErrorKind, Read, Seek, SeekFrom};
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -14,6 +15,7 @@ use anyhow::{Context, Result, anyhow};
 use axum::{
     Json, Router,
     extract::{Path as AxumPath, Query, State},
+    response::sse::{Event, KeepAlive, Sse},
     routing::{delete, get, post},
 };
 use http_body_util::{BodyExt, Full};
@@ -21,30 +23,33 @@ use hyper::{Request, StatusCode};
 use hyper_util::rt::TokioIo;
 use notify::{EventKind, RecursiveMode, Watcher};
 use rand::Rng;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 use tokio::net::UnixStream;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, broadcast};
 use tokio::time::Instant;
+use tokio_stream::wrappers::ReceiverStream;
 
 use crate::api::{
     AddSourceRequest, AddSourceResponse, AgentSession, AgentSessionMessageRequest,
     AgentSessionMessageResponse, AgentSessionPollResponse, AgentSessionRegisterRequest,
-    DoctorCheck, DoctorResponse, DownRequest, GcRequest, GcResponse, GlobalSummary,
-    GlobalsResponse, HealthCheckStats, HealthStatus, KillRequest, LatestAgentSessionQuery,
-    LatestAgentSessionResponse, LogViewQuery, LogViewResponse, LogsQuery, LogsResponse,
-    NavigationIntent, NavigationIntentResponse, PingResponse, ProjectsResponse, RecentErrorLine,
-    RegisterProjectRequest, RegisterProjectResponse, RestartServiceRequest, RunListResponse,
-    RunStatusResponse, RunSummary, RunWatchResponse, ServiceStatus, SetNavigationIntentRequest,
-    ShareAgentMessageRequest, ShareAgentMessageResponse, SourceSummary, SourcesResponse,
-    SystemdStatus, TaskExecutionSummary, TasksResponse, UpRequest, WatchControlRequest,
-    WatchServiceStatus,
+    DaemonEvent, DaemonGlobalEvent, DaemonGlobalEventKind, DaemonLogEvent, DaemonRunEvent,
+    DaemonRunEventKind, DaemonServiceEvent, DaemonServiceEventKind, DoctorCheck, DoctorResponse,
+    DownRequest, GcRequest, GcResponse, GlobalSummary, GlobalsResponse, HealthCheckStats,
+    HealthStatus, KillRequest, LatestAgentSessionQuery, LatestAgentSessionResponse, LogViewQuery,
+    LogViewResponse, LogsQuery, LogsResponse, NavigationIntent, NavigationIntentResponse,
+    PingResponse, ProjectsResponse, RecentErrorLine, RegisterProjectRequest,
+    RegisterProjectResponse, RestartServiceRequest, RunListResponse, RunStatusResponse, RunSummary,
+    RunWatchResponse, ServiceStatus, SetNavigationIntentRequest, ShareAgentMessageRequest,
+    ShareAgentMessageResponse, SourceSummary, SourcesResponse, SystemdStatus, TaskExecutionSummary,
+    TasksResponse, UpRequest, WatchControlRequest, WatchServiceStatus,
 };
 use crate::config::{ConfigFile, ServiceConfig, StackPlan, TaskConfig};
 use crate::ids::{RunId, ServiceName};
 use crate::log_index::{LogIndex, LogSource};
-use crate::logfmt::{extract_log_content, extract_timestamp_str};
+use crate::logfmt::{classify_line_level, extract_log_content, extract_timestamp_str};
 use crate::manifest::{RunLifecycle, RunManifest, ServiceManifest, ServiceState};
 use crate::paths;
 use crate::port::allocate_ports;
@@ -68,6 +73,8 @@ pub(crate) struct AppState {
     state: Arc<Mutex<DaemonState>>,
     binary_path: PathBuf,
     log_index: Arc<LogIndex>,
+    event_tx: broadcast::Sender<DaemonEvent>,
+    log_tails: Arc<Mutex<RunLogTailRegistry>>,
     _lock: Arc<std::fs::File>,
 }
 
@@ -78,6 +85,37 @@ struct DaemonState {
     runs: BTreeMap<String, RunState>,
     agent_sessions: BTreeMap<String, AgentSessionState>,
     navigation_intent: Option<NavigationIntent>,
+}
+
+#[derive(Default)]
+struct RunLogTailRegistry {
+    runs: HashMap<String, RunLogTailHandle>,
+}
+
+struct RunLogTailHandle {
+    subscribers: usize,
+    task: tokio::task::JoinHandle<()>,
+}
+
+struct LogTailCursor {
+    offset: u64,
+}
+
+struct LogTailSubscription {
+    state: AppState,
+    run_id: Option<String>,
+}
+
+impl Drop for LogTailSubscription {
+    fn drop(&mut self) {
+        let Some(run_id) = self.run_id.take() else {
+            return;
+        };
+        let state = self.state.clone();
+        tokio::spawn(async move {
+            release_run_log_tail(&state, &run_id).await;
+        });
+    }
 }
 
 struct AgentSessionState {
@@ -188,6 +226,378 @@ struct HealthSnapshot {
     last_ok: Option<bool>,
 }
 
+fn emit_event(state: &AppState, event: DaemonEvent) {
+    let _ = state.event_tx.send(event);
+}
+
+fn emit_events(state: &AppState, events: Vec<DaemonEvent>) {
+    for event in events {
+        emit_event(state, event);
+    }
+}
+
+fn run_created_event(run: &RunState) -> DaemonEvent {
+    DaemonEvent::Run(DaemonRunEvent {
+        kind: DaemonRunEventKind::Created,
+        run_id: run.run_id.clone(),
+        state: Some(run.state.clone()),
+        stack: Some(run.stack.clone()),
+        project_dir: Some(run.project_dir.to_string_lossy().to_string()),
+    })
+}
+
+fn run_state_changed_event(run: &RunState) -> DaemonEvent {
+    DaemonEvent::Run(DaemonRunEvent {
+        kind: DaemonRunEventKind::StateChanged,
+        run_id: run.run_id.clone(),
+        state: Some(run.state.clone()),
+        stack: None,
+        project_dir: None,
+    })
+}
+
+fn run_removed_event(run_id: impl Into<String>) -> DaemonEvent {
+    DaemonEvent::Run(DaemonRunEvent {
+        kind: DaemonRunEventKind::Removed,
+        run_id: run_id.into(),
+        state: None,
+        stack: None,
+        project_dir: None,
+    })
+}
+
+fn service_state_changed_event(run_id: &str, service: &str, state: ServiceState) -> DaemonEvent {
+    DaemonEvent::Service(DaemonServiceEvent {
+        kind: DaemonServiceEventKind::StateChanged,
+        run_id: run_id.to_string(),
+        service: service.to_string(),
+        state,
+    })
+}
+
+fn global_state_changed_event(key: &str, state: RunLifecycle) -> DaemonEvent {
+    DaemonEvent::Global(DaemonGlobalEvent {
+        kind: DaemonGlobalEventKind::StateChanged,
+        key: key.to_string(),
+        state,
+    })
+}
+
+fn set_service_state(
+    run_id: &str,
+    service: &str,
+    svc: &mut ServiceRuntime,
+    state: ServiceState,
+) -> Option<DaemonEvent> {
+    if svc.state == state {
+        return None;
+    }
+    svc.state = state.clone();
+    Some(service_state_changed_event(run_id, service, state))
+}
+
+fn recompute_run_state(run: &mut RunState) -> Option<DaemonEvent> {
+    if matches!(run.state, RunLifecycle::Stopped) {
+        return None;
+    }
+    let previous = run.state.clone();
+    let mut all_ready = true;
+    let mut any_degraded = false;
+    for svc in run.services.values() {
+        match svc.state {
+            ServiceState::Ready => {}
+            ServiceState::Starting => {
+                all_ready = false;
+            }
+            ServiceState::Degraded | ServiceState::Failed => {
+                any_degraded = true;
+                all_ready = false;
+            }
+            ServiceState::Stopped => {
+                all_ready = false;
+            }
+        }
+    }
+    run.state = if any_degraded {
+        RunLifecycle::Degraded
+    } else if all_ready {
+        RunLifecycle::Running
+    } else {
+        RunLifecycle::Starting
+    };
+    (run.state != previous).then(|| run_state_changed_event(run))
+}
+
+async fn retain_run_log_tail(state: &AppState, run_id: &str) -> Result<()> {
+    let mut registry = state.log_tails.lock().await;
+    if let Some(handle) = registry.runs.get_mut(run_id) {
+        handle.subscribers += 1;
+        return Ok(());
+    }
+
+    let run_id_owned = run_id.to_string();
+    let task_state = state.clone();
+    let task_run_id = run_id_owned.clone();
+    let task = tokio::spawn(async move {
+        if let Err(err) = tail_run_logs(task_state, task_run_id.clone()).await {
+            eprintln!("devstack: log tail failed for {task_run_id}: {err}");
+        }
+    });
+
+    registry.runs.insert(
+        run_id_owned,
+        RunLogTailHandle {
+            subscribers: 1,
+            task,
+        },
+    );
+    Ok(())
+}
+
+async fn release_run_log_tail(state: &AppState, run_id: &str) {
+    let handle = {
+        let mut registry = state.log_tails.lock().await;
+        let Some(entry) = registry.runs.get_mut(run_id) else {
+            return;
+        };
+        if entry.subscribers > 1 {
+            entry.subscribers -= 1;
+            return;
+        }
+        registry.runs.remove(run_id)
+    };
+
+    if let Some(handle) = handle {
+        handle.task.abort();
+    }
+}
+
+async fn tail_run_logs(state: AppState, run_id: String) -> Result<()> {
+    let logs_dir = paths::run_logs_dir(&RunId::new(run_id.clone()))?;
+    std::fs::create_dir_all(&logs_dir)?;
+    tail_run_logs_in_dir(state, run_id, logs_dir).await
+}
+
+async fn tail_run_logs_in_dir(state: AppState, run_id: String, logs_dir: PathBuf) -> Result<()> {
+    let (notify_tx, mut notify_rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut watcher = notify::recommended_watcher(move |event| {
+        let _ = notify_tx.send(event);
+    })
+    .context("create log tail watcher")?;
+    watcher
+        .watch(&logs_dir, RecursiveMode::NonRecursive)
+        .with_context(|| format!("watch log directory {}", logs_dir.to_string_lossy()))?;
+
+    let mut cursors = initial_log_tail_cursors(&logs_dir)?;
+    let _watcher = watcher;
+
+    while let Some(event) = notify_rx.recv().await {
+        match event {
+            Ok(event) => match event.kind {
+                EventKind::Any | EventKind::Create(_) | EventKind::Modify(_) => {
+                    for path in event.paths {
+                        if !is_tailed_log_path(&path) {
+                            continue;
+                        }
+                        if !path.exists() {
+                            cursors.remove(&path);
+                            continue;
+                        }
+                        let cursor = cursors
+                            .entry(path.clone())
+                            .or_insert(LogTailCursor { offset: 0 });
+                        if let Ok(events) = read_new_log_events(&run_id, &path, cursor) {
+                            for event in events {
+                                emit_event(&state, DaemonEvent::Log(event));
+                            }
+                        }
+                    }
+                }
+                EventKind::Remove(_) => {
+                    for path in event.paths {
+                        cursors.remove(&path);
+                    }
+                }
+                _ => {}
+            },
+            Err(err) => eprintln!("devstack: log tail watcher error for {run_id}: {err}"),
+        }
+    }
+
+    Ok(())
+}
+
+fn initial_log_tail_cursors(logs_dir: &Path) -> Result<HashMap<PathBuf, LogTailCursor>> {
+    let mut cursors = HashMap::new();
+    if !logs_dir.exists() {
+        return Ok(cursors);
+    }
+
+    for entry in std::fs::read_dir(logs_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !is_tailed_log_path(&path) {
+            continue;
+        }
+        let offset = std::fs::metadata(&path)
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
+        cursors.insert(path, LogTailCursor { offset });
+    }
+
+    Ok(cursors)
+}
+
+fn is_tailed_log_path(path: &Path) -> bool {
+    path.extension().and_then(|ext| ext.to_str()) == Some("log")
+}
+
+fn read_new_log_events(
+    run_id: &str,
+    path: &Path,
+    cursor: &mut LogTailCursor,
+) -> Result<Vec<DaemonLogEvent>> {
+    let file_len = std::fs::metadata(path)
+        .map(|metadata| metadata.len())
+        .unwrap_or(0);
+    if file_len < cursor.offset {
+        cursor.offset = 0;
+    }
+
+    let mut file = File::open(path).with_context(|| format!("open log {}", path.display()))?;
+    file.seek(SeekFrom::Start(cursor.offset))?;
+    let mut buf = Vec::new();
+    file.read_to_end(&mut buf)?;
+    if buf.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let Some(last_newline) = buf.iter().rposition(|byte| *byte == b'\n') else {
+        return Ok(Vec::new());
+    };
+
+    let complete_len = last_newline + 1;
+    let complete = &buf[..complete_len];
+    cursor.offset = cursor.offset.saturating_add(complete_len as u64);
+
+    let service = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .map(str::to_string)
+        .ok_or_else(|| anyhow!("invalid log path {}", path.display()))?;
+
+    let mut events = Vec::new();
+    for raw_line in String::from_utf8_lossy(complete).lines() {
+        if let Some(event) = parse_log_tail_event(run_id, &service, raw_line) {
+            events.push(event);
+        }
+    }
+
+    Ok(events)
+}
+
+fn parse_log_tail_event(run_id: &str, service: &str, raw_line: &str) -> Option<DaemonLogEvent> {
+    let raw = crate::util::strip_ansi_if_needed(raw_line.trim_end_matches(['\r', '\n']));
+    if raw.is_empty() {
+        return None;
+    }
+
+    let ts = extract_timestamp_str(&raw).unwrap_or_default();
+    let (stream, message) = extract_log_content(&raw);
+    Some(DaemonLogEvent {
+        run_id: run_id.to_string(),
+        service: service.to_string(),
+        ts,
+        stream,
+        level: classify_line_level(&raw),
+        message,
+        raw: raw.clone(),
+        attributes: extract_log_attributes(&raw),
+    })
+}
+
+fn extract_log_attributes(line: &str) -> BTreeMap<String, String> {
+    let trimmed = line.trim();
+    if !trimmed.starts_with('{') {
+        return BTreeMap::new();
+    }
+
+    let Ok(JsonValue::Object(map)) = serde_json::from_str::<JsonValue>(trimmed) else {
+        return BTreeMap::new();
+    };
+
+    let mut attributes = BTreeMap::new();
+    for (name, value) in map {
+        let Some(name) = normalize_log_attribute_name(&name) else {
+            continue;
+        };
+        if is_reserved_log_attribute(&name) {
+            continue;
+        }
+        let Some(value) = log_attribute_value_to_string(&value) else {
+            continue;
+        };
+        attributes.entry(name).or_insert(value);
+    }
+    attributes
+}
+
+fn normalize_log_attribute_name(field_name: &str) -> Option<String> {
+    let mut normalized = String::with_capacity(field_name.len());
+    let mut last_was_underscore = false;
+
+    for ch in field_name.chars() {
+        if ch.is_ascii_alphanumeric() {
+            normalized.push(ch.to_ascii_lowercase());
+            last_was_underscore = false;
+        } else if !last_was_underscore {
+            normalized.push('_');
+            last_was_underscore = true;
+        }
+    }
+
+    let normalized = normalized.trim_matches('_');
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized.to_string())
+    }
+}
+
+fn is_reserved_log_attribute(field_name: &str) -> bool {
+    matches!(
+        field_name,
+        "time"
+            | "ts"
+            | "timestamp"
+            | "msg"
+            | "message"
+            | "level"
+            | "severity"
+            | "stream"
+            | "run_id"
+            | "service"
+            | "ts_nanos"
+            | "seq"
+            | "raw"
+    )
+}
+
+fn log_attribute_value_to_string(value: &JsonValue) -> Option<String> {
+    let value = match value {
+        JsonValue::String(value) => value.clone(),
+        JsonValue::Number(value) => value.to_string(),
+        JsonValue::Bool(value) => value.to_string(),
+        JsonValue::Array(_) | JsonValue::Object(_) | JsonValue::Null => return None,
+    };
+
+    if value.is_empty() || value.chars().count() > 256 {
+        None
+    } else {
+        Some(value)
+    }
+}
+
 fn acquire_daemon_lock() -> Result<Arc<std::fs::File>> {
     let lock_path = paths::daemon_lock_path()?;
     let file = OpenOptions::new()
@@ -260,12 +670,15 @@ pub async fn run_daemon() -> Result<()> {
     let binary_path = std::env::current_exe().context("current_exe")?;
     let state = Arc::new(Mutex::new(load_state_from_disk()?));
     let log_index = Arc::new(LogIndex::open_or_create()?);
+    let (event_tx, _) = broadcast::channel(1024);
 
     let app_state = AppState {
         systemd,
         state,
         binary_path,
         log_index,
+        event_tx,
+        log_tails: Arc::new(Mutex::new(RunLogTailRegistry::default())),
         _lock: lock,
     };
 
@@ -309,6 +722,7 @@ pub async fn run_daemon() -> Result<()> {
         )
         .route("/v1/agent/sessions/latest", get(get_latest_agent_session))
         .route("/v1/agent/share", post(share_agent_message))
+        .route("/v1/events", get(events))
         .route("/v1/runs/up", post(up))
         .route("/v1/runs/down", post(down))
         .route("/v1/runs/kill", post(kill))
@@ -700,6 +1114,63 @@ pub(crate) async fn kill(
 ) -> Result<Json<RunManifest>, AppError> {
     let manifest = orchestrate_kill(&state, &req.run_id).await?;
     Ok(Json(manifest))
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct EventStreamQuery {
+    run_id: Option<String>,
+}
+
+pub(crate) async fn events(
+    State(state): State<AppState>,
+    Query(query): Query<EventStreamQuery>,
+) -> Result<Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>>, AppError> {
+    if let Some(run_id) = query.run_id.as_deref() {
+        let exists = {
+            let guard = state.state.lock().await;
+            guard.runs.contains_key(run_id)
+        };
+        if !exists {
+            return Err(AppError::not_found(format!("run {run_id} not found")));
+        }
+        retain_run_log_tail(&state, run_id).await?;
+    }
+
+    let mut event_rx = state.event_tx.subscribe();
+    let run_filter = query.run_id.clone();
+    let subscription = LogTailSubscription {
+        state: state.clone(),
+        run_id: run_filter.clone(),
+    };
+    let (stream_tx, stream_rx) = tokio::sync::mpsc::channel(32);
+
+    tokio::spawn(async move {
+        let _subscription = subscription;
+        loop {
+            match event_rx.recv().await {
+                Ok(event) => {
+                    if !event.should_deliver(run_filter.as_deref()) {
+                        continue;
+                    }
+                    let payload = match event.payload_json() {
+                        Ok(payload) => payload,
+                        Err(err) => {
+                            eprintln!("devstack: failed to serialize SSE event: {err}");
+                            continue;
+                        }
+                    };
+                    let sse_event = Event::default().event(event.event_name()).data(payload);
+                    if stream_tx.send(Ok(sse_event)).await.is_err() {
+                        break;
+                    }
+                }
+                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
+
+    Ok(Sse::new(ReceiverStream::new(stream_rx)).keep_alive(KeepAlive::default()))
 }
 
 #[utoipa::path(
@@ -1646,7 +2117,7 @@ async fn orchestrate_up(state: &AppState, req: UpRequest) -> AppResult<RunManife
         stopped_at: None,
     };
 
-    {
+    let run_created = {
         let mut guard = state.state.lock().await;
         if guard.runs.contains_key(run_id.as_str()) {
             return Err(AppError::bad_request(format!(
@@ -1655,6 +2126,10 @@ async fn orchestrate_up(state: &AppState, req: UpRequest) -> AppResult<RunManife
             )));
         }
         guard.runs.insert(run_id.as_str().to_string(), run_state);
+        guard.runs.get(run_id.as_str()).map(run_created_event)
+    };
+    if let Some(event) = run_created {
+        emit_event(state, event);
     }
 
     let tasks_map = config
@@ -1718,11 +2193,21 @@ async fn orchestrate_up(state: &AppState, req: UpRequest) -> AppResult<RunManife
                 watch_paused: false,
                 watch_handle: None,
             };
-            {
+            let service_event = {
                 let mut guard = state.state.lock().await;
                 if let Some(run) = guard.runs.get_mut(run_id.as_str()) {
                     run.services.insert(svc_name.clone(), runtime);
+                    Some(service_state_changed_event(
+                        run_id.as_str(),
+                        svc_name,
+                        ServiceState::Failed,
+                    ))
+                } else {
+                    None
                 }
+            };
+            if let Some(event) = service_event {
+                emit_event(state, event);
             }
             let _ = sync_service_auto_restart_watcher(state, run_id.as_str(), svc_name).await;
             continue;
@@ -1760,11 +2245,19 @@ async fn orchestrate_up(state: &AppState, req: UpRequest) -> AppResult<RunManife
             watch_handle: None,
         };
 
-        {
+        let service_event = {
             let mut guard = state.state.lock().await;
             if let Some(run) = guard.runs.get_mut(run_id.as_str()) {
+                let event =
+                    service_state_changed_event(run_id.as_str(), svc_name, runtime.state.clone());
                 run.services.insert(svc_name.clone(), runtime);
+                Some(event)
+            } else {
+                None
             }
+        };
+        if let Some(event) = service_event {
+            emit_event(state, event);
         }
 
         if let Err(err) = sync_service_auto_restart_watcher(state, run_id.as_str(), svc_name).await
@@ -1782,11 +2275,15 @@ async fn orchestrate_up(state: &AppState, req: UpRequest) -> AppResult<RunManife
         }
     }
 
-    {
+    let run_event = {
         let mut guard = state.state.lock().await;
-        if let Some(run) = guard.runs.get_mut(run_id.as_str()) {
-            recompute_run_state(run);
-        }
+        guard
+            .runs
+            .get_mut(run_id.as_str())
+            .and_then(recompute_run_state)
+    };
+    if let Some(event) = run_event {
+        emit_event(state, event);
     }
 
     let manifest = persist_manifest(state, run_id.as_str())
@@ -1847,15 +2344,22 @@ async fn orchestrate_refresh_run(
             let unit_name = unit_name_for_run(run_id.as_str(), svc_name);
             let _ = state.systemd.stop_unit(&unit_name).await;
         }
-        let mut guard = state.state.lock().await;
-        if let Some(run) = guard.runs.get_mut(run_id.as_str()) {
-            for svc_name in &removed {
-                if let Some(mut svc) = run.services.remove(svc_name) {
-                    stop_health_monitor_for_service(&mut svc);
-                    stop_watch_for_service(&mut svc);
+        let run_event = {
+            let mut guard = state.state.lock().await;
+            if let Some(run) = guard.runs.get_mut(run_id.as_str()) {
+                for svc_name in &removed {
+                    if let Some(mut svc) = run.services.remove(svc_name) {
+                        stop_health_monitor_for_service(&mut svc);
+                        stop_watch_for_service(&mut svc);
+                    }
                 }
+                recompute_run_state(run)
+            } else {
+                None
             }
-            recompute_run_state(run);
+        };
+        if let Some(event) = run_event {
+            emit_event(state, event);
         }
     }
 
@@ -1887,15 +2391,23 @@ async fn orchestrate_refresh_run(
     )
     .map_err(AppError::from)?;
 
-    {
+    let run_event = {
         let mut guard = state.state.lock().await;
         if let Some(run) = guard.runs.get_mut(run_id.as_str()) {
             run.base_env = base_env.clone();
+            let mut event = None;
             if matches!(run.state, RunLifecycle::Stopped) {
                 run.state = RunLifecycle::Starting;
                 run.stopped_at = None;
+                event = Some(run_state_changed_event(run));
             }
+            event
+        } else {
+            None
         }
+    };
+    if let Some(event) = run_event {
+        emit_event(state, event);
     }
 
     let snapshot_path = paths::run_snapshot_path(&run_id).map_err(AppError::from)?;
@@ -1955,13 +2467,26 @@ async fn orchestrate_refresh_run(
                 .await
             {
                 eprintln!("[{svc_name}] init failed: {err}");
-                {
+                let service_event = {
                     let mut guard = state.state.lock().await;
                     if let Some(run) = guard.runs.get_mut(run_id.as_str()) {
                         if let Some(runtime) = run.services.get_mut(svc_name) {
                             apply_prepared_to_runtime(runtime, &prepared, true);
-                            runtime.state = ServiceState::Failed;
+                            let event = set_service_state(
+                                run_id.as_str(),
+                                svc_name,
+                                runtime,
+                                ServiceState::Failed,
+                            )
+                            .or_else(|| {
+                                Some(service_state_changed_event(
+                                    run_id.as_str(),
+                                    svc_name,
+                                    ServiceState::Failed,
+                                ))
+                            });
                             runtime.last_failure = Some(format!("init task failed: {err}"));
+                            event
                         } else {
                             let runtime = ServiceRuntime {
                                 name: prepared.name.clone(),
@@ -1988,8 +2513,18 @@ async fn orchestrate_refresh_run(
                                 watch_handle: None,
                             };
                             run.services.insert(svc_name.clone(), runtime);
+                            Some(service_state_changed_event(
+                                run_id.as_str(),
+                                svc_name,
+                                ServiceState::Failed,
+                            ))
                         }
+                    } else {
+                        None
                     }
+                };
+                if let Some(event) = service_event {
+                    emit_event(state, event);
                 }
                 let _ = sync_service_auto_restart_watcher(state, run_id.as_str(), svc_name).await;
                 continue;
@@ -2004,14 +2539,22 @@ async fn orchestrate_refresh_run(
                 Err(err) => (ServiceState::Failed, Some(err.to_string()), None),
             };
 
-            {
+            let service_event = {
                 let mut guard = state.state.lock().await;
                 if let Some(run) = guard.runs.get_mut(run_id.as_str()) {
                     if let Some(runtime) = run.services.get_mut(svc_name) {
+                        let previous_state = runtime.state.clone();
                         apply_prepared_to_runtime(runtime, &prepared, true);
                         runtime.state = initial_state.clone();
                         runtime.last_failure = failure_reason.clone();
                         runtime.last_started_at = last_started_at.clone();
+                        (previous_state != initial_state).then(|| {
+                            service_state_changed_event(
+                                run_id.as_str(),
+                                svc_name,
+                                initial_state.clone(),
+                            )
+                        })
                     } else {
                         let runtime = ServiceRuntime {
                             name: prepared.name.clone(),
@@ -2024,7 +2567,7 @@ async fn orchestrate_refresh_run(
                             log_path: prepared.log_path.clone(),
                             cwd: prepared.cwd.clone(),
                             env: prepared.env.clone(),
-                            state: initial_state,
+                            state: initial_state.clone(),
                             last_failure: failure_reason,
                             health: None,
                             last_started_at,
@@ -2038,8 +2581,18 @@ async fn orchestrate_refresh_run(
                             watch_handle: None,
                         };
                         run.services.insert(svc_name.clone(), runtime);
+                        Some(service_state_changed_event(
+                            run_id.as_str(),
+                            svc_name,
+                            initial_state.clone(),
+                        ))
                     }
+                } else {
+                    None
                 }
+            };
+            if let Some(event) = service_event {
+                emit_event(state, event);
             }
 
             if let Err(err) =
@@ -2072,11 +2625,15 @@ async fn orchestrate_refresh_run(
         }
     }
 
-    {
+    let run_event = {
         let mut guard = state.state.lock().await;
-        if let Some(run) = guard.runs.get_mut(run_id.as_str()) {
-            recompute_run_state(run);
-        }
+        guard
+            .runs
+            .get_mut(run_id.as_str())
+            .and_then(recompute_run_state)
+    };
+    if let Some(event) = run_event {
+        emit_event(state, event);
     }
 
     let manifest = persist_manifest(state, run_id.as_str())
@@ -2878,34 +3435,31 @@ fn unit_name_for_run(run_id: &str, service: &str) -> String {
 }
 
 async fn mark_service_ready(state: &AppState, run_id: &str, service: &str) -> Result<()> {
-    let start_monitor = {
+    let (start_monitor, events) = {
         let mut guard = state.state.lock().await;
+        let mut start_monitor = false;
+        let mut events = Vec::new();
         if let Some(run) = guard.runs.get_mut(run_id) {
             if let Some(svc) = run.services.get_mut(service) {
-                svc.state = ServiceState::Ready;
+                if let Some(event) = set_service_state(run_id, service, svc, ServiceState::Ready) {
+                    events.push(event);
+                }
                 svc.last_failure = None;
                 if svc.health.is_none() && !matches!(svc.readiness.kind, ReadinessKind::Exit) {
                     svc.health = Some(HealthHandle {
                         stop_flag: Arc::new(AtomicBool::new(false)),
                         stats: Arc::new(std::sync::Mutex::new(HealthSnapshot::default())),
                     });
-                    true
-                } else {
-                    false
+                    start_monitor = true;
                 }
-            } else {
-                false
             }
-        } else {
-            false
+            if let Some(event) = recompute_run_state(run) {
+                events.push(event);
+            }
         }
+        (start_monitor, events)
     };
-    {
-        let mut guard = state.state.lock().await;
-        if let Some(run) = guard.runs.get_mut(run_id) {
-            recompute_run_state(run);
-        }
-    }
+    emit_events(state, events);
     if start_monitor {
         start_health_monitor(state.clone(), run_id.to_string(), service.to_string());
     }
@@ -2918,45 +3472,24 @@ async fn mark_service_failed(
     service: &str,
     reason: &str,
 ) -> Result<()> {
-    let mut guard = state.state.lock().await;
-    if let Some(run) = guard.runs.get_mut(run_id) {
-        if let Some(svc) = run.services.get_mut(service) {
-            svc.state = ServiceState::Failed;
-            svc.last_failure = Some(reason.to_string());
+    let events = {
+        let mut guard = state.state.lock().await;
+        let mut events = Vec::new();
+        if let Some(run) = guard.runs.get_mut(run_id) {
+            if let Some(svc) = run.services.get_mut(service) {
+                if let Some(event) = set_service_state(run_id, service, svc, ServiceState::Failed) {
+                    events.push(event);
+                }
+                svc.last_failure = Some(reason.to_string());
+            }
+            if let Some(event) = recompute_run_state(run) {
+                events.push(event);
+            }
         }
-        recompute_run_state(run);
-    }
+        events
+    };
+    emit_events(state, events);
     Ok(())
-}
-
-fn recompute_run_state(run: &mut RunState) {
-    if matches!(run.state, RunLifecycle::Stopped) {
-        return;
-    }
-    let mut all_ready = true;
-    let mut any_degraded = false;
-    for svc in run.services.values() {
-        match svc.state {
-            ServiceState::Ready => {}
-            ServiceState::Starting => {
-                all_ready = false;
-            }
-            ServiceState::Degraded | ServiceState::Failed => {
-                any_degraded = true;
-                all_ready = false;
-            }
-            ServiceState::Stopped => {
-                all_ready = false;
-            }
-        }
-    }
-    if any_degraded {
-        run.state = RunLifecycle::Degraded;
-    } else if all_ready {
-        run.state = RunLifecycle::Running;
-    } else {
-        run.state = RunLifecycle::Starting;
-    }
 }
 
 fn start_health_monitor(state: AppState, run_id: String, service: String) {
@@ -3048,42 +3581,53 @@ fn start_health_monitor(state: AppState, run_id: String, service: String) {
                 Transition::Healthy
             };
 
-            let (changed, should_restart) = match transition {
-                Transition::Healthy => (false, false),
+            let (events, should_restart) = match transition {
+                Transition::Healthy => (Vec::new(), false),
                 Transition::RecoverToReady => {
-                    let mut changed = false;
                     let mut guard = state.state.lock().await;
+                    let mut events = Vec::new();
                     if let Some(run) = guard.runs.get_mut(&run_id) {
                         if let Some(svc) = run.services.get_mut(&service)
                             && svc.state == ServiceState::Degraded
                             && svc.last_failure.as_deref() == Some("health checks failing")
                         {
-                            svc.state = ServiceState::Ready;
+                            if let Some(event) =
+                                set_service_state(&run_id, &service, svc, ServiceState::Ready)
+                            {
+                                events.push(event);
+                            }
                             svc.last_failure = None;
-                            changed = true;
                         }
-                        recompute_run_state(run);
+                        if let Some(event) = recompute_run_state(run) {
+                            events.push(event);
+                        }
                     }
-                    (changed, false)
+                    (events, false)
                 }
                 Transition::MarkDegraded => {
-                    let mut changed = false;
                     let mut guard = state.state.lock().await;
+                    let mut events = Vec::new();
                     if let Some(run) = guard.runs.get_mut(&run_id) {
                         if let Some(svc) = run.services.get_mut(&service)
                             && svc.state == ServiceState::Ready
                         {
-                            svc.state = ServiceState::Degraded;
+                            if let Some(event) =
+                                set_service_state(&run_id, &service, svc, ServiceState::Degraded)
+                            {
+                                events.push(event);
+                            }
                             svc.last_failure = Some("health checks failing".to_string());
-                            changed = true;
                         }
-                        recompute_run_state(run);
+                        if let Some(event) = recompute_run_state(run) {
+                            events.push(event);
+                        }
                     }
-                    drop(guard);
-                    let needs_restart = changed && restart_count < 3;
-                    (changed, needs_restart)
+                    let needs_restart = !events.is_empty() && restart_count < 3;
+                    (events, needs_restart)
                 }
             };
+            let changed = !events.is_empty();
+            emit_events(&state, events);
 
             if changed && let Err(err) = persist_manifest(&state, &run_id).await {
                 eprintln!(
@@ -3123,17 +3667,26 @@ fn start_health_monitor(state: AppState, run_id: String, service: String) {
                 }
 
                 if restart_count >= 3 {
-                    {
+                    let events = {
                         let mut guard = state.state.lock().await;
+                        let mut events = Vec::new();
                         if let Some(run) = guard.runs.get_mut(&run_id) {
                             if let Some(svc) = run.services.get_mut(&service) {
-                                svc.state = ServiceState::Failed;
+                                if let Some(event) =
+                                    set_service_state(&run_id, &service, svc, ServiceState::Failed)
+                                {
+                                    events.push(event);
+                                }
                                 svc.last_failure =
                                     Some("health restart limit exceeded".to_string());
                             }
-                            recompute_run_state(run);
+                            if let Some(event) = recompute_run_state(run) {
+                                events.push(event);
+                            }
                         }
-                    }
+                        events
+                    };
+                    emit_events(&state, events);
                     if let Err(err) = persist_manifest(&state, &run_id).await {
                         eprintln!(
                             "devstack: failed to persist manifest after restart limit for {run_id}/{service}: {err}"
@@ -3281,16 +3834,24 @@ async fn orchestrate_down(state: &AppState, run_id: &str, purge: bool) -> AppRes
         let _ = state.systemd.stop_unit(&unit_name).await;
     }
 
-    {
+    let events = {
         let mut guard = state.state.lock().await;
+        let mut events = Vec::new();
         if let Some(run) = guard.runs.get_mut(run_id) {
             run.state = RunLifecycle::Stopped;
             run.stopped_at = Some(now_rfc3339());
-            for svc in run.services.values_mut() {
-                svc.state = ServiceState::Stopped;
+            for (service_name, svc) in &mut run.services {
+                if let Some(event) =
+                    set_service_state(run_id, service_name, svc, ServiceState::Stopped)
+                {
+                    events.push(event);
+                }
             }
+            events.push(run_state_changed_event(run));
         }
-    }
+        events
+    };
+    emit_events(state, events);
 
     let manifest = persist_manifest(state, run_id)
         .await
@@ -3298,9 +3859,12 @@ async fn orchestrate_down(state: &AppState, run_id: &str, purge: bool) -> AppRes
     if purge {
         let run_dir = paths::run_dir(&RunId::new(run_id)).map_err(AppError::from)?;
         let _ = std::fs::remove_dir_all(run_dir);
-        {
+        let removed = {
             let mut guard = state.state.lock().await;
-            guard.runs.remove(run_id);
+            guard.runs.remove(run_id).is_some()
+        };
+        if removed {
+            emit_event(state, run_removed_event(run_id));
         }
         // Best-effort: remove derived index entries for this run.
         let index = state.log_index.clone();
@@ -3334,16 +3898,24 @@ async fn orchestrate_kill(state: &AppState, run_id: &str) -> AppResult<RunManife
         let _ = state.systemd.stop_unit(&unit_name).await;
     }
 
-    {
+    let events = {
         let mut guard = state.state.lock().await;
+        let mut events = Vec::new();
         if let Some(run) = guard.runs.get_mut(run_id) {
             run.state = RunLifecycle::Stopped;
             run.stopped_at = Some(now_rfc3339());
-            for svc in run.services.values_mut() {
-                svc.state = ServiceState::Stopped;
+            for (service_name, svc) in &mut run.services {
+                if let Some(event) =
+                    set_service_state(run_id, service_name, svc, ServiceState::Stopped)
+                {
+                    events.push(event);
+                }
             }
+            events.push(run_state_changed_event(run));
         }
-    }
+        events
+    };
+    emit_events(state, events);
 
     let manifest = persist_manifest(state, run_id)
         .await
@@ -3357,18 +3929,21 @@ async fn orchestrate_restart_service(
     service: &str,
     no_wait: bool,
 ) -> AppResult<RunManifest> {
-    let (unit_name, readiness, port, scheme, log_path, cwd, env) = {
+    let (unit_name, readiness, port, scheme, log_path, cwd, env, events) = {
         let mut guard = state.state.lock().await;
         let run = guard
             .runs
             .get_mut(run_id)
             .ok_or_else(|| AppError::not_found(format!("run {run_id} not found")))?;
+        let mut events = Vec::new();
         let (unit_name, readiness, port, scheme, log_path, cwd, env) = {
             let svc = run
                 .services
                 .get_mut(service)
                 .ok_or_else(|| AppError::not_found(format!("service {service} not found")))?;
-            svc.state = ServiceState::Starting;
+            if let Some(event) = set_service_state(run_id, service, svc, ServiceState::Starting) {
+                events.push(event);
+            }
             svc.last_failure = None;
             (
                 svc.unit_name.clone(),
@@ -3380,9 +3955,14 @@ async fn orchestrate_restart_service(
                 svc.env.clone(),
             )
         };
-        recompute_run_state(run);
-        (unit_name, readiness, port, scheme, log_path, cwd, env)
+        if let Some(event) = recompute_run_state(run) {
+            events.push(event);
+        }
+        (
+            unit_name, readiness, port, scheme, log_path, cwd, env, events,
+        )
     };
+    emit_events(state, events);
 
     state
         .systemd
@@ -3735,18 +4315,27 @@ async fn build_status(state: &AppState, run_id: &str) -> AppResult<RunStatusResp
     };
 
     if !reconcile.is_empty() {
-        {
+        let events = {
             let mut guard = state.state.lock().await;
+            let mut events = Vec::new();
             if let Some(run) = guard.runs.get_mut(run_id) {
                 for (svc_name, new_state, new_failure) in &reconcile {
                     if let Some(svc) = run.services.get_mut(svc_name) {
-                        svc.state = new_state.clone();
+                        if let Some(event) =
+                            set_service_state(run_id, svc_name, svc, new_state.clone())
+                        {
+                            events.push(event);
+                        }
                         svc.last_failure = new_failure.clone();
                     }
                 }
-                recompute_run_state(run);
+                if let Some(event) = recompute_run_state(run) {
+                    events.push(event);
+                }
             }
-        }
+            events
+        };
+        emit_events(state, events);
         let _ = persist_manifest(state, run_id).await;
     }
 
@@ -3907,6 +4496,9 @@ fn spawn_periodic_gc(state: AppState) {
                     "[gc] periodic: evicted {} stopped runs from memory",
                     evicted.len()
                 );
+                for run_id in &evicted {
+                    emit_event(&state, run_removed_event(run_id.clone()));
+                }
                 let index = state.log_index.clone();
                 let _ = tokio::task::spawn_blocking(move || {
                     for run_id in evicted {
@@ -3965,7 +4557,8 @@ async fn ingest_active_runs_once(state: &AppState) -> Result<()> {
             sources.extend(discover_task_log_sources(&run_id)?);
         }
         if !sources.is_empty() {
-            index.ingest_sources(&sources)
+            index
+                .ingest_sources(&sources)
                 .with_context(|| format!("ingest logs for active runs [{}]", run_ids.join(", ")))?;
         }
         Ok::<(), anyhow::Error>(())
@@ -3984,7 +4577,8 @@ async fn ingest_sources_once(state: &AppState) -> Result<()> {
         let sources = all_source_log_sources(&ledger)
             .with_context(|| format!("resolve source paths for [{}]", source_names.join(", ")))?;
         if !sources.is_empty() {
-            index.ingest_sources(&sources)
+            index
+                .ingest_sources(&sources)
                 .with_context(|| format!("ingest logs for [{}]", source_names.join(", ")))?;
         }
         Ok::<(), anyhow::Error>(())
@@ -4071,6 +4665,9 @@ async fn run_gc(state: &AppState, req: GcRequest) -> AppResult<GcResponse> {
     };
 
     if !removed_runs.is_empty() {
+        for run_id in &removed_runs {
+            emit_event(state, run_removed_event(run_id.clone()));
+        }
         let index = state.log_index.clone();
         let removed = removed_runs.clone();
         // Best-effort cleanup of derived index entries.
@@ -4134,16 +4731,19 @@ async fn ensure_globals(
         let log_path = paths::global_log_path(project_dir, name)?;
         std::fs::create_dir_all(paths::global_logs_dir(project_dir, name)?)?;
 
-        let run_id = RunId::new(format!("global-{}", paths::global_key(project_dir, name)?));
+        let key = paths::global_key(project_dir, name)?;
+        let run_id = RunId::new(format!("global-{key}"));
         let unit_name = unit_name_for_run(run_id.as_str(), name);
         let manifest_path = paths::global_manifest_path(project_dir, name)?;
         let mut reuse_port: Option<u16> = None;
+        let mut previous_lifecycle: Option<RunLifecycle> = None;
 
         if manifest_path.exists()
             && let Ok(existing) = RunManifest::load_from_path(&manifest_path)
             && let Some(service) = existing.services.get(name)
         {
             reuse_port = service.port;
+            previous_lifecycle = Some(existing.state.clone());
             let status = state.systemd.unit_status(&unit_name).await.ok().flatten();
             if let Some(status) = status
                 && status.active_state == "active"
@@ -4282,6 +4882,12 @@ async fn ensure_globals(
             stopped_at: None,
         };
         manifest.write_to_path(&manifest_path)?;
+        if previous_lifecycle.as_ref() != Some(&manifest.state) {
+            emit_event(
+                state,
+                global_state_changed_event(&key, manifest.state.clone()),
+            );
+        }
 
         if let Some(err) = startup_error {
             return Err(err);
@@ -4659,11 +5265,14 @@ mod tests {
         let log_index_dir = tempfile::tempdir().unwrap();
         let log_index_path = log_index_dir.path().to_path_buf();
         std::mem::forget(log_index_dir);
+        let (event_tx, _) = broadcast::channel(1024);
         AppState {
             systemd,
             state: Arc::new(Mutex::new(DaemonState::default())),
             binary_path: PathBuf::from("/bin/true"),
             log_index: Arc::new(LogIndex::open_or_create_in(&log_index_path).unwrap()),
+            event_tx,
+            log_tails: Arc::new(Mutex::new(RunLogTailRegistry::default())),
             _lock: Arc::new(lock_file),
         }
     }
@@ -5227,6 +5836,118 @@ mod tests {
         assert_eq!(
             new_messages,
             vec!["Can you look at this?\nRun `devstack logs --run run-1 --service api --level error`".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn mark_service_ready_emits_service_and_run_events() {
+        let state = test_state();
+        let services = BTreeMap::from([(
+            "api".to_string(),
+            ServiceRuntime {
+                name: "api".to_string(),
+                unit_name: "api.service".to_string(),
+                port: Some(3000),
+                scheme: "http".to_string(),
+                url: Some("http://localhost:3000".to_string()),
+                deps: Vec::new(),
+                readiness: ReadinessSpec::new(ReadinessKind::Tcp),
+                log_path: PathBuf::from("/tmp/api.log"),
+                cwd: PathBuf::from("/tmp"),
+                env: BTreeMap::new(),
+                state: ServiceState::Starting,
+                last_failure: None,
+                health: None,
+                last_started_at: Some(now_rfc3339()),
+                watch_hash: Some("hash".to_string()),
+                watch_patterns: Vec::new(),
+                ignore_patterns: Vec::new(),
+                watch_extra_files: Vec::new(),
+                watch_fingerprint: Vec::new(),
+                auto_restart: false,
+                watch_paused: false,
+                watch_handle: None,
+            },
+        )]);
+
+        {
+            let mut guard = state.state.lock().await;
+            guard.runs.insert(
+                "run-1".to_string(),
+                RunState {
+                    run_id: "run-1".to_string(),
+                    stack: "dev".to_string(),
+                    project_dir: PathBuf::from("/tmp/project"),
+                    base_env: BTreeMap::new(),
+                    services,
+                    state: RunLifecycle::Starting,
+                    created_at: now_rfc3339(),
+                    stopped_at: None,
+                },
+            );
+        }
+
+        let mut rx = state.event_tx.subscribe();
+        mark_service_ready(&state, "run-1", "api").await.unwrap();
+
+        assert_eq!(
+            rx.recv().await.unwrap(),
+            DaemonEvent::Service(DaemonServiceEvent {
+                kind: DaemonServiceEventKind::StateChanged,
+                run_id: "run-1".to_string(),
+                service: "api".to_string(),
+                state: ServiceState::Ready,
+            })
+        );
+        assert_eq!(
+            rx.recv().await.unwrap(),
+            DaemonEvent::Run(DaemonRunEvent {
+                kind: DaemonRunEventKind::StateChanged,
+                run_id: "run-1".to_string(),
+                state: Some(RunLifecycle::Running),
+                stack: None,
+                project_dir: None,
+            })
+        );
+    }
+
+    #[test]
+    fn read_new_log_events_parses_incremental_jsonl() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("api.log");
+        std::fs::write(
+            &log_path,
+            "{\"time\":\"2025-01-01T00:00:00Z\",\"stream\":\"stdout\",\"level\":\"info\",\"msg\":\"ready\",\"code\":200}",
+        )
+        .unwrap();
+
+        let mut cursor = LogTailCursor { offset: 0 };
+        let events = read_new_log_events("run-1", &log_path, &mut cursor).unwrap();
+        assert!(events.is_empty());
+        assert_eq!(cursor.offset, 0);
+
+        std::fs::write(
+            &log_path,
+            concat!(
+                "{\"time\":\"2025-01-01T00:00:00Z\",\"stream\":\"stdout\",\"level\":\"info\",\"msg\":\"ready\",\"code\":200}\n",
+                "{\"time\":\"2025-01-01T00:00:01Z\",\"stream\":\"stderr\",\"level\":\"error\",\"msg\":\"boom\",\"requestId\":\"abc\"}\n"
+            ),
+        )
+        .unwrap();
+
+        let events = read_new_log_events("run-1", &log_path, &mut cursor).unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].service, "api");
+        assert_eq!(events[0].message, "ready");
+        assert_eq!(
+            events[0].attributes.get("code").map(String::as_str),
+            Some("200")
+        );
+        assert_eq!(events[1].stream, "stderr");
+        assert_eq!(events[1].level, "error");
+        assert_eq!(
+            events[1].attributes.get("requestid").map(String::as_str),
+            Some("abc")
         );
     }
 
