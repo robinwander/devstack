@@ -4175,46 +4175,74 @@ fn recent_error_from_raw(raw_line: &str) -> RecentErrorLine {
     RecentErrorLine { timestamp, message }
 }
 
-async fn recent_stderr_lines(
-    state: &AppState,
-    run_id: &str,
-    service: &str,
-    log_path: &Path,
-) -> Vec<RecentErrorLine> {
-    let index = state.log_index.clone();
-    let run_id = run_id.to_string();
-    let service = service.to_string();
+fn push_recent_stderr_line(lines: &mut Vec<RecentErrorLine>, raw_line: &[u8], limit: usize) {
+    if lines.len() >= limit {
+        return;
+    }
+
+    let raw_line = String::from_utf8_lossy(raw_line);
+    let raw_line = crate::util::strip_ansi_if_needed(raw_line.trim_end_matches(['\r', '\n']));
+    if raw_line.is_empty() {
+        return;
+    }
+
+    let (stream, _) = extract_log_content(&raw_line);
+    if stream != "stderr" {
+        return;
+    }
+
+    lines.push(recent_error_from_raw(&raw_line));
+}
+
+fn recent_stderr_lines_from_file(log_path: &Path, limit: usize) -> Result<Vec<RecentErrorLine>> {
+    if limit == 0 || !log_path.exists() {
+        return Ok(Vec::new());
+    }
+
+    const CHUNK_SIZE: usize = 64 * 1024;
+
+    let mut file = File::open(log_path)
+        .with_context(|| format!("open log file {}", log_path.to_string_lossy()))?;
+    let mut offset = file.metadata()?.len();
+    let mut trailing = Vec::new();
+    let mut lines = Vec::with_capacity(limit);
+
+    while offset > 0 && lines.len() < limit {
+        let read_len = (offset as usize).min(CHUNK_SIZE);
+        offset -= read_len as u64;
+
+        let mut chunk = vec![0; read_len];
+        file.seek(SeekFrom::Start(offset))?;
+        file.read_exact(&mut chunk)?;
+        chunk.extend_from_slice(&trailing);
+
+        let mut line_end = chunk.len();
+        while let Some(newline_idx) = chunk[..line_end].iter().rposition(|byte| *byte == b'\n') {
+            push_recent_stderr_line(&mut lines, &chunk[newline_idx + 1..line_end], limit);
+            line_end = newline_idx;
+            if lines.len() >= limit {
+                break;
+            }
+        }
+
+        trailing = chunk[..line_end].to_vec();
+    }
+
+    if lines.len() < limit && !trailing.is_empty() {
+        push_recent_stderr_line(&mut lines, &trailing, limit);
+    }
+
+    lines.reverse();
+    Ok(lines)
+}
+
+async fn recent_stderr_lines(log_path: &Path, limit: usize) -> Vec<RecentErrorLine> {
     let log_path = log_path.to_path_buf();
-
-    let response = tokio::task::spawn_blocking(move || {
-        index.search_service(
-            &run_id,
-            &service,
-            log_path.as_path(),
-            LogsQuery {
-                last: Some(3),
-                since: None,
-                search: None,
-                level: None,
-                stream: Some("stderr".to_string()),
-                after: None,
-            },
-        )
-    })
-    .await;
-
-    let Ok(response) = response else {
-        return Vec::new();
-    };
-    let Ok(response) = response else {
-        return Vec::new();
-    };
-
-    response
-        .lines
-        .iter()
-        .map(|line| recent_error_from_raw(line))
-        .collect()
+    tokio::task::spawn_blocking(move || recent_stderr_lines_from_file(log_path.as_path(), limit))
+        .await
+        .ok()
+        .and_then(|result| result.ok())
+        .unwrap_or_default()
 }
 
 async fn build_status(state: &AppState, run_id: &str) -> AppResult<RunStatusResponse> {
@@ -4271,7 +4299,7 @@ async fn build_status(state: &AppState, run_id: &str) -> AppResult<RunStatusResp
 
         let health = svc.health.as_ref().map(health_status_from_handle);
         let health_check_stats = health.as_ref().map(health_check_stats_from_status);
-        let recent_errors = recent_stderr_lines(state, run_id, &name, &svc.log_path).await;
+        let recent_errors = recent_stderr_lines(&svc.log_path, 3).await;
 
         services.insert(
             name.clone(),
@@ -5949,6 +5977,47 @@ mod tests {
             events[1].attributes.get("requestid").map(String::as_str),
             Some("abc")
         );
+    }
+
+    #[test]
+    fn recent_stderr_lines_from_file_returns_latest_stderr_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("api.log");
+        let large_stdout = "x".repeat(70_000);
+        let content = [
+            "{\"time\":\"2025-01-01T00:00:00Z\",\"stream\":\"stdout\",\"msg\":\"ready\"}".to_string(),
+            "{\"time\":\"2025-01-01T00:00:01Z\",\"stream\":\"stderr\",\"msg\":\"first error\"}".to_string(),
+            format!(
+                "{{\"time\":\"2025-01-01T00:00:02Z\",\"stream\":\"stdout\",\"msg\":\"{large_stdout}\"}}"
+            ),
+            "{\"time\":\"2025-01-01T00:00:03Z\",\"stream\":\"stderr\",\"msg\":\"second error\"}".to_string(),
+            "{\"time\":\"2025-01-01T00:00:04Z\",\"stream\":\"stderr\",\"msg\":\"third error\"}".to_string(),
+        ]
+        .join("\n");
+        std::fs::write(&log_path, content).unwrap();
+
+        let lines = recent_stderr_lines_from_file(&log_path, 2).unwrap();
+        assert_eq!(
+            lines
+                .iter()
+                .map(|line| line.message.as_str())
+                .collect::<Vec<_>>(),
+            vec!["second error", "third error"]
+        );
+        assert_eq!(
+            lines
+                .iter()
+                .map(|line| line.timestamp.as_deref())
+                .collect::<Vec<_>>(),
+            vec![Some("2025-01-01T00:00:03Z"), Some("2025-01-01T00:00:04Z")]
+        );
+    }
+
+    #[test]
+    fn recent_stderr_lines_from_file_returns_empty_for_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let lines = recent_stderr_lines_from_file(&dir.path().join("missing.log"), 3).unwrap();
+        assert!(lines.is_empty());
     }
 
     #[test]
