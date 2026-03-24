@@ -300,6 +300,7 @@ impl ConfigFile {
                     .map_err(|err| anyhow!("invalid global service name: {err}"))?;
                 validate_service_port("globals", svc_name, svc)?;
                 validate_service_readiness("globals", svc_name, svc)?;
+                validate_service_post_init_tasks("globals", svc_name, svc, self.tasks.as_ref())?;
                 validate_service_auto_restart("globals", svc_name, svc)?;
             }
         }
@@ -1128,5 +1129,26 @@ post_init = ["create-resources"]
             svc.post_init.as_deref(),
             Some(vec!["create-resources".to_string()].as_slice())
         );
+    }
+
+    #[test]
+    fn global_post_init_references_known_task() {
+        let toml_str = r#"
+version = 1
+
+[tasks.seed]
+cmd = "echo seed"
+
+[stacks.app.services.api]
+cmd = "echo api"
+
+[globals.moto]
+cmd = "echo moto"
+port = "none"
+readiness = { delay_ms = 1 }
+post_init = ["seed"]
+"#;
+        let config: ConfigFile = toml::from_str(toml_str).unwrap();
+        config.validate().unwrap();
     }
 }

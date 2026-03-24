@@ -193,7 +193,9 @@ pub fn run_task(
     if !trailing_args.is_empty() {
         for arg in trailing_args {
             cmd.push(' ');
-            cmd.push_str(&shlex::try_quote(arg).map_err(|e| anyhow!("failed to shell-escape arg: {e}"))?);
+            cmd.push_str(
+                &shlex::try_quote(arg).map_err(|e| anyhow!("failed to shell-escape arg: {e}"))?,
+            );
         }
     }
     let cwd = match cwd {
@@ -301,23 +303,24 @@ pub fn run_task(
     Ok(result)
 }
 
-/// Run init tasks for a service. If any task fails, returns an error.
-pub fn run_init_tasks(
+fn run_service_tasks(
     tasks: &BTreeMap<String, TaskConfig>,
-    init: &[String],
+    task_names: &[String],
     project_dir: &Path,
     log_scope: TaskLogScope<'_>,
     history_path: &Path,
     verbose: bool,
+    skip_if_unchanged: bool,
+    phase: &str,
 ) -> Result<()> {
-    for name in init {
+    for name in task_names {
         let task = tasks
             .get(name)
-            .ok_or_else(|| anyhow!("unknown init task '{name}'"))?;
+            .ok_or_else(|| anyhow!("unknown {phase} task '{name}'"))?;
 
         let watch = task_watch(task);
 
-        if !watch.is_empty() {
+        if skip_if_unchanged && !watch.is_empty() {
             let cwd = task_cwd(task, project_dir);
             let new_hash = compute_watch_hash(&cwd, &watch)?;
             if load_stored_hash(project_dir, name)?.as_deref() == Some(new_hash.as_str()) {
@@ -325,11 +328,19 @@ pub fn run_init_tasks(
                 continue;
             }
 
-            let result = run_task(name, task, project_dir, log_scope, history_path, verbose, &[])?;
+            let result = run_task(
+                name,
+                task,
+                project_dir,
+                log_scope,
+                history_path,
+                verbose,
+                &[],
+            )?;
             if !result.success() {
                 emit_task_failure_summary(name, &result);
                 return Err(anyhow!(
-                    "init task '{name}' failed with exit code {}",
+                    "{phase} task '{name}' failed with exit code {}",
                     result.exit_code
                 ));
             }
@@ -339,11 +350,19 @@ pub fn run_init_tasks(
             continue;
         }
 
-        let result = run_task(name, task, project_dir, log_scope, history_path, verbose, &[])?;
+        let result = run_task(
+            name,
+            task,
+            project_dir,
+            log_scope,
+            history_path,
+            verbose,
+            &[],
+        )?;
         if !result.success() {
             emit_task_failure_summary(name, &result);
             return Err(anyhow!(
-                "init task '{name}' failed with exit code {}",
+                "{phase} task '{name}' failed with exit code {}",
                 result.exit_code
             ));
         }
@@ -351,6 +370,47 @@ pub fn run_init_tasks(
         eprintln!("✓ {name} ({})", format_task_duration(result.duration));
     }
     Ok(())
+}
+
+/// Run init tasks for a service. If any task fails, returns an error.
+pub fn run_init_tasks(
+    tasks: &BTreeMap<String, TaskConfig>,
+    init: &[String],
+    project_dir: &Path,
+    log_scope: TaskLogScope<'_>,
+    history_path: &Path,
+    verbose: bool,
+) -> Result<()> {
+    run_service_tasks(
+        tasks,
+        init,
+        project_dir,
+        log_scope,
+        history_path,
+        verbose,
+        true,
+        "init",
+    )
+}
+
+pub fn run_post_init_tasks(
+    tasks: &BTreeMap<String, TaskConfig>,
+    post_init: &[String],
+    project_dir: &Path,
+    log_scope: TaskLogScope<'_>,
+    history_path: &Path,
+    verbose: bool,
+) -> Result<()> {
+    run_service_tasks(
+        tasks,
+        post_init,
+        project_dir,
+        log_scope,
+        history_path,
+        verbose,
+        false,
+        "post_init",
+    )
 }
 
 fn emit_task_failure_summary(name: &str, result: &TaskResult) {
@@ -568,5 +628,95 @@ mod tests {
         .unwrap();
 
         assert!(result.success());
+    }
+
+    #[test]
+    fn init_tasks_skip_when_watch_hash_is_unchanged() {
+        let project_dir = tempfile::tempdir().unwrap();
+        let history_path = project_dir.path().join("history.json");
+        let counter_path = project_dir.path().join("counter.txt");
+        let watched = project_dir.path().join("schema.txt");
+        std::fs::write(&watched, "v1\n").unwrap();
+
+        let mut tasks = BTreeMap::new();
+        tasks.insert(
+            "seed".to_string(),
+            TaskConfig::Structured(crate::config::TaskDefinition {
+                cmd: format!(
+                    "python -c \"from pathlib import Path; p = Path(r'{}'); current = int(p.read_text()) if p.exists() else 0; p.write_text(str(current + 1))\"",
+                    counter_path.display()
+                ),
+                cwd: None,
+                watch: vec!["schema.txt".to_string()],
+                env: BTreeMap::new(),
+                env_file: None,
+            }),
+        );
+
+        run_init_tasks(
+            &tasks,
+            &["seed".to_string()],
+            project_dir.path(),
+            TaskLogScope::AdHoc,
+            &history_path,
+            false,
+        )
+        .unwrap();
+        run_init_tasks(
+            &tasks,
+            &["seed".to_string()],
+            project_dir.path(),
+            TaskLogScope::AdHoc,
+            &history_path,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(std::fs::read_to_string(counter_path).unwrap(), "1");
+    }
+
+    #[test]
+    fn post_init_tasks_run_again_when_watch_hash_is_unchanged() {
+        let project_dir = tempfile::tempdir().unwrap();
+        let history_path = project_dir.path().join("history.json");
+        let counter_path = project_dir.path().join("counter.txt");
+        let watched = project_dir.path().join("schema.txt");
+        std::fs::write(&watched, "v1\n").unwrap();
+
+        let mut tasks = BTreeMap::new();
+        tasks.insert(
+            "seed".to_string(),
+            TaskConfig::Structured(crate::config::TaskDefinition {
+                cmd: format!(
+                    "python -c \"from pathlib import Path; p = Path(r'{}'); current = int(p.read_text()) if p.exists() else 0; p.write_text(str(current + 1))\"",
+                    counter_path.display()
+                ),
+                cwd: None,
+                watch: vec!["schema.txt".to_string()],
+                env: BTreeMap::new(),
+                env_file: None,
+            }),
+        );
+
+        run_post_init_tasks(
+            &tasks,
+            &["seed".to_string()],
+            project_dir.path(),
+            TaskLogScope::AdHoc,
+            &history_path,
+            false,
+        )
+        .unwrap();
+        run_post_init_tasks(
+            &tasks,
+            &["seed".to_string()],
+            project_dir.path(),
+            TaskLogScope::AdHoc,
+            &history_path,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(std::fs::read_to_string(counter_path).unwrap(), "2");
     }
 }

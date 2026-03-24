@@ -2259,6 +2259,27 @@ async fn run_init_tasks_blocking(
     .map_err(|err| anyhow!("init task worker failed: {err}"))?
 }
 
+async fn run_post_init_tasks_blocking(
+    tasks_map: BTreeMap<String, TaskConfig>,
+    post_init_tasks: Vec<String>,
+    project_dir: PathBuf,
+    run_id: RunId,
+) -> Result<()> {
+    let history_path = paths::task_history_path(&run_id)?;
+    tokio::task::spawn_blocking(move || {
+        crate::tasks::run_post_init_tasks(
+            &tasks_map,
+            &post_init_tasks,
+            &project_dir,
+            crate::tasks::TaskLogScope::Run(&run_id),
+            &history_path,
+            false,
+        )
+    })
+    .await
+    .map_err(|err| anyhow!("post_init task worker failed: {err}"))?
+}
+
 async fn execute_detached_task(
     state: AppState,
     detached_task: DetachedTaskExecution,
@@ -2435,9 +2456,14 @@ async fn orchestrate_up(state: &AppState, req: UpRequest) -> AppResult<RunManife
 
     let mut port_map = allocate_ports(&stack_plan.services)
         .map_err(|err| AppError::bad_request(err.to_string()))?;
+    let tasks_map = config
+        .tasks
+        .as_ref()
+        .map(|tasks| tasks.as_map().clone())
+        .unwrap_or_default();
 
     let globals = config.globals_map();
-    let global_ports = ensure_globals(state, &globals, &project_dir, &config_dir)
+    let global_ports = ensure_globals(state, &globals, &tasks_map, &project_dir, &config_dir)
         .await
         .map_err(AppError::from)?;
 
@@ -2488,12 +2514,6 @@ async fn orchestrate_up(state: &AppState, req: UpRequest) -> AppResult<RunManife
     if let Some(event) = run_created {
         emit_event(state, event);
     }
-
-    let tasks_map = config
-        .tasks
-        .as_ref()
-        .map(|t| t.as_map().clone())
-        .unwrap_or_default();
 
     for svc_name in &stack_plan.order {
         let svc = stack_plan
@@ -2624,15 +2644,14 @@ async fn orchestrate_up(state: &AppState, req: UpRequest) -> AppResult<RunManife
 
         // Only proceed with readiness check if service started successfully
         if start_result.is_ok()
-            && let Err(err) =
-                handle_readiness(
-                    state.clone(),
-                    run_id.as_str(),
-                    &prepared,
-                    req.no_wait,
-                    build_post_init_context(svc, &tasks_map, &project_dir, &run_id),
-                )
-                .await
+            && let Err(err) = handle_readiness(
+                state.clone(),
+                run_id.as_str(),
+                &prepared,
+                req.no_wait,
+                build_post_init_context(svc, &tasks_map, &project_dir, &run_id),
+            )
+            .await
         {
             persist_manifest_on_error(state, run_id.as_str()).await;
             return Err(err);
@@ -2729,9 +2748,14 @@ async fn orchestrate_refresh_run(
 
     let mut port_map = resolve_ports_for_refresh(&stack_plan.services, &existing, reuse_ports)
         .map_err(AppError::from)?;
+    let tasks_map = config
+        .tasks
+        .as_ref()
+        .map(|tasks| tasks.as_map().clone())
+        .unwrap_or_default();
 
     let globals = config.globals_map();
-    let global_ports = ensure_globals(state, &globals, project_dir, config_dir)
+    let global_ports = ensure_globals(state, &globals, &tasks_map, project_dir, config_dir)
         .await
         .map_err(AppError::from)?;
 
@@ -2778,12 +2802,6 @@ async fn orchestrate_refresh_run(
     if let Ok(raw) = std::fs::read(config_path) {
         let _ = atomic_write(&snapshot_path, &raw);
     }
-
-    let tasks_map = config
-        .tasks
-        .as_ref()
-        .map(|t| t.as_map().clone())
-        .unwrap_or_default();
 
     for svc_name in &stack_plan.order {
         let svc = stack_plan
@@ -2967,15 +2985,14 @@ async fn orchestrate_refresh_run(
 
             // Only proceed with readiness check if service started successfully
             if start_result.is_ok()
-                && let Err(err) =
-                    handle_readiness(
-                        state.clone(),
-                        run_id.as_str(),
-                        &prepared,
-                        no_wait,
-                        build_post_init_context(svc, &tasks_map, project_dir, &run_id),
-                    )
-                    .await
+                && let Err(err) = handle_readiness(
+                    state.clone(),
+                    run_id.as_str(),
+                    &prepared,
+                    no_wait,
+                    build_post_init_context(svc, &tasks_map, project_dir, &run_id),
+                )
+                .await
             {
                 persist_manifest_on_error(state, run_id.as_str()).await;
                 return Err(err);
@@ -3761,6 +3778,34 @@ fn build_post_init_context(
     })
 }
 
+fn load_post_init_context_for_run_service(
+    run_id: &str,
+    stack: &str,
+    project_dir: &Path,
+    service: &str,
+) -> Result<Option<PostInitContext>> {
+    let snapshot_path = paths::run_snapshot_path(&RunId::new(run_id))?;
+    if !snapshot_path.exists() {
+        return Ok(None);
+    }
+
+    let config = ConfigFile::load_from_path(&snapshot_path)?;
+    let tasks_map = config
+        .tasks
+        .as_ref()
+        .map(|tasks| tasks.as_map().clone())
+        .unwrap_or_default();
+    let service_config = if stack == "globals" {
+        config.globals_map().get(service).cloned()
+    } else {
+        config.stack_plan(stack)?.services.get(service).cloned()
+    };
+
+    Ok(service_config.and_then(|svc| {
+        build_post_init_context(&svc, &tasks_map, project_dir, &RunId::new(run_id))
+    }))
+}
+
 async fn handle_readiness(
     state: AppState,
     run_id: &str,
@@ -3797,7 +3842,7 @@ async fn handle_readiness(
     match crate::readiness::wait_for_ready(&prepared.readiness, &ctx).await {
         Ok(()) => {
             if let Some(post_init) = post_init {
-                if let Err(err) = run_init_tasks_blocking(
+                if let Err(err) = run_post_init_tasks_blocking(
                     post_init.tasks_map,
                     post_init.post_init_tasks,
                     post_init.project_dir,
@@ -3909,7 +3954,7 @@ async fn mark_service_failed(
 
 fn start_health_monitor(state: AppState, run_id: String, service: String) {
     tokio::spawn(async move {
-        let (readiness, ctx, unit_name, stop_flag, stats) = {
+        let (readiness, ctx, stop_flag, stats) = {
             let guard = state.state.lock().await;
             let run = match guard.runs.get(&run_id) {
                 Some(run) => run,
@@ -3934,13 +3979,7 @@ fn start_health_monitor(state: AppState, run_id: String, service: String) {
                 unit_name: Some(svc.unit_name.clone()),
                 systemd: Some(state.systemd.clone()),
             };
-            (
-                svc.readiness.clone(),
-                ctx,
-                svc.unit_name.clone(),
-                stop_flag,
-                stats,
-            )
+            (svc.readiness.clone(), ctx, stop_flag, stats)
         };
 
         // All bookkeeping lives in the task — the global DaemonState mutex is
@@ -4075,8 +4114,9 @@ fn start_health_monitor(state: AppState, run_id: String, service: String) {
                     );
                 }
 
-                if let Err(err) = state.systemd.restart_unit(&unit_name).await {
-                    eprintln!("devstack: failed to restart {}: {}", service, err);
+                if let Err(err) = orchestrate_restart_service(&state, &run_id, &service, true).await
+                {
+                    eprintln!("devstack: failed to restart {}: {:?}", service, err);
                 } else {
                     eprintln!("devstack: restarted service {}", service);
                 }
@@ -4141,7 +4181,7 @@ fn spawn_readiness_task(
         match crate::readiness::wait_for_ready(&readiness, &ctx).await {
             Ok(()) => {
                 if let Some(post_init) = post_init {
-                    if let Err(err) = run_init_tasks_blocking(
+                    if let Err(err) = run_post_init_tasks_blocking(
                         post_init.tasks_map,
                         post_init.post_init_tasks,
                         post_init.project_dir,
@@ -4371,13 +4411,15 @@ async fn orchestrate_restart_service(
     service: &str,
     no_wait: bool,
 ) -> AppResult<RunManifest> {
-    let (unit_name, readiness, port, scheme, log_path, cwd, env, events) = {
+    let (unit_name, readiness, port, scheme, log_path, cwd, env, stack, project_dir, events) = {
         let mut guard = state.state.lock().await;
         let run = guard
             .runs
             .get_mut(run_id)
             .ok_or_else(|| AppError::not_found(format!("run {run_id} not found")))?;
         let mut events = Vec::new();
+        let stack = run.stack.clone();
+        let project_dir = run.project_dir.clone();
         let (unit_name, readiness, port, scheme, log_path, cwd, env) = {
             let svc = run
                 .services
@@ -4401,10 +4443,22 @@ async fn orchestrate_restart_service(
             events.push(event);
         }
         (
-            unit_name, readiness, port, scheme, log_path, cwd, env, events,
+            unit_name,
+            readiness,
+            port,
+            scheme,
+            log_path,
+            cwd,
+            env,
+            stack,
+            project_dir,
+            events,
         )
     };
     emit_events(state, events);
+
+    let post_init = load_post_init_context_for_run_service(run_id, &stack, &project_dir, service)
+        .map_err(AppError::from)?;
 
     state
         .systemd
@@ -4437,7 +4491,7 @@ async fn orchestrate_restart_service(
             cwd,
             env,
             unit_name.clone(),
-            None,
+            post_init,
         );
         return persist_manifest(state, run_id)
             .await
@@ -4455,6 +4509,24 @@ async fn orchestrate_restart_service(
     };
     match crate::readiness::wait_for_ready(&readiness, &ctx).await {
         Ok(()) => {
+            if let Some(post_init) = post_init {
+                if let Err(err) = run_post_init_tasks_blocking(
+                    post_init.tasks_map,
+                    post_init.post_init_tasks,
+                    post_init.project_dir,
+                    post_init.run_id,
+                )
+                .await
+                {
+                    let reason = format!("post_init task failed: {err}");
+                    eprintln!("[{service}] {reason}");
+                    mark_service_failed(state, run_id, service, &reason)
+                        .await
+                        .map_err(AppError::from)?;
+                    persist_manifest_on_error(state, run_id).await;
+                    return Err(AppError::Internal(anyhow!(reason)));
+                }
+            }
             mark_service_ready(state, run_id, service)
                 .await
                 .map_err(AppError::from)?;
@@ -5068,9 +5140,7 @@ async fn ingest_all_once(state: &AppState) -> Result<()> {
         sources.extend(external_sources);
 
         if !sources.is_empty() {
-            index
-                .ingest_sources(&sources)
-                .context("periodic ingest")?;
+            index.ingest_sources(&sources).context("periodic ingest")?;
         }
         Ok::<(), anyhow::Error>(())
     })
@@ -5211,6 +5281,7 @@ fn list_globals_from_disk() -> Result<Vec<GlobalSummary>> {
 async fn ensure_globals(
     state: &AppState,
     globals: &BTreeMap<String, ServiceConfig>,
+    tasks_map: &BTreeMap<String, TaskConfig>,
     project_dir: &Path,
     config_dir: &Path,
 ) -> Result<BTreeMap<String, Option<u16>>> {
@@ -5328,6 +5399,7 @@ async fn ensure_globals(
             unit_name: Some(unit_name.clone()),
             systemd: Some(state.systemd.clone()),
         };
+        let post_init = build_post_init_context(svc, tasks_map, project_dir, &run_id);
 
         let mut service_state = ServiceState::Ready;
         let mut lifecycle = RunLifecycle::Running;
@@ -5344,6 +5416,20 @@ async fn ensure_globals(
                     lifecycle = RunLifecycle::Degraded;
                     startup_error =
                         Some(anyhow!("global service '{name}' failed readiness: {err}"));
+                } else if let Some(post_init) = post_init {
+                    if let Err(err) = run_post_init_tasks_blocking(
+                        post_init.tasks_map,
+                        post_init.post_init_tasks,
+                        post_init.project_dir,
+                        post_init.run_id,
+                    )
+                    .await
+                    {
+                        service_state = ServiceState::Failed;
+                        lifecycle = RunLifecycle::Degraded;
+                        startup_error =
+                            Some(anyhow!("global service '{name}' post_init failed: {err}"));
+                    }
                 }
             }
             Err(err) => {
@@ -5773,6 +5859,46 @@ mod tests {
         test_state_for(Arc::new(MockSystemd))
     }
 
+    fn runtime_service(name: &str, cwd: &Path) -> ServiceRuntime {
+        ServiceRuntime {
+            name: name.to_string(),
+            unit_name: format!("{name}.service"),
+            port: None,
+            scheme: "http".to_string(),
+            url: None,
+            deps: Vec::new(),
+            readiness: ReadinessSpec::new(ReadinessKind::None),
+            log_path: cwd.join(format!("{name}.log")),
+            cwd: cwd.to_path_buf(),
+            env: BTreeMap::new(),
+            state: ServiceState::Ready,
+            last_failure: None,
+            health: None,
+            last_started_at: Some(now_rfc3339()),
+            watch_hash: Some("hash".to_string()),
+            watch_patterns: Vec::new(),
+            ignore_patterns: Vec::new(),
+            watch_extra_files: Vec::new(),
+            watch_fingerprint: Vec::new(),
+            auto_restart: false,
+            watch_paused: false,
+            watch_handle: None,
+        }
+    }
+
+    fn write_run_snapshot(run_id: &RunId, marker_path: &Path) {
+        let snapshot_path = paths::run_snapshot_path(run_id).unwrap();
+        std::fs::create_dir_all(snapshot_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            snapshot_path,
+            format!(
+                "version = 1\n\n[tasks.seed]\ncmd = \"printf ready > '{}'\"\n\n[stacks.dev.services.api]\ncmd = \"echo api\"\npost_init = [\"seed\"]\n",
+                marker_path.display()
+            ),
+        )
+        .unwrap();
+    }
+
     #[derive(Clone)]
     struct ExitReadySystemd {
         remain_after_exit: Arc<Mutex<Option<bool>>>,
@@ -5865,6 +5991,99 @@ mod tests {
         crate::readiness::wait_for_ready(&prepared.readiness, &ctx)
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn restart_service_runs_post_init_tasks() {
+        let state = test_state();
+        let project_dir = tempfile::tempdir().unwrap();
+        let run_id = RunId::new(format!("restart-post-init-{}", std::process::id()));
+        let marker_path = project_dir.path().join("post-init.txt");
+        write_run_snapshot(&run_id, &marker_path);
+
+        let services = BTreeMap::from([(
+            "api".to_string(),
+            runtime_service("api", project_dir.path()),
+        )]);
+        {
+            let mut guard = state.state.lock().await;
+            guard.runs.insert(
+                run_id.as_str().to_string(),
+                RunState {
+                    run_id: run_id.as_str().to_string(),
+                    stack: "dev".to_string(),
+                    project_dir: project_dir.path().to_path_buf(),
+                    base_env: BTreeMap::new(),
+                    services,
+                    state: RunLifecycle::Running,
+                    created_at: now_rfc3339(),
+                    stopped_at: None,
+                },
+            );
+        }
+
+        let manifest = orchestrate_restart_service(&state, run_id.as_str(), "api", false)
+            .await
+            .unwrap();
+
+        assert_eq!(manifest.services["api"].state, ServiceState::Ready);
+        assert_eq!(std::fs::read_to_string(marker_path).unwrap(), "ready");
+    }
+
+    #[tokio::test]
+    async fn restart_service_runs_post_init_tasks_when_no_wait_is_enabled() {
+        let state = test_state();
+        let project_dir = tempfile::tempdir().unwrap();
+        let run_id = RunId::new(format!("restart-post-init-nowait-{}", std::process::id()));
+        let marker_path = project_dir.path().join("post-init.txt");
+        write_run_snapshot(&run_id, &marker_path);
+
+        let services = BTreeMap::from([(
+            "api".to_string(),
+            runtime_service("api", project_dir.path()),
+        )]);
+        {
+            let mut guard = state.state.lock().await;
+            guard.runs.insert(
+                run_id.as_str().to_string(),
+                RunState {
+                    run_id: run_id.as_str().to_string(),
+                    stack: "dev".to_string(),
+                    project_dir: project_dir.path().to_path_buf(),
+                    base_env: BTreeMap::new(),
+                    services,
+                    state: RunLifecycle::Running,
+                    created_at: now_rfc3339(),
+                    stopped_at: None,
+                },
+            );
+        }
+
+        orchestrate_restart_service(&state, run_id.as_str(), "api", true)
+            .await
+            .unwrap();
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let service_ready = {
+                    let guard = state.state.lock().await;
+                    guard.runs[run_id.as_str()].services["api"].state == ServiceState::Ready
+                };
+                if marker_path.exists() && service_ready {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .unwrap();
+
+        let guard = state.state.lock().await;
+        assert_eq!(
+            guard.runs[run_id.as_str()].services["api"].state,
+            ServiceState::Ready
+        );
+        assert_eq!(std::fs::read_to_string(marker_path).unwrap(), "ready");
     }
 
     #[tokio::test]
