@@ -3658,10 +3658,9 @@ async fn start_prepared_service(
         ],
         ignore_failure: false,
     };
-    // Use Restart=no for initial startup to prevent systemd from aggressively
-    // restarting a failing service during startup. This ensures startup logs
-    // are preserved and visible when a service crashes during startup.
-    let restart_policy = if restart_existing { "on-failure" } else { "no" };
+    // Daemon-managed restarts must always flow back through readiness + post_init.
+    // Let the daemon decide when to restart a service instead of having systemd
+    // do an out-of-band on-failure restart.
     let properties = UnitProperties::new(
         format!("devstack {} {}", run_id.as_str(), prepared.name),
         &prepared.cwd,
@@ -3672,7 +3671,7 @@ async fn start_prepared_service(
             .collect(),
         exec,
     )
-    .with_restart(restart_policy)
+    .with_restart("no")
     .with_remain_after_exit(matches!(prepared.readiness.kind, ReadinessKind::Exit));
 
     state
@@ -5942,6 +5941,79 @@ mod tests {
             }
             Ok(None)
         }
+    }
+
+    #[derive(Clone)]
+    struct RestartPolicySystemd {
+        restart_policy: Arc<Mutex<Option<String>>>,
+    }
+
+    #[async_trait]
+    impl SystemdManager for RestartPolicySystemd {
+        async fn start_transient_service(
+            &self,
+            _unit_name: &str,
+            props: UnitProperties,
+        ) -> Result<()> {
+            let mut guard = self.restart_policy.lock().await;
+            *guard = Some(props.restart);
+            Ok(())
+        }
+
+        async fn stop_unit(&self, _unit_name: &str) -> Result<()> {
+            Ok(())
+        }
+
+        async fn restart_unit(&self, _unit_name: &str) -> Result<()> {
+            Ok(())
+        }
+
+        async fn kill_unit(&self, _unit_name: &str, _signal: i32) -> Result<()> {
+            Ok(())
+        }
+
+        async fn unit_status(
+            &self,
+            _unit_name: &str,
+        ) -> Result<Option<crate::systemd::UnitStatus>> {
+            Ok(None)
+        }
+    }
+
+    #[tokio::test]
+    async fn start_prepared_service_disables_systemd_auto_restart_for_restarts() {
+        let manager = RestartPolicySystemd {
+            restart_policy: Arc::new(Mutex::new(None)),
+        };
+        let restart_policy = manager.restart_policy.clone();
+        let state = test_state_for(Arc::new(manager));
+        let run_id = RunId::new("app-test");
+        let prepared = PreparedService {
+            name: "api".to_string(),
+            unit_name: "devstack-run-APP-TEST-API.service".to_string(),
+            port: Some(3000),
+            scheme: "http".to_string(),
+            url: Some("http://localhost:3000".to_string()),
+            deps: vec![],
+            readiness: ReadinessSpec::new(ReadinessKind::Tcp),
+            log_path: PathBuf::from("/tmp/api.log"),
+            cwd: PathBuf::from("/tmp"),
+            env: BTreeMap::new(),
+            cmd: "echo api".to_string(),
+            watch_hash: "hash".to_string(),
+            watch_patterns: Vec::new(),
+            ignore_patterns: Vec::new(),
+            watch_extra_files: Vec::new(),
+            watch_fingerprint: Vec::new(),
+            auto_restart: false,
+        };
+
+        start_prepared_service(&state, &run_id, &prepared, true)
+            .await
+            .unwrap();
+
+        let guard = restart_policy.lock().await;
+        assert_eq!(guard.as_deref(), Some("no"));
     }
 
     #[tokio::test]
