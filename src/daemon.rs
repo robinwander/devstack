@@ -5388,6 +5388,7 @@ async fn ensure_globals(
             env.iter().map(|(k, v)| format!("{k}={v}")).collect(),
             exec,
         )
+        .with_restart("no")
         .with_remain_after_exit(matches!(readiness.kind, ReadinessKind::Exit));
         let ctx = ReadinessContext {
             port,
@@ -6011,6 +6012,48 @@ mod tests {
         start_prepared_service(&state, &run_id, &prepared, true)
             .await
             .unwrap();
+
+        let guard = restart_policy.lock().await;
+        assert_eq!(guard.as_deref(), Some("no"));
+    }
+
+    #[tokio::test]
+    async fn ensure_globals_disables_systemd_auto_restart() {
+        let manager = RestartPolicySystemd {
+            restart_policy: Arc::new(Mutex::new(None)),
+        };
+        let restart_policy = manager.restart_policy.clone();
+        let state = test_state_for(Arc::new(manager));
+        let project_dir = tempfile::tempdir().unwrap();
+        let globals = BTreeMap::from([(
+            "moto".to_string(),
+            ServiceConfig {
+                cmd: "echo moto".to_string(),
+                deps: Vec::new(),
+                scheme: None,
+                port_env: None,
+                port: Some(crate::config::PortConfig::None("none".to_string())),
+                readiness: None,
+                env_file: None,
+                env: BTreeMap::new(),
+                cwd: None,
+                watch: Vec::new(),
+                ignore: Vec::new(),
+                auto_restart: false,
+                init: None,
+                post_init: None,
+            },
+        )]);
+
+        ensure_globals(
+            &state,
+            &globals,
+            &BTreeMap::new(),
+            project_dir.path(),
+            project_dir.path(),
+        )
+        .await
+        .unwrap();
 
         let guard = restart_policy.lock().await;
         assert_eq!(guard.as_deref(), Some("no"));
