@@ -626,7 +626,7 @@ impl LogIndex {
                 .context("tantivy writer missing")?;
             writer.delete_term(term);
             writer.commit()?;
-            let _ = writer.garbage_collect_files();
+            std::mem::drop(writer.garbage_collect_files());
             Self::schedule_compaction(&self.index, writer);
         }
         self.reader.read().unwrap().reload().ok();
@@ -648,14 +648,14 @@ impl LogIndex {
             .writer
             .as_mut()
             .context("tantivy writer missing")?;
-        let _ = writer.garbage_collect_files();
+        std::mem::drop(writer.garbage_collect_files());
         Self::schedule_compaction(&self.index, writer);
         Ok(())
     }
 
     fn schedule_compaction(index: &RwLock<Index>, writer: &mut IndexWriter) {
         for batch in Self::compaction_batches(index) {
-            let _ = writer.merge(&batch);
+            std::mem::drop(writer.merge(&batch));
         }
     }
 

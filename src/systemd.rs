@@ -202,28 +202,26 @@ impl SystemdManager for RealSystemd {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(unix)]
 use std::collections::HashMap;
-#[cfg(not(target_os = "linux"))]
-use std::os::unix::process::CommandExt;
-#[cfg(not(target_os = "linux"))]
+#[cfg(unix)]
 use std::process::ExitStatus;
-#[cfg(not(target_os = "linux"))]
+#[cfg(unix)]
 use std::sync::Arc;
-#[cfg(not(target_os = "linux"))]
+#[cfg(unix)]
 use tokio::process::Command;
-#[cfg(not(target_os = "linux"))]
+#[cfg(unix)]
 use tokio::sync::Mutex;
-#[cfg(not(target_os = "linux"))]
+#[cfg(unix)]
 use tokio::time::{Duration, timeout};
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(unix)]
 #[derive(Clone)]
 pub struct LocalSystemd {
     units: Arc<Mutex<HashMap<String, LocalUnit>>>,
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(unix)]
 struct LocalUnit {
     props: UnitProperties,
     child: tokio::process::Child,
@@ -231,7 +229,14 @@ struct LocalUnit {
     last_status: Option<ExitStatus>,
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(unix)]
+impl Default for LocalSystemd {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(unix)]
 impl LocalSystemd {
     pub fn new() -> Self {
         let units = Arc::new(Mutex::new(HashMap::new()));
@@ -341,7 +346,7 @@ impl LocalSystemd {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(unix)]
 #[async_trait]
 impl SystemdManager for LocalSystemd {
     async fn start_transient_service(&self, unit_name: &str, props: UnitProperties) -> Result<()> {
@@ -458,7 +463,7 @@ impl SystemdManager for LocalSystemd {
     }
 }
 
-#[cfg(all(test, not(target_os = "linux")))]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 

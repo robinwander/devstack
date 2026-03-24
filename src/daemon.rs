@@ -54,7 +54,7 @@ use crate::log_index::{LogIndex, LogSource};
 use crate::logfmt::{classify_line_level, extract_log_content, extract_timestamp_str};
 use crate::manifest::{RunLifecycle, RunManifest, ServiceManifest, ServiceState};
 use crate::paths;
-use crate::port::allocate_ports;
+use crate::port::{allocate_ports, release_port, reserve_available_port, reserve_port};
 use crate::projects::ProjectsLedger;
 use crate::readiness::{ReadinessContext, ReadinessKind, ReadinessSpec, readiness_url};
 use crate::sources::{SourcesLedger, source_run_id};
@@ -62,7 +62,7 @@ use crate::systemd::{ExecStart, SystemdManager, UnitProperties};
 use crate::util::{atomic_write, expand_home, now_rfc3339, sanitize_env_key};
 use crate::watch::compute_watch_hash;
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(unix)]
 use crate::systemd::LocalSystemd;
 #[cfg(target_os = "linux")]
 use crate::systemd::RealSystemd;
@@ -776,13 +776,61 @@ async fn clear_stale_socket(socket_path: &Path) -> Result<()> {
     }
 }
 
+fn process_manager_override() -> Option<String> {
+    std::env::var("DEVSTACK_PROCESS_MANAGER")
+        .ok()
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty())
+}
+
+async fn build_process_manager() -> Result<Arc<dyn SystemdManager>> {
+    match process_manager_override().as_deref() {
+        Some("local") => {
+            #[cfg(unix)]
+            {
+                return Ok(Arc::new(LocalSystemd::new()));
+            }
+            #[cfg(not(unix))]
+            {
+                return Err(anyhow!(
+                    "DEVSTACK_PROCESS_MANAGER=local is only supported on unix platforms"
+                ));
+            }
+        }
+        Some("systemd") => {
+            #[cfg(target_os = "linux")]
+            {
+                return Ok(Arc::new(RealSystemd::connect().await?));
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                return Err(anyhow!(
+                    "DEVSTACK_PROCESS_MANAGER=systemd is only supported on Linux"
+                ));
+            }
+        }
+        Some(other) => {
+            return Err(anyhow!(
+                "unsupported DEVSTACK_PROCESS_MANAGER value {other:?}; expected 'local' or 'systemd'"
+            ));
+        }
+        None => {}
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        Ok(Arc::new(RealSystemd::connect().await?))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Ok(Arc::new(LocalSystemd::new()))
+    }
+}
+
 pub async fn run_daemon() -> Result<()> {
     paths::ensure_base_layout()?;
     let lock = acquire_daemon_lock()?;
-    #[cfg(target_os = "linux")]
-    let systemd = Arc::new(RealSystemd::connect().await?);
-    #[cfg(not(target_os = "linux"))]
-    let systemd = Arc::new(LocalSystemd::new());
+    let systemd = build_process_manager().await?;
     let binary_path = std::env::current_exe().context("current_exe")?;
     let state = Arc::new(Mutex::new(load_state_from_disk()?));
     let log_index = Arc::new(LogIndex::open_or_create()?);
@@ -797,6 +845,8 @@ pub async fn run_daemon() -> Result<()> {
         log_tails: Arc::new(Mutex::new(RunLogTailRegistry::default())),
         _lock: lock,
     };
+
+    sync_port_reservations_from_disk(&app_state).await?;
 
     // Seed projects ledger from existing runs
     if let Ok(runs_dir) = paths::runs_dir()
@@ -887,7 +937,22 @@ pub async fn run_daemon() -> Result<()> {
 
 const DASHBOARD_PORT: u16 = 47832;
 
+fn dashboard_disabled() -> bool {
+    std::env::var("DEVSTACK_DISABLE_DASHBOARD")
+        .ok()
+        .map(|value| {
+            let value = value.trim().to_ascii_lowercase();
+            matches!(value.as_str(), "1" | "true" | "yes" | "on")
+        })
+        .unwrap_or(false)
+}
+
 async fn spawn_dashboard() -> Option<tokio::process::Child> {
+    if dashboard_disabled() {
+        eprintln!("[dashboard] disabled by DEVSTACK_DISABLE_DASHBOARD");
+        return None;
+    }
+
     let dashboard_dir = match paths::dashboard_dir() {
         Ok(dir) => dir,
         Err(e) => {
@@ -2454,8 +2519,10 @@ async fn orchestrate_up(state: &AppState, req: UpRequest) -> AppResult<RunManife
     let raw = std::fs::read(&config_path).map_err(AppError::from)?;
     atomic_write(&snapshot_path, &raw).map_err(AppError::from)?;
 
-    let mut port_map = allocate_ports(&stack_plan.services)
-        .map_err(|err| AppError::bad_request(err.to_string()))?;
+    let mut port_map = allocate_ports(&stack_plan.services, |service| {
+        port_owner(run_id.as_str(), service)
+    })
+    .map_err(|err| AppError::bad_request(err.to_string()))?;
     let tasks_map = config
         .tasks
         .as_ref()
@@ -2741,13 +2808,26 @@ async fn orchestrate_refresh_run(
                 None
             }
         };
+        for svc_name in &removed {
+            release_service_port(
+                run_id.as_str(),
+                svc_name,
+                existing.get(svc_name).and_then(|svc| svc.port),
+            )
+            .map_err(AppError::from)?;
+        }
         if let Some(event) = run_event {
             emit_event(state, event);
         }
     }
 
-    let mut port_map = resolve_ports_for_refresh(&stack_plan.services, &existing, reuse_ports)
-        .map_err(AppError::from)?;
+    let mut port_map = resolve_ports_for_refresh(
+        run_id.as_str(),
+        &stack_plan.services,
+        &existing,
+        reuse_ports,
+    )
+    .map_err(AppError::from)?;
     let tasks_map = config
         .tasks
         .as_ref()
@@ -2916,6 +2996,13 @@ async fn orchestrate_refresh_run(
             let start_result =
                 start_prepared_service(state, &run_id, &prepared, restart_existing).await;
 
+            if let Some(previous_port) = existing.get(svc_name).and_then(|snapshot| snapshot.port)
+                && Some(previous_port) != prepared.port
+            {
+                release_service_port(run_id.as_str(), svc_name, Some(previous_port))
+                    .map_err(AppError::from)?;
+            }
+
             let (initial_state, failure_reason, last_started_at) = match &start_result {
                 Ok(()) => (ServiceState::Starting, None, Some(now_rfc3339())),
                 Err(err) => (ServiceState::Failed, Some(err.to_string()), None),
@@ -3031,6 +3118,7 @@ async fn orchestrate_refresh_run(
 }
 
 fn resolve_ports_for_refresh(
+    run_id: &str,
     services: &BTreeMap<String, ServiceConfig>,
     existing: &BTreeMap<String, ExistingServiceSnapshot>,
     reuse_ports: bool,
@@ -3039,12 +3127,15 @@ fn resolve_ports_for_refresh(
     let mut needs_alloc = BTreeMap::new();
 
     for (name, svc) in services {
+        let owner = port_owner(run_id, name);
         let port = match &svc.port {
             Some(config) if config.is_none() => None,
             Some(crate::config::PortConfig::Fixed(value)) => {
                 let existing_port = existing.get(name).and_then(|svc| svc.port);
-                if existing_port != Some(*value) {
-                    crate::port::ensure_available(*value)?;
+                if existing_port == Some(*value) {
+                    reserve_port(*value, &owner)?;
+                } else {
+                    reserve_available_port(*value, &owner)?;
                 }
                 Some(*value)
             }
@@ -3052,6 +3143,7 @@ fn resolve_ports_for_refresh(
             None => {
                 if reuse_ports {
                     if let Some(existing_port) = existing.get(name).and_then(|svc| svc.port) {
+                        reserve_port(existing_port, &owner)?;
                         Some(existing_port)
                     } else {
                         needs_alloc.insert(name.clone(), svc.clone());
@@ -3067,7 +3159,7 @@ fn resolve_ports_for_refresh(
     }
 
     if !needs_alloc.is_empty() {
-        let allocated = allocate_ports(&needs_alloc)?;
+        let allocated = allocate_ports(&needs_alloc, |service| port_owner(run_id, service))?;
         for (name, port) in allocated {
             port_map.insert(name, port);
         }
@@ -3840,22 +3932,21 @@ async fn handle_readiness(
     };
     match crate::readiness::wait_for_ready(&prepared.readiness, &ctx).await {
         Ok(()) => {
-            if let Some(post_init) = post_init {
-                if let Err(err) = run_post_init_tasks_blocking(
+            if let Some(post_init) = post_init
+                && let Err(err) = run_post_init_tasks_blocking(
                     post_init.tasks_map,
                     post_init.post_init_tasks,
                     post_init.project_dir,
                     post_init.run_id,
                 )
                 .await
-                {
-                    let reason = format!("post_init task failed: {err}");
-                    eprintln!("[{}] {reason}", prepared.name);
-                    mark_service_failed(&state, run_id, &prepared.name, &reason)
-                        .await
-                        .map_err(AppError::from)?;
-                    return Err(AppError::Internal(anyhow!(reason)));
-                }
+            {
+                let reason = format!("post_init task failed: {err}");
+                eprintln!("[{}] {reason}", prepared.name);
+                mark_service_failed(&state, run_id, &prepared.name, &reason)
+                    .await
+                    .map_err(AppError::from)?;
+                return Err(AppError::Internal(anyhow!(reason)));
             }
             mark_service_ready(&state, run_id, &prepared.name)
                 .await
@@ -3891,6 +3982,58 @@ fn unit_name_for_run(run_id: &str, service: &str) -> String {
     let run = sanitize_env_key(run_id);
     let svc = sanitize_env_key(service);
     format!("devstack-run-{run}-{svc}.service")
+}
+
+fn port_owner(run_id: &str, service: &str) -> String {
+    format!("{run_id}:{service}")
+}
+
+async fn sync_port_reservations_from_disk(state: &AppState) -> Result<()> {
+    let reservations = {
+        let guard = state.state.lock().await;
+        let mut reservations = Vec::new();
+        for run in guard.runs.values() {
+            for (service, runtime) in &run.services {
+                if let Some(port) = runtime.port {
+                    reservations.push((port, port_owner(&run.run_id, service)));
+                }
+            }
+        }
+        reservations
+    };
+
+    for (port, owner) in reservations {
+        reserve_port(port, &owner)?;
+    }
+
+    let globals_dir = paths::globals_root()?;
+    if globals_dir.exists() {
+        for entry in std::fs::read_dir(globals_dir)? {
+            let entry = entry?;
+            let manifest_path = entry.path().join("manifest.json");
+            if !manifest_path.exists() {
+                continue;
+            }
+            let manifest = RunManifest::load_from_path(&manifest_path)?;
+            if manifest.state == RunLifecycle::Stopped || manifest.stopped_at.is_some() {
+                continue;
+            }
+            for (service, svc) in &manifest.services {
+                if let Some(port) = svc.port {
+                    reserve_port(port, &port_owner(&manifest.run_id, service))?;
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn release_service_port(run_id: &str, service: &str, port: Option<u16>) -> Result<()> {
+    if let Some(port) = port {
+        release_port(port, &port_owner(run_id, service))?;
+    }
+    Ok(())
 }
 
 async fn mark_service_ready(state: &AppState, run_id: &str, service: &str) -> Result<()> {
@@ -4179,31 +4322,30 @@ fn spawn_readiness_task(
         };
         match crate::readiness::wait_for_ready(&readiness, &ctx).await {
             Ok(()) => {
-                if let Some(post_init) = post_init {
-                    if let Err(err) = run_post_init_tasks_blocking(
+                if let Some(post_init) = post_init
+                    && let Err(err) = run_post_init_tasks_blocking(
                         post_init.tasks_map,
                         post_init.post_init_tasks,
                         post_init.project_dir,
                         post_init.run_id,
                     )
                     .await
+                {
+                    let reason = format!("post_init task failed: {err}");
+                    eprintln!("[{service}] {reason}");
+                    if let Err(mark_err) =
+                        mark_service_failed(&state, &run_id, &service, &reason).await
                     {
-                        let reason = format!("post_init task failed: {err}");
-                        eprintln!("[{service}] {reason}");
-                        if let Err(mark_err) =
-                            mark_service_failed(&state, &run_id, &service, &reason).await
-                        {
-                            eprintln!(
-                                "devstack: failed to mark service {service} failed for run {run_id}: {mark_err}"
-                            );
-                        }
-                        if let Err(err) = persist_manifest(&state, &run_id).await {
-                            eprintln!(
-                                "devstack: failed to persist manifest after post_init failure for {run_id}/{service}: {err}"
-                            );
-                        }
-                        return;
+                        eprintln!(
+                            "devstack: failed to mark service {service} failed for run {run_id}: {mark_err}"
+                        );
                     }
+                    if let Err(err) = persist_manifest(&state, &run_id).await {
+                        eprintln!(
+                            "devstack: failed to persist manifest after post_init failure for {run_id}/{service}: {err}"
+                        );
+                    }
+                    return;
                 }
                 if let Err(err) = mark_service_ready(&state, &run_id, &service).await {
                     eprintln!(
@@ -4298,21 +4440,25 @@ async fn write_daemon_state(state: &AppState) -> Result<()> {
 async fn orchestrate_down(state: &AppState, run_id: &str, purge: bool) -> AppResult<RunManifest> {
     stop_health_monitors(state, run_id).await;
     stop_watchers(state, run_id).await;
-    let services: Vec<String> = {
+    let services: Vec<(String, Option<u16>)> = {
         let guard = state.state.lock().await;
         guard
             .runs
             .get(run_id)
             .ok_or_else(|| AppError::not_found(format!("run {run_id} not found")))?
             .services
-            .keys()
-            .cloned()
+            .iter()
+            .map(|(name, svc)| (name.clone(), svc.port))
             .collect()
     };
 
-    for svc in &services {
+    for (svc, _) in &services {
         let unit_name = unit_name_for_run(run_id, svc);
         let _ = state.systemd.stop_unit(&unit_name).await;
+    }
+
+    for (svc, port) in &services {
+        release_service_port(run_id, svc, *port).map_err(AppError::from)?;
     }
 
     let events = {
@@ -4361,22 +4507,26 @@ async fn orchestrate_down(state: &AppState, run_id: &str, purge: bool) -> AppRes
 async fn orchestrate_kill(state: &AppState, run_id: &str) -> AppResult<RunManifest> {
     stop_health_monitors(state, run_id).await;
     stop_watchers(state, run_id).await;
-    let services: Vec<String> = {
+    let services: Vec<(String, Option<u16>)> = {
         let guard = state.state.lock().await;
         guard
             .runs
             .get(run_id)
             .ok_or_else(|| AppError::not_found(format!("run {run_id} not found")))?
             .services
-            .keys()
-            .cloned()
+            .iter()
+            .map(|(name, svc)| (name.clone(), svc.port))
             .collect()
     };
 
-    for svc in &services {
+    for (svc, _) in &services {
         let unit_name = unit_name_for_run(run_id, svc);
         let _ = state.systemd.kill_unit(&unit_name, 9).await;
         let _ = state.systemd.stop_unit(&unit_name).await;
+    }
+
+    for (svc, port) in &services {
+        release_service_port(run_id, svc, *port).map_err(AppError::from)?;
     }
 
     let events = {
@@ -4508,23 +4658,22 @@ async fn orchestrate_restart_service(
     };
     match crate::readiness::wait_for_ready(&readiness, &ctx).await {
         Ok(()) => {
-            if let Some(post_init) = post_init {
-                if let Err(err) = run_post_init_tasks_blocking(
+            if let Some(post_init) = post_init
+                && let Err(err) = run_post_init_tasks_blocking(
                     post_init.tasks_map,
                     post_init.post_init_tasks,
                     post_init.project_dir,
                     post_init.run_id,
                 )
                 .await
-                {
-                    let reason = format!("post_init task failed: {err}");
-                    eprintln!("[{service}] {reason}");
-                    mark_service_failed(state, run_id, service, &reason)
-                        .await
-                        .map_err(AppError::from)?;
-                    persist_manifest_on_error(state, run_id).await;
-                    return Err(AppError::Internal(anyhow!(reason)));
-                }
+            {
+                let reason = format!("post_init task failed: {err}");
+                eprintln!("[{service}] {reason}");
+                mark_service_failed(state, run_id, service, &reason)
+                    .await
+                    .map_err(AppError::from)?;
+                persist_manifest_on_error(state, run_id).await;
+                return Err(AppError::Internal(anyhow!(reason)));
             }
             mark_service_ready(state, run_id, service)
                 .await
@@ -5309,22 +5458,30 @@ async fn ensure_globals(
             if let Some(status) = status
                 && status.active_state == "active"
             {
+                if let Some(port) = service.port {
+                    reserve_port(port, &port_owner(run_id.as_str(), name))?;
+                }
                 ports.insert(name.clone(), service.port);
                 continue;
             }
         }
 
+        let owner = port_owner(run_id.as_str(), name);
         let port = match &svc.port {
             Some(cfg) if cfg.is_none() => None,
-            Some(crate::config::PortConfig::Fixed(p)) => Some(*p),
+            Some(crate::config::PortConfig::Fixed(p)) => {
+                reserve_available_port(*p, &owner)?;
+                Some(*p)
+            }
             Some(crate::config::PortConfig::None(_)) => None,
             None => {
-                if reuse_port.is_some() {
-                    reuse_port
+                if let Some(port) = reuse_port {
+                    reserve_port(port, &owner)?;
+                    Some(port)
                 } else {
                     let mut map = BTreeMap::new();
                     map.insert(name.clone(), svc.clone());
-                    let allocated = allocate_ports(&map)?;
+                    let allocated = allocate_ports(&map, |_| owner.clone())?;
                     *allocated.get(name).unwrap_or(&None)
                 }
             }
@@ -5416,20 +5573,19 @@ async fn ensure_globals(
                     lifecycle = RunLifecycle::Degraded;
                     startup_error =
                         Some(anyhow!("global service '{name}' failed readiness: {err}"));
-                } else if let Some(post_init) = post_init {
-                    if let Err(err) = run_post_init_tasks_blocking(
+                } else if let Some(post_init) = post_init
+                    && let Err(err) = run_post_init_tasks_blocking(
                         post_init.tasks_map,
                         post_init.post_init_tasks,
                         post_init.project_dir,
                         post_init.run_id,
                     )
                     .await
-                    {
-                        service_state = ServiceState::Failed;
-                        lifecycle = RunLifecycle::Degraded;
-                        startup_error =
-                            Some(anyhow!("global service '{name}' post_init failed: {err}"));
-                    }
+                {
+                    service_state = ServiceState::Failed;
+                    lifecycle = RunLifecycle::Degraded;
+                    startup_error =
+                        Some(anyhow!("global service '{name}' post_init failed: {err}"));
                 }
             }
             Err(err) => {

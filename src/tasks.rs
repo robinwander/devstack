@@ -303,6 +303,7 @@ pub fn run_task(
     Ok(result)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_service_tasks(
     tasks: &BTreeMap<String, TaskConfig>,
     task_names: &[String],
