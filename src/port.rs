@@ -71,6 +71,7 @@ mod tests {
             ignore: Vec::new(),
             auto_restart: false,
             init: None,
+            post_init: None,
         }
     }
 

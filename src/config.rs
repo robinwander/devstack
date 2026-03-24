@@ -104,6 +104,8 @@ pub struct ServiceConfig {
     pub auto_restart: bool,
     #[serde(default)]
     pub init: Option<Vec<String>>,
+    #[serde(default)]
+    pub post_init: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -277,6 +279,7 @@ impl ConfigFile {
                 validate_service_port(stack_name, svc_name, svc)?;
                 validate_service_readiness(stack_name, svc_name, svc)?;
                 validate_service_init_tasks(stack_name, svc_name, svc, self.tasks.as_ref())?;
+                validate_service_post_init_tasks(stack_name, svc_name, svc, self.tasks.as_ref())?;
                 validate_service_auto_restart(stack_name, svc_name, svc)?;
                 // Validate deps reference existing services in this stack.
                 for dep in &svc.deps {
@@ -347,6 +350,30 @@ fn validate_service_init_tasks(
         if !tasks.as_map().contains_key(task_name) {
             return Err(anyhow!(
                 "service {stack}.{service} references unknown init task '{task_name}'"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_service_post_init_tasks(
+    stack: &str,
+    service: &str,
+    svc: &ServiceConfig,
+    tasks: Option<&UniqueMap<String, TaskConfig>>,
+) -> Result<()> {
+    let Some(post_init) = &svc.post_init else {
+        return Ok(());
+    };
+    let Some(tasks) = tasks else {
+        return Err(anyhow!(
+            "service {stack}.{service} references post_init tasks but no [tasks] are defined"
+        ));
+    };
+    for task_name in post_init {
+        if !tasks.as_map().contains_key(task_name) {
+            return Err(anyhow!(
+                "service {stack}.{service} references unknown post_init task '{task_name}'"
             ));
         }
     }
@@ -615,6 +642,7 @@ mod tests {
                 ignore: Vec::new(),
                 auto_restart: false,
                 init: None,
+                post_init: None,
             },
         );
         services.insert(
@@ -633,6 +661,7 @@ mod tests {
                 ignore: Vec::new(),
                 auto_restart: false,
                 init: None,
+                post_init: None,
             },
         );
         let order = topo_sort(&services).unwrap();
@@ -655,6 +684,7 @@ mod tests {
             ignore: Vec::new(),
             auto_restart: false,
             init: None,
+            post_init: None,
         };
         let kind = svc.readiness_kind(true).unwrap();
         assert!(matches!(kind, ReadinessKind::Tcp));
@@ -676,6 +706,7 @@ mod tests {
             ignore: Vec::new(),
             auto_restart: false,
             init: None,
+            post_init: None,
         };
         let kind = svc.readiness_kind(false).unwrap();
         assert!(matches!(kind, ReadinessKind::None));
@@ -708,6 +739,7 @@ mod tests {
             ignore: Vec::new(),
             auto_restart: false,
             init: None,
+            post_init: None,
         };
         let kind = svc.readiness_kind(true).unwrap();
         match kind {
@@ -748,6 +780,7 @@ mod tests {
             ignore: Vec::new(),
             auto_restart: false,
             init: None,
+            post_init: None,
         };
         let kind = svc.readiness_kind(false).unwrap();
         match kind {
@@ -782,6 +815,7 @@ mod tests {
             ignore: Vec::new(),
             auto_restart: false,
             init: None,
+            post_init: None,
         };
         let kind = svc.readiness_kind(false).unwrap();
         assert!(matches!(kind, ReadinessKind::Exit));
@@ -1039,5 +1073,60 @@ cmd = "echo task"
         let resolved = resolve_env_map(&env);
         assert_eq!(resolved.get("HOST"), Some(&"localhost".to_string()));
         assert_eq!(resolved.get("PORT"), Some(&"5432".to_string()));
+    }
+
+    #[test]
+    fn post_init_references_unknown_task() {
+        let toml_str = r#"
+version = 1
+
+[tasks.setup]
+cmd = "echo setup"
+
+[stacks.app.services.api]
+cmd = "echo api"
+post_init = ["missing-task"]
+"#;
+        let config: ConfigFile = toml::from_str(toml_str).unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("unknown post_init task"));
+    }
+
+    #[test]
+    fn post_init_without_tasks_section() {
+        let toml_str = r#"
+version = 1
+
+[stacks.app.services.api]
+cmd = "echo api"
+post_init = ["setup"]
+"#;
+        let config: ConfigFile = toml::from_str(toml_str).unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("post_init tasks but no [tasks]"));
+    }
+
+    #[test]
+    fn post_init_with_valid_task() {
+        let toml_str = r#"
+version = 1
+
+[tasks.create-resources]
+cmd = "python scripts/init.py"
+watch = ["scripts/init.py"]
+
+[stacks.app.services.api]
+cmd = "echo api"
+readiness = { http = { path = "/health" } }
+post_init = ["create-resources"]
+"#;
+        let config: ConfigFile = toml::from_str(toml_str).unwrap();
+        config.validate().unwrap();
+        let plan = config.stack_plan("app").unwrap();
+        let svc = plan.services.get("api").unwrap();
+        assert_eq!(
+            svc.post_init.as_deref(),
+            Some(vec!["create-resources".to_string()].as_slice())
+        );
     }
 }

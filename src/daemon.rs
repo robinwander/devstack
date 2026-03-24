@@ -810,8 +810,8 @@ pub async fn run_daemon() -> Result<()> {
     // Spawn periodic GC to evict stopped runs from memory and the log index,
     // preventing unbounded memory growth over long daemon lifetimes.
     spawn_periodic_gc(app_state.clone());
-    spawn_periodic_run_ingest(app_state.clone());
-    spawn_periodic_source_ingest(app_state.clone());
+    spawn_periodic_ingest(app_state.clone());
+    spawn_periodic_compaction(app_state.clone());
     spawn_periodic_agent_session_cleanup(app_state.clone());
 
     write_daemon_state(&app_state).await.ok();
@@ -2625,7 +2625,14 @@ async fn orchestrate_up(state: &AppState, req: UpRequest) -> AppResult<RunManife
         // Only proceed with readiness check if service started successfully
         if start_result.is_ok()
             && let Err(err) =
-                handle_readiness(state.clone(), run_id.as_str(), &prepared, req.no_wait).await
+                handle_readiness(
+                    state.clone(),
+                    run_id.as_str(),
+                    &prepared,
+                    req.no_wait,
+                    build_post_init_context(svc, &tasks_map, &project_dir, &run_id),
+                )
+                .await
         {
             persist_manifest_on_error(state, run_id.as_str()).await;
             return Err(err);
@@ -2961,7 +2968,14 @@ async fn orchestrate_refresh_run(
             // Only proceed with readiness check if service started successfully
             if start_result.is_ok()
                 && let Err(err) =
-                    handle_readiness(state.clone(), run_id.as_str(), &prepared, no_wait).await
+                    handle_readiness(
+                        state.clone(),
+                        run_id.as_str(),
+                        &prepared,
+                        no_wait,
+                        build_post_init_context(svc, &tasks_map, project_dir, &run_id),
+                    )
+                    .await
             {
                 persist_manifest_on_error(state, run_id.as_str()).await;
                 return Err(err);
@@ -3722,11 +3736,37 @@ async fn enrich_readiness_error(
     anyhow!(message)
 }
 
+struct PostInitContext {
+    tasks_map: BTreeMap<String, TaskConfig>,
+    post_init_tasks: Vec<String>,
+    project_dir: PathBuf,
+    run_id: RunId,
+}
+
+fn build_post_init_context(
+    svc: &ServiceConfig,
+    tasks_map: &BTreeMap<String, TaskConfig>,
+    project_dir: &Path,
+    run_id: &RunId,
+) -> Option<PostInitContext> {
+    let post_init = svc.post_init.as_ref()?;
+    if post_init.is_empty() {
+        return None;
+    }
+    Some(PostInitContext {
+        tasks_map: tasks_map.clone(),
+        post_init_tasks: post_init.clone(),
+        project_dir: project_dir.to_path_buf(),
+        run_id: run_id.clone(),
+    })
+}
+
 async fn handle_readiness(
     state: AppState,
     run_id: &str,
     prepared: &PreparedService,
     no_wait: bool,
+    post_init: Option<PostInitContext>,
 ) -> AppResult<()> {
     if no_wait {
         spawn_readiness_task(
@@ -3740,6 +3780,7 @@ async fn handle_readiness(
             prepared.cwd.clone(),
             prepared.env.clone(),
             prepared.unit_name.clone(),
+            post_init,
         );
         return Ok(());
     }
@@ -3755,6 +3796,23 @@ async fn handle_readiness(
     };
     match crate::readiness::wait_for_ready(&prepared.readiness, &ctx).await {
         Ok(()) => {
+            if let Some(post_init) = post_init {
+                if let Err(err) = run_init_tasks_blocking(
+                    post_init.tasks_map,
+                    post_init.post_init_tasks,
+                    post_init.project_dir,
+                    post_init.run_id,
+                )
+                .await
+                {
+                    let reason = format!("post_init task failed: {err}");
+                    eprintln!("[{}] {reason}", prepared.name);
+                    mark_service_failed(&state, run_id, &prepared.name, &reason)
+                        .await
+                        .map_err(AppError::from)?;
+                    return Err(AppError::Internal(anyhow!(reason)));
+                }
+            }
             mark_service_ready(&state, run_id, &prepared.name)
                 .await
                 .map_err(AppError::from)?;
@@ -4068,6 +4126,7 @@ fn spawn_readiness_task(
     cwd: PathBuf,
     env: BTreeMap<String, String>,
     unit_name: String,
+    post_init: Option<PostInitContext>,
 ) {
     tokio::spawn(async move {
         let ctx = ReadinessContext {
@@ -4081,6 +4140,32 @@ fn spawn_readiness_task(
         };
         match crate::readiness::wait_for_ready(&readiness, &ctx).await {
             Ok(()) => {
+                if let Some(post_init) = post_init {
+                    if let Err(err) = run_init_tasks_blocking(
+                        post_init.tasks_map,
+                        post_init.post_init_tasks,
+                        post_init.project_dir,
+                        post_init.run_id,
+                    )
+                    .await
+                    {
+                        let reason = format!("post_init task failed: {err}");
+                        eprintln!("[{service}] {reason}");
+                        if let Err(mark_err) =
+                            mark_service_failed(&state, &run_id, &service, &reason).await
+                        {
+                            eprintln!(
+                                "devstack: failed to mark service {service} failed for run {run_id}: {mark_err}"
+                            );
+                        }
+                        if let Err(err) = persist_manifest(&state, &run_id).await {
+                            eprintln!(
+                                "devstack: failed to persist manifest after post_init failure for {run_id}/{service}: {err}"
+                            );
+                        }
+                        return;
+                    }
+                }
                 if let Err(err) = mark_service_ready(&state, &run_id, &service).await {
                     eprintln!(
                         "devstack: failed to mark service {service} ready for run {run_id}: {err}"
@@ -4352,6 +4437,7 @@ async fn orchestrate_restart_service(
             cwd,
             env,
             unit_name.clone(),
+            None,
         );
         return persist_manifest(state, run_id)
             .await
@@ -4915,9 +5001,10 @@ fn spawn_periodic_gc(state: AppState) {
                 }
                 let index = state.log_index.clone();
                 let _ = tokio::task::spawn_blocking(move || {
-                    for run_id in evicted {
-                        let _ = index.delete_run(&run_id);
+                    for run_id in &evicted {
+                        let _ = index.delete_run(run_id);
                     }
+                    let _ = index.force_compact();
                 })
                 .await;
                 write_daemon_state(&state).await.ok();
@@ -4926,31 +5013,36 @@ fn spawn_periodic_gc(state: AppState) {
     });
 }
 
-fn spawn_periodic_run_ingest(state: AppState) {
+fn spawn_periodic_ingest(state: AppState) {
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(5));
+        let mut interval = tokio::time::interval(Duration::from_secs(30));
         loop {
             interval.tick().await;
-            if let Err(err) = ingest_active_runs_once(&state).await {
-                eprintln!("devstack: periodic run ingest failed: {err}");
+            if let Err(err) = ingest_all_once(&state).await {
+                eprintln!("devstack: periodic ingest failed: {err}");
             }
         }
     });
 }
 
-fn spawn_periodic_source_ingest(state: AppState) {
+fn spawn_periodic_compaction(state: AppState) {
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(5));
+        let mut interval = tokio::time::interval(Duration::from_secs(10 * 60)); // every 10 min
+        interval.tick().await; // skip immediate first tick
         loop {
             interval.tick().await;
-            if let Err(err) = ingest_sources_once(&state).await {
-                eprintln!("devstack: periodic source ingest failed: {err}");
-            }
+            let index = state.log_index.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                if let Err(err) = index.force_compact() {
+                    eprintln!("devstack: periodic compaction failed: {err}");
+                }
+            })
+            .await;
         }
     });
 }
 
-async fn ingest_active_runs_once(state: &AppState) -> Result<()> {
+async fn ingest_all_once(state: &AppState) -> Result<()> {
     let active_runs: Vec<(String, Vec<LogSource>)> = {
         let guard = state.state.lock().await;
         guard
@@ -4970,35 +5062,20 @@ async fn ingest_active_runs_once(state: &AppState) -> Result<()> {
             sources.extend(service_sources);
             sources.extend(discover_task_log_sources(&run_id)?);
         }
-        if !sources.is_empty() {
-            index
-                .ingest_sources(&sources)
-                .with_context(|| format!("ingest logs for active runs [{}]", run_ids.join(", ")))?;
-        }
-        Ok::<(), anyhow::Error>(())
-    })
-    .await
-    .map_err(|err| anyhow!("run ingest worker failed: {err}"))??;
 
-    Ok(())
-}
-
-async fn ingest_sources_once(state: &AppState) -> Result<()> {
-    let index = state.log_index.clone();
-    tokio::task::spawn_blocking(move || {
         let ledger = SourcesLedger::load()?;
-        let source_names: Vec<String> = ledger.sources.keys().cloned().collect();
-        let sources = all_source_log_sources(&ledger)
-            .with_context(|| format!("resolve source paths for [{}]", source_names.join(", ")))?;
+        let external_sources = all_source_log_sources(&ledger)?;
+        sources.extend(external_sources);
+
         if !sources.is_empty() {
             index
                 .ingest_sources(&sources)
-                .with_context(|| format!("ingest logs for [{}]", source_names.join(", ")))?;
+                .context("periodic ingest")?;
         }
         Ok::<(), anyhow::Error>(())
     })
     .await
-    .map_err(|err| anyhow!("source ingest worker failed: {err}"))??;
+    .map_err(|err| anyhow!("ingest worker failed: {err}"))??;
 
     Ok(())
 }
@@ -5544,6 +5621,7 @@ mod tests {
             ignore: Vec::new(),
             auto_restart: false,
             init: None,
+            post_init: None,
         }
     }
 
