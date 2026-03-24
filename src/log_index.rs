@@ -9,10 +9,11 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use tantivy::collector::{Collector, Count, SegmentCollector, TopDocs};
+use tantivy::index::SegmentId;
+use tantivy::merge_policy::{LogMergePolicy, MergePolicy};
 use tantivy::query::{AllQuery, BooleanQuery, Occur, Query, QueryParser, RangeQuery, TermQuery};
 use tantivy::schema::{FAST, Field, FieldType, INDEXED, STORED, STRING, TEXT, Value};
 use tantivy::store::StoreReader;
-use tantivy::merge_policy::LogMergePolicy;
 use tantivy::{
     DocAddress, DocId, Index, IndexReader, IndexWriter, ReloadPolicy, Score, SegmentReader, Term,
 };
@@ -29,6 +30,8 @@ use crate::util::{atomic_write, contains_ansi, strip_ansi};
 const CURRENT_SCHEMA_VERSION: &str = "4";
 const FACET_TERMS_LIMIT: u32 = 50;
 const FACET_STORE_CACHE_BLOCKS: usize = 32;
+const COMPACTION_SEGMENT_BATCH_SIZE: usize = 32;
+const COMPACTION_MAX_BATCHES_PER_PASS: usize = 8;
 
 type FacetTermCounts = HashMap<String, HashMap<String, usize>>;
 
@@ -624,7 +627,7 @@ impl LogIndex {
             writer.delete_term(term);
             writer.commit()?;
             let _ = writer.garbage_collect_files();
-            Self::merge_all_segments(&self.index, writer);
+            Self::schedule_compaction(&self.index, writer);
         }
         self.reader.read().unwrap().reload().ok();
         {
@@ -646,18 +649,39 @@ impl LogIndex {
             .as_mut()
             .context("tantivy writer missing")?;
         let _ = writer.garbage_collect_files();
-        Self::merge_all_segments(&self.index, writer);
+        Self::schedule_compaction(&self.index, writer);
         Ok(())
     }
 
-    fn merge_all_segments(index: &RwLock<Index>, writer: &mut IndexWriter) {
-        let segment_ids = {
-            let index = index.read().unwrap();
-            index.searchable_segment_ids().unwrap_or_default()
-        };
-        if segment_ids.len() > 1 {
-            let _ = writer.merge(&segment_ids).wait();
+    fn schedule_compaction(index: &RwLock<Index>, writer: &mut IndexWriter) {
+        for batch in Self::compaction_batches(index) {
+            let _ = writer.merge(&batch);
         }
+    }
+
+    fn compaction_batches(index: &RwLock<Index>) -> Vec<Vec<SegmentId>> {
+        let segments = {
+            let index = index.read().unwrap();
+            index.searchable_segment_metas().unwrap_or_default()
+        };
+        if segments.len() <= 1 {
+            return Vec::new();
+        }
+
+        let merge_policy = Self::merge_policy();
+        let mut batches = Vec::new();
+        for candidate in merge_policy.compute_merge_candidates(&segments) {
+            for chunk in candidate.0.chunks(COMPACTION_SEGMENT_BATCH_SIZE) {
+                if chunk.len() < 2 {
+                    continue;
+                }
+                batches.push(chunk.to_vec());
+                if batches.len() >= COMPACTION_MAX_BATCHES_PER_PASS {
+                    return batches;
+                }
+            }
+        }
+        batches
     }
 
     pub(crate) fn ingest_sources(&self, sources: &[LogSource]) -> Result<()> {
@@ -1591,6 +1615,55 @@ mod tests {
             .unwrap();
         assert_eq!(facets.total, 0);
         assert!(facets.filters.is_empty());
+    }
+
+    #[test]
+    fn delete_run_removes_entries_and_resets_ingest_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let index = LogIndex::open_or_create_in(dir.path()).unwrap();
+        let log_path = dir.path().join("api.log");
+        std::fs::write(&log_path, "[2025-01-01T00:00:00Z] [stdout] hello\n").unwrap();
+
+        let sources = vec![LogSource {
+            run_id: "run-delete".to_string(),
+            service: "api".to_string(),
+            path: log_path.clone(),
+        }];
+        ingest(&index, &sources);
+        assert_eq!(
+            index
+                .query_view(
+                    "run-delete",
+                    log_view_query(Some(10), None, None, None, None, true, false),
+                )
+                .unwrap()
+                .total,
+            1
+        );
+
+        index.delete_run("run-delete").unwrap();
+        assert_eq!(
+            index
+                .query_view(
+                    "run-delete",
+                    log_view_query(Some(10), None, None, None, None, true, false),
+                )
+                .unwrap()
+                .total,
+            0
+        );
+
+        ingest(&index, &sources);
+        assert_eq!(
+            index
+                .query_view(
+                    "run-delete",
+                    log_view_query(Some(10), None, None, None, None, true, false),
+                )
+                .unwrap()
+                .total,
+            1
+        );
     }
 
     #[test]
