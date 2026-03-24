@@ -97,6 +97,12 @@ impl ServiceConfigPatch<'_> {
         self
     }
 
+    pub fn port_fixed(&mut self, port: u16) -> &mut Self {
+        self.table
+            .insert("port".to_string(), Value::Integer(port as i64));
+        self
+    }
+
     pub fn watch(&mut self, patterns: &[&str]) -> &mut Self {
         self.table.insert(
             "watch".to_string(),

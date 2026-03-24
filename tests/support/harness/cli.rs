@@ -3,7 +3,10 @@ use std::process::ExitStatus;
 
 use anyhow::{Context, Result, anyhow};
 use assert_cmd::Command;
-use devstack::api::{LogsResponse, ProjectsResponse, RunStatusResponse, RunWatchResponse, SourcesResponse, StartTaskResponse, TaskStatusResponse};
+use devstack::api::{
+    LogsResponse, ProjectsResponse, RunStatusResponse, RunWatchResponse, SourcesResponse,
+    StartTaskResponse, TaskStatusResponse,
+};
 use devstack::manifest::RunManifest;
 use serde::de::DeserializeOwned;
 
@@ -71,7 +74,7 @@ impl CliHandle {
         project: &ProjectHandle,
         run_id: &str,
     ) -> Result<RunStatusResponse> {
-        let args_owned = vec![
+        let args_owned = [
             "status".to_string(),
             "--run-id".to_string(),
             run_id.to_string(),
@@ -91,7 +94,7 @@ impl CliHandle {
         service: &str,
         last: usize,
     ) -> Result<LogsResponse> {
-        let args_owned = vec![
+        let args_owned = [
             "logs".to_string(),
             "--run-id".to_string(),
             run_id.to_string(),
@@ -143,7 +146,7 @@ impl CliHandle {
         project: &ProjectHandle,
         execution_id: &str,
     ) -> Result<TaskStatusResponse> {
-        let args_owned = vec![
+        let args_owned = [
             "run".to_string(),
             "--status".to_string(),
             execution_id.to_string(),
@@ -157,22 +160,33 @@ impl CliHandle {
     }
 
     pub async fn down(&self, project: &ProjectHandle, run_id: &str) -> Result<CmdResult> {
-        let args_owned = vec!["down".to_string(), "--run-id".to_string(), run_id.to_string()];
+        let args_owned = [
+            "down".to_string(),
+            "--run-id".to_string(),
+            run_id.to_string(),
+        ];
         let args_ref: Vec<&str> = args_owned.iter().map(String::as_str).collect();
         self.run_in(project, &args_ref).await
     }
 
     pub async fn kill(&self, project: &ProjectHandle, run_id: &str) -> Result<CmdResult> {
-        let args_owned = vec!["kill".to_string(), "--run-id".to_string(), run_id.to_string()];
+        let args_owned = [
+            "kill".to_string(),
+            "--run-id".to_string(),
+            run_id.to_string(),
+        ];
         let args_ref: Vec<&str> = args_owned.iter().map(String::as_str).collect();
         self.run_in(project, &args_ref).await
     }
 
     pub async fn list_tasks_json(&self, project: &ProjectHandle) -> Result<serde_json::Value> {
-        self.run_in(project, &["run", "--project", &project.path_string(), "--json"])
-            .await?
-            .success()?
-            .stdout_json()
+        self.run_in(
+            project,
+            &["run", "--project", &project.path_string(), "--json"],
+        )
+        .await?
+        .success()?
+        .stdout_json()
     }
 
     pub async fn run_task_json(
@@ -193,12 +207,18 @@ impl CliHandle {
             owned.extend(args.iter().map(|arg| (*arg).to_string()));
         }
         let args_ref: Vec<&str> = owned.iter().map(String::as_str).collect();
-        self.run_in(project, &args_ref).await?.success()?.stdout_json()
+        self.run_in(project, &args_ref)
+            .await?
+            .success()?
+            .stdout_json()
     }
 
     pub async fn run_task(&self, project: &ProjectHandle, task_name: &str) -> Result<CmdResult> {
-        self.run_in(project, &["run", task_name, "--project", &project.path_string()])
-            .await
+        self.run_in(
+            project,
+            &["run", task_name, "--project", &project.path_string()],
+        )
+        .await
     }
 
     pub async fn run_task_verbose(
@@ -208,7 +228,13 @@ impl CliHandle {
     ) -> Result<CmdResult> {
         self.run_in(
             project,
-            &["run", task_name, "--project", &project.path_string(), "--verbose"],
+            &[
+                "run",
+                task_name,
+                "--project",
+                &project.path_string(),
+                "--verbose",
+            ],
         )
         .await
     }
@@ -216,7 +242,13 @@ impl CliHandle {
     pub async fn run_init_json(&self, project: &ProjectHandle) -> Result<serde_json::Value> {
         self.run_in(
             project,
-            &["run", "--init", "--project", &project.path_string(), "--json"],
+            &[
+                "run",
+                "--init",
+                "--project",
+                &project.path_string(),
+                "--json",
+            ],
         )
         .await?
         .success()?
@@ -239,8 +271,11 @@ impl CliHandle {
     }
 
     pub async fn projects_add(&self, project: &ProjectHandle, path: &Path) -> Result<CmdResult> {
-        self.run_in(project, &["projects", "add", path.to_string_lossy().as_ref()])
-            .await
+        self.run_in(
+            project,
+            &["projects", "add", path.to_string_lossy().as_ref()],
+        )
+        .await
     }
 
     pub async fn projects_remove(

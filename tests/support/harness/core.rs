@@ -12,8 +12,7 @@ use tokio::time::{Instant, sleep};
 
 use super::{
     ApiHandle, CliHandle, DaemonController, EventsHandle, FsHandle, HarnessInner, NEXT_ID,
-    POLL_INTERVAL, acquire_global_test_lock, copy_fixture_bin_scripts, tail_lines,
-    write_rendered_fixture,
+    POLL_INTERVAL, copy_fixture_bin_scripts, tail_lines, write_rendered_fixture,
 };
 use crate::support::fixtures::{FixtureConfig, FixtureSpec, RenderedFixture};
 
@@ -50,7 +49,6 @@ pub struct TestHarness {
 
 impl TestHarness {
     pub async fn new() -> Result<Self> {
-        let serial_lock_file = acquire_global_test_lock()?;
         let root = tempfile::tempdir().context("create temp test root")?;
         let home = root.path().join("home");
         let xdg_data_home = root.path().join("xdg-data");
@@ -64,12 +62,11 @@ impl TestHarness {
         std::fs::create_dir_all(&xdg_runtime_dir)?;
         std::fs::create_dir_all(&workspace)?;
 
-        let bin = PathBuf::from(assert_cmd::cargo::cargo_bin("devstack"));
+        let bin = assert_cmd::cargo::cargo_bin("devstack");
 
         Ok(Self {
             inner: Arc::new(HarnessInner {
                 _root: root,
-                _serial_lock_file: serial_lock_file,
                 home,
                 xdg_data_home,
                 xdg_config_home,
@@ -120,7 +117,11 @@ impl TestHarness {
         }
     }
 
-    pub fn run_handle(&self, project: &ProjectHandle, run_id: impl Into<String>) -> super::RunHandle {
+    pub fn run_handle(
+        &self,
+        project: &ProjectHandle,
+        run_id: impl Into<String>,
+    ) -> super::RunHandle {
         super::RunHandle::new(self.clone(), project.clone(), run_id.into())
     }
 
@@ -368,13 +369,10 @@ impl ProjectHandle {
         self.root.to_string_lossy().to_string()
     }
 
-    pub fn patch_config(
-        &self,
-        patch: impl FnOnce(&mut FixtureConfig) -> Result<()>,
-    ) -> Result<()> {
+    pub fn patch_config(&self, patch: impl FnOnce(&mut FixtureConfig) -> Result<()>) -> Result<()> {
         let path = self.config_path();
-        let input = std::fs::read_to_string(&path)
-            .with_context(|| format!("read {}", path.display()))?;
+        let input =
+            std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
         let mut config = FixtureConfig::parse_toml(&input)?;
         patch(&mut config)?;
         let output = config.to_toml_string()?;

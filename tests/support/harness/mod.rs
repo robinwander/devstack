@@ -37,7 +37,6 @@ static NEXT_ID: AtomicUsize = AtomicUsize::new(1);
 
 struct HarnessInner {
     _root: tempfile::TempDir,
-    _serial_lock_file: std::fs::File,
     home: PathBuf,
     xdg_data_home: PathBuf,
     xdg_config_home: PathBuf,
@@ -167,24 +166,4 @@ fn tail_lines(value: &str, limit: usize) -> String {
         lines = lines.split_off(lines.len() - limit);
     }
     lines.join("\n")
-}
-
-fn acquire_global_test_lock() -> Result<std::fs::File> {
-    use std::fs::OpenOptions;
-    use std::os::fd::AsRawFd;
-
-    let path = std::env::temp_dir().join("devstack-e2e.lock");
-    let file = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(path)?;
-
-    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
-    if result == 0 {
-        Ok(file)
-    } else {
-        Err(anyhow!(std::io::Error::last_os_error()))
-    }
 }

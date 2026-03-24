@@ -21,11 +21,19 @@ async fn up_ensures_globals_and_list_globals_reports_them() -> Result<()> {
     let cache = globals
         .globals
         .iter()
-        .find(|global| global.project_dir == project.path().to_string_lossy() && global.name == "cache")
+        .find(|global| {
+            global.project_dir == project.path().to_string_lossy() && global.name == "cache"
+        })
         .expect("cache global listed");
     assert_eq!(cache.state, RunLifecycle::Running);
     assert!(cache.port.is_some());
-    assert!(cache.url.as_deref().unwrap_or_default().contains("localhost"));
+    assert!(
+        cache
+            .url
+            .as_deref()
+            .unwrap_or_default()
+            .contains("localhost")
+    );
     assert!(t.global_manifest_path(&project, "cache")?.exists());
 
     run.down().await?;
@@ -46,7 +54,9 @@ async fn globals_reuse_existing_instance_when_already_active() -> Result<()> {
     let before = globals_before
         .globals
         .iter()
-        .find(|global| global.project_dir == project.path().to_string_lossy() && global.name == "cache")
+        .find(|global| {
+            global.project_dir == project.path().to_string_lossy() && global.name == "cache"
+        })
         .expect("cache global before refresh")
         .clone();
 
@@ -74,7 +84,9 @@ async fn globals_reuse_existing_instance_when_already_active() -> Result<()> {
     let after = globals_after
         .globals
         .iter()
-        .find(|global| global.project_dir == project.path().to_string_lossy() && global.name == "cache")
+        .find(|global| {
+            global.project_dir == project.path().to_string_lossy() && global.name == "cache"
+        })
         .expect("cache global after refresh");
     assert_eq!(after.port, before.port);
     assert_eq!(after.url, before.url);
@@ -92,7 +104,10 @@ async fn globals_run_post_init() -> Result<()> {
 
     run.assert_ready().await?;
     t.fs(&project)
-        .wait_for_file_contains(fixtures::GlobalsFixture::GLOBAL_POST_INIT_LOG, "global-post-init")
+        .wait_for_file_contains(
+            fixtures::GlobalsFixture::GLOBAL_POST_INIT_LOG,
+            "global-post-init",
+        )
         .await?;
 
     run.down().await?;
@@ -109,11 +124,16 @@ async fn gc_all_removes_stopped_globals() -> Result<()> {
     run.down().await?;
     let global_manifest_path = t.global_manifest_path(&project, "cache")?;
     let global_dir = t.global_dir(&project, "cache")?;
-    let global_key = global_dir.file_name().unwrap().to_string_lossy().to_string();
+    let global_key = global_dir
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
 
     daemon.stop().await?;
 
-    let mut manifest: Value = serde_json::from_str(&std::fs::read_to_string(&global_manifest_path)?)?;
+    let mut manifest: Value =
+        serde_json::from_str(&std::fs::read_to_string(&global_manifest_path)?)?;
     manifest["state"] = Value::String("stopped".to_string());
     manifest["stopped_at"] = Value::String(old_timestamp());
     std::fs::write(&global_manifest_path, serde_json::to_vec_pretty(&manifest)?)?;
@@ -134,10 +154,12 @@ async fn up_touches_project_in_ledger() -> Result<()> {
 
     run.assert_ready().await?;
     let projects = t.api().list_projects().await?;
-    assert!(projects
-        .projects
-        .iter()
-        .any(|entry| entry.path == project.path().to_string_lossy()));
+    assert!(
+        projects
+            .projects
+            .iter()
+            .any(|entry| entry.path == project.path().to_string_lossy())
+    );
     assert!(t.projects_ledger_path().exists());
 
     run.down().await?;
@@ -152,7 +174,10 @@ async fn projects_add_list_remove_round_trip() -> Result<()> {
     let other = t.fixture(fixtures::simple_http()).create().await?;
     let daemon = t.daemon().start().await?;
 
-    t.cli().projects_add(&controller, other.path()).await?.success()?;
+    t.cli()
+        .projects_add(&controller, other.path())
+        .await?
+        .success()?;
     let projects = t.cli().projects_list_json(&controller).await?;
     let entry = projects
         .projects
@@ -161,12 +186,17 @@ async fn projects_add_list_remove_round_trip() -> Result<()> {
         .expect("project added to ledger")
         .clone();
 
-    t.cli().projects_remove(&controller, &entry.id).await?.success()?;
+    t.cli()
+        .projects_remove(&controller, &entry.id)
+        .await?
+        .success()?;
     let projects = t.cli().projects_list_json(&controller).await?;
-    assert!(!projects
-        .projects
-        .iter()
-        .any(|project| project.path == other.path().to_string_lossy()));
+    assert!(
+        !projects
+            .projects
+            .iter()
+            .any(|project| project.path == other.path().to_string_lossy())
+    );
 
     daemon.stop().await?;
     Ok(())
@@ -185,12 +215,17 @@ async fn sources_add_list_remove_round_trip() -> Result<()> {
     )?;
 
     let source_arg = source_path.to_string_lossy().to_string();
-    t.cli().sources_add(&project, "ext", &[source_arg.clone()]).await?.success()?;
+    t.cli()
+        .sources_add(&project, "ext", std::slice::from_ref(&source_arg))
+        .await?
+        .success()?;
     let sources = t.cli().sources_list_json(&project).await?;
-    assert!(sources
-        .sources
-        .iter()
-        .any(|source| source.name == "ext" && source.paths == vec![source_arg.clone()]));
+    assert!(
+        sources
+            .sources
+            .iter()
+            .any(|source| source.name == "ext" && source.paths == vec![source_arg.clone()])
+    );
 
     t.cli().sources_remove(&project, "ext").await?.success()?;
     let sources = t.cli().sources_list_json(&project).await?;
