@@ -5015,7 +5015,7 @@ fn spawn_periodic_gc(state: AppState) {
 
 fn spawn_periodic_ingest(state: AppState) {
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(30));
+        let mut interval = tokio::time::interval(Duration::from_secs(5));
         loop {
             interval.tick().await;
             if let Err(err) = ingest_all_once(&state).await {

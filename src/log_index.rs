@@ -8,11 +8,14 @@ use std::sync::{Mutex, RwLock};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use tantivy::collector::{Count, Collector, SegmentCollector, TopDocs};
+use tantivy::collector::{Collector, Count, SegmentCollector, TopDocs};
 use tantivy::query::{AllQuery, BooleanQuery, Occur, Query, QueryParser, RangeQuery, TermQuery};
 use tantivy::schema::{FAST, Field, FieldType, INDEXED, STORED, STRING, TEXT, Value};
 use tantivy::store::StoreReader;
-use tantivy::{DocAddress, DocId, Index, IndexReader, IndexWriter, ReloadPolicy, Score, SegmentReader, Term};
+use tantivy::merge_policy::LogMergePolicy;
+use tantivy::{
+    DocAddress, DocId, Index, IndexReader, IndexWriter, ReloadPolicy, Score, SegmentReader, Term,
+};
 
 use crate::api::{
     FacetFilter, FacetValueCount, LogEntry, LogViewQuery, LogViewResponse, LogsQuery, LogsResponse,
@@ -89,21 +92,19 @@ impl Collector for FacetCountCollector {
         let store_reader = segment
             .get_store_reader(FACET_STORE_CACHE_BLOCKS)
             .map_err(tantivy::TantivyError::from)?;
-        let fields = self
-            .field_names
-            .iter()
-            .filter_map(|field_name| {
-                segment
-                    .schema()
-                    .get_field(field_name)
-                    .ok()
-                    .map(|field| SegmentFacetFieldCounter {
-                        name: field_name.clone(),
-                        field,
-                        counts: HashMap::new(),
+        let fields =
+            self.field_names
+                .iter()
+                .filter_map(|field_name| {
+                    segment.schema().get_field(field_name).ok().map(|field| {
+                        SegmentFacetFieldCounter {
+                            name: field_name.clone(),
+                            field,
+                            counts: HashMap::new(),
+                        }
                     })
-            })
-            .collect();
+                })
+                .collect();
         Ok(FacetCountSegmentCollector {
             store_reader,
             fields,
@@ -376,6 +377,7 @@ impl LogIndex {
             .reload_policy(ReloadPolicy::OnCommitWithDelay)
             .try_into()?;
         let writer = index.writer(32 * 1024 * 1024)?;
+        writer.set_merge_policy(Box::new(Self::merge_policy()));
 
         let ingest = if ingest_state_path.exists() {
             let bytes = std::fs::read(ingest_state_path).unwrap_or_default();
@@ -397,6 +399,14 @@ impl LogIndex {
             ingest_gate: Mutex::new(()),
             ingest: Mutex::new(ingest),
         })
+    }
+
+    fn merge_policy() -> LogMergePolicy {
+        let mut policy = LogMergePolicy::default();
+        policy.set_min_num_segments(2);
+        policy.set_min_layer_size(100);
+        policy.set_del_docs_ratio_before_merge(0.5);
+        policy
     }
 
     fn build_schema() -> tantivy::schema::Schema {
@@ -498,6 +508,7 @@ impl LogIndex {
             .reload_policy(ReloadPolicy::OnCommitWithDelay)
             .try_into()?;
         let writer = index.writer(32 * 1024 * 1024)?;
+        writer.set_merge_policy(Box::new(Self::merge_policy()));
         Self::resolve_fields(&schema)?;
         let cached_names: Vec<String> = state.dynamic_fields.keys().cloned().collect();
 
@@ -612,6 +623,8 @@ impl LogIndex {
                 .context("tantivy writer missing")?;
             writer.delete_term(term);
             writer.commit()?;
+            let _ = writer.garbage_collect_files();
+            Self::merge_all_segments(&self.index, writer);
         }
         self.reader.read().unwrap().reload().ok();
         {
@@ -623,6 +636,28 @@ impl LogIndex {
             atomic_write(&self.ingest_state_path, &bytes)?;
         }
         Ok(())
+    }
+
+    pub(crate) fn force_compact(&self) -> Result<()> {
+        let _gate = self.ingest_gate.lock().unwrap();
+        let mut writer_state = self.writer_state.lock().unwrap();
+        let writer = writer_state
+            .writer
+            .as_mut()
+            .context("tantivy writer missing")?;
+        let _ = writer.garbage_collect_files();
+        Self::merge_all_segments(&self.index, writer);
+        Ok(())
+    }
+
+    fn merge_all_segments(index: &RwLock<Index>, writer: &mut IndexWriter) {
+        let segment_ids = {
+            let index = index.read().unwrap();
+            index.searchable_segment_ids().unwrap_or_default()
+        };
+        if segment_ids.len() > 1 {
+            let _ = writer.merge(&segment_ids).wait();
+        }
     }
 
     pub(crate) fn ingest_sources(&self, sources: &[LogSource]) -> Result<()> {
@@ -1074,7 +1109,11 @@ impl LogIndex {
                 )?;
                 (total, Vec::new(), facet_counts)
             }
-            (false, false) => (searcher.search(view_query.as_ref(), &Count)?, Vec::new(), HashMap::new()),
+            (false, false) => (
+                searcher.search(view_query.as_ref(), &Count)?,
+                Vec::new(),
+                HashMap::new(),
+            ),
         };
 
         let mut entries: Vec<(i64, u64, LogEntry)> = Vec::new();
