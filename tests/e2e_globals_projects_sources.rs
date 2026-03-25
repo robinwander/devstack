@@ -278,3 +278,146 @@ async fn source_logs_can_be_queried() -> Result<()> {
     daemon.stop().await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn removing_source_makes_it_unqueryable() -> Result<()> {
+    let t = TestHarness::new().await?;
+    let project = t.fixture(fixtures::simple_http()).create().await?;
+    let daemon = t.daemon().start().await?;
+    let source_path = project.path().join("state/remove-source.jsonl");
+    std::fs::create_dir_all(source_path.parent().unwrap())?;
+    std::fs::write(
+        &source_path,
+        "{\"time\":\"2025-01-01T00:00:00Z\",\"stream\":\"stdout\",\"msg\":\"source-live\"}\n",
+    )?;
+
+    t.api()
+        .add_source("ext", vec![source_path.to_string_lossy().to_string()])
+        .await?;
+    let before = t
+        .api()
+        .source_logs(
+            "ext",
+            &devstack::api::LogViewQuery {
+                last: Some(50),
+                since: None,
+                search: Some("source-live".to_string()),
+                level: None,
+                stream: None,
+                service: None,
+                include_entries: true,
+                include_facets: false,
+            },
+        )
+        .await?;
+    assert_eq!(before.entries.len(), 1);
+
+    t.api().remove_source("ext").await?;
+    let err = t
+        .api()
+        .source_logs(
+            "ext",
+            &devstack::api::LogViewQuery {
+                last: Some(50),
+                since: None,
+                search: None,
+                level: None,
+                stream: None,
+                service: None,
+                include_entries: true,
+                include_facets: false,
+            },
+        )
+        .await
+        .expect_err("removed source should not remain queryable");
+    assert!(err.to_string().contains("source ext not found"));
+
+    daemon.stop().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn readding_source_refreshes_searchable_entries() -> Result<()> {
+    let t = TestHarness::new().await?;
+    let project = t.fixture(fixtures::simple_http()).create().await?;
+    let daemon = t.daemon().start().await?;
+    let source_path = project.path().join("state/refresh-source.jsonl");
+    std::fs::create_dir_all(source_path.parent().unwrap())?;
+    std::fs::write(
+        &source_path,
+        "{\"time\":\"2025-01-01T00:00:00Z\",\"stream\":\"stdout\",\"msg\":\"source-old\"}\n",
+    )?;
+
+    let source_arg = source_path.to_string_lossy().to_string();
+    t.cli()
+        .sources_add(&project, "ext", std::slice::from_ref(&source_arg))
+        .await?
+        .success()?;
+
+    let old = t
+        .api()
+        .source_logs(
+            "ext",
+            &devstack::api::LogViewQuery {
+                last: Some(50),
+                since: None,
+                search: Some("source-old".to_string()),
+                level: None,
+                stream: None,
+                service: None,
+                include_entries: true,
+                include_facets: false,
+            },
+        )
+        .await?;
+    assert_eq!(old.entries.len(), 1);
+
+    std::fs::write(
+        &source_path,
+        "{\"time\":\"2025-01-01T00:00:01Z\",\"stream\":\"stdout\",\"msg\":\"source-new\"}\n",
+    )?;
+    t.cli()
+        .sources_add(&project, "ext", std::slice::from_ref(&source_arg))
+        .await?
+        .success()?;
+
+    let new = t
+        .api()
+        .source_logs(
+            "ext",
+            &devstack::api::LogViewQuery {
+                last: Some(50),
+                since: None,
+                search: Some("source-new".to_string()),
+                level: None,
+                stream: None,
+                service: None,
+                include_entries: true,
+                include_facets: false,
+            },
+        )
+        .await?;
+    assert_eq!(new.entries.len(), 1);
+    assert_eq!(new.entries[0].message, "source-new");
+
+    let stale = t
+        .api()
+        .source_logs(
+            "ext",
+            &devstack::api::LogViewQuery {
+                last: Some(50),
+                since: None,
+                search: Some("source-old".to_string()),
+                level: None,
+                stream: None,
+                service: None,
+                include_entries: true,
+                include_facets: false,
+            },
+        )
+        .await?;
+    assert!(stale.entries.is_empty());
+
+    daemon.stop().await?;
+    Ok(())
+}

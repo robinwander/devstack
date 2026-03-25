@@ -160,6 +160,37 @@ impl ServiceConfigPatch<'_> {
         self
     }
 
+    pub fn readiness_tcp(&mut self) -> &mut Self {
+        self.table.insert(
+            "readiness".to_string(),
+            readiness_table([("tcp", Value::Table(toml::map::Map::new()))]),
+        );
+        self
+    }
+
+    pub fn readiness_http(
+        &mut self,
+        path: impl Into<String>,
+        expect_status: [u16; 2],
+    ) -> &mut Self {
+        let mut http = toml::map::Map::new();
+        http.insert("path".to_string(), Value::String(path.into()));
+        http.insert(
+            "expect_status".to_string(),
+            Value::Array(
+                expect_status
+                    .iter()
+                    .map(|value| Value::Integer(i64::from(*value)))
+                    .collect(),
+            ),
+        );
+        self.table.insert(
+            "readiness".to_string(),
+            readiness_table([("http", Value::Table(http))]),
+        );
+        self
+    }
+
     pub fn readiness_delay_ms(&mut self, delay_ms: u64) -> &mut Self {
         self.table.insert(
             "readiness".to_string(),
@@ -190,6 +221,12 @@ impl ServiceConfigPatch<'_> {
             readiness_table([("exit", Value::Table(toml::map::Map::new()))]),
         );
         self
+    }
+
+    pub fn readiness_timeout_ms(&mut self, timeout_ms: u64) -> Result<&mut Self> {
+        let readiness = nested_table_mut(self.table, "readiness")?;
+        readiness.insert("timeout_ms".to_string(), Value::Integer(timeout_ms as i64));
+        Ok(self)
     }
 
     pub fn env(&mut self, key: impl Into<String>, value: impl Into<String>) -> Result<&mut Self> {

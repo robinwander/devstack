@@ -7,7 +7,7 @@ use devstack::api::SetNavigationIntentRequest;
 use devstack::manifest::RunLifecycle;
 use support::fixtures;
 use support::workflows::start_fixture_run;
-use support::TestHarness;
+use support::{TestHarness, UpOptions};
 
 #[tokio::test]
 async fn navigation_intent_round_trip() -> Result<()> {
@@ -73,7 +73,10 @@ async fn agent_session_register_poll_share_unregister_round_trip() -> Result<()>
     assert_eq!(queued.queued, 2);
 
     let polled = t.api().poll_agent_messages(agent_id).await?;
-    assert_eq!(polled.messages, vec!["first".to_string(), "second".to_string()]);
+    assert_eq!(
+        polled.messages,
+        vec!["first".to_string(), "second".to_string()]
+    );
     let polled = t.api().poll_agent_messages(agent_id).await?;
     assert!(polled.messages.is_empty());
 
@@ -91,7 +94,10 @@ async fn agent_session_register_poll_share_unregister_round_trip() -> Result<()>
     let shared_messages = t.api().poll_agent_messages(agent_id).await?;
     assert_eq!(
         shared_messages.messages,
-        vec!["investigate this\nRun `devstack logs --run run-1 --service api --level error`".to_string()]
+        vec![
+            "investigate this\nRun `devstack logs --run run-1 --service api --level error`"
+                .to_string()
+        ]
     );
 
     t.api().unregister_agent_session(agent_id).await?;
@@ -139,7 +145,13 @@ async fn share_targets_latest_session_for_project() -> Result<()> {
         .await?;
 
     let latest = t.api().latest_agent_session(&project).await?;
-    assert_eq!(latest.session.as_ref().map(|session| session.agent_id.as_str()), Some("agent-new"));
+    assert_eq!(
+        latest
+            .session
+            .as_ref()
+            .map(|session| session.agent_id.as_str()),
+        Some("agent-new")
+    );
 
     let shared = t
         .api()
@@ -167,6 +179,69 @@ async fn gc_removes_old_stopped_runs() -> Result<()> {
     assert!(response.removed_runs.contains(&run.id().to_string()));
     assert!(!t.run_dir(run.id()).exists());
 
+    daemon.stop().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn gc_removes_log_index_entries_before_run_id_is_reused() -> Result<()> {
+    let t = TestHarness::new().await?;
+    let project = t.fixture(fixtures::simple_http()).create().await?;
+    let daemon = t.daemon().start().await?;
+    let run_id = "gc-reuse-run-id";
+
+    project.patch_config(|config| {
+        config
+            .service("dev", "api")?
+            .cmd("bash -lc 'echo old-start; exec python3 bin/service_http.py'");
+        Ok(())
+    })?;
+    let first = t
+        .cli()
+        .up_with(
+            &project,
+            UpOptions {
+                run_id: Some(run_id.to_string()),
+                ..UpOptions::default()
+            },
+        )
+        .await?;
+    first.assert_ready().await?;
+    first
+        .service("api")
+        .assert_log_contains("old-start")
+        .await?;
+    first.down().await?;
+    let response = t.api().gc(Some("0s".to_string()), false).await?;
+    assert!(response.removed_runs.contains(&run_id.to_string()));
+
+    project.patch_config(|config| {
+        config
+            .service("dev", "api")?
+            .cmd("bash -lc 'echo new-start; exec python3 bin/service_http.py'");
+        Ok(())
+    })?;
+    let second = t
+        .cli()
+        .up_with(
+            &project,
+            UpOptions {
+                run_id: Some(run_id.to_string()),
+                ..UpOptions::default()
+            },
+        )
+        .await?;
+    second.assert_ready().await?;
+    second
+        .service("api")
+        .assert_log_contains("new-start")
+        .await?;
+    second
+        .service("api")
+        .assert_log_not_contains("old-start", Duration::from_millis(500))
+        .await?;
+
+    second.down().await?;
     daemon.stop().await?;
     Ok(())
 }
