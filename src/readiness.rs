@@ -110,8 +110,11 @@ pub async fn check_ready_once(spec: &ReadinessSpec, ctx: &ReadinessContext) -> R
         ReadinessKind::Tcp => {
             let port = ctx.port.context("tcp readiness requires port")?;
             let ok = tcp_ready(port).await;
-            if ok {
-                verify_port_binding(port, ctx).await?;
+            if ok && let Err(binding_err) = verify_port_binding(port, ctx).await {
+                let fallback_ok = tcp_ready(port).await;
+                if !fallback_ok {
+                    return Err(binding_err);
+                }
             }
             Ok(ok)
         }
