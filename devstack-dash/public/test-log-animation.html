@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Log Row Animation Test</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: ui-monospace, 'SF Mono', Monaco, 'Cascadia Mono', monospace;
+    font-size: 13px;
+    background: #fafafa;
+    color: #333;
+  }
+  .controls {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background: #fff;
+    border-bottom: 1px solid #e5e5e5;
+    padding: 12px 16px;
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+  button {
+    padding: 6px 14px;
+    border: 1px solid #ccc;
+    border-radius: 6px;
+    background: #fff;
+    cursor: pointer;
+    font-size: 13px;
+  }
+  button:hover { background: #f0f0f0; }
+  button.active { background: #e0e7ff; border-color: #818cf8; color: #4338ca; }
+  .label { font-size: 12px; color: #888; }
+  
+  #log-container {
+    height: calc(100vh - 52px);
+    overflow-y: auto;
+    position: relative;
+  }
+
+  /* ── Current animation (the one that flashes) ── */
+  .log-line-current {
+    display: flex;
+    align-items: baseline;
+    padding: 2px 8px;
+    border-bottom: 1px solid transparent;
+    cursor: pointer;
+    animation: log-row-in-current 150ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+  .log-line-current:hover { background: rgba(0,0,0,0.03); }
+  @keyframes log-row-in-current {
+    from { opacity: 0; }
+  }
+
+  /* ── Fixed animation (no animation on rows) ── */
+  .log-line-fixed {
+    display: flex;
+    align-items: baseline;
+    padding: 2px 8px;
+    border-bottom: 1px solid transparent;
+    cursor: pointer;
+  }
+  .log-line-fixed:hover { background: rgba(0,0,0,0.03); }
+
+  .log-num {
+    width: 44px;
+    text-align: right;
+    padding-right: 8px;
+    color: #999;
+    font-size: 11px;
+    user-select: none;
+    flex-shrink: 0;
+  }
+  .log-ts {
+    width: 100px;
+    color: #888;
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
+  .log-svc {
+    width: 110px;
+    font-weight: 600;
+    flex-shrink: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .log-svc.svc-a { color: #16a34a; }
+  .log-svc.svc-b { color: #ca8a04; }
+  .log-svc.svc-c { color: #2563eb; }
+  .log-level {
+    width: 50px;
+    flex-shrink: 0;
+  }
+  .log-level span {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: 18px;
+    min-width: 18px;
+    padding: 0 4px;
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+  .log-level .inf { background: #f3f4f6; color: #9ca3af; }
+  .log-level .wrn { background: #fef3c7; color: #d97706; }
+  .log-level .err { background: #fee2e2; color: #dc2626; }
+  .log-msg {
+    flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: #555;
+  }
+  
+  .status-bar {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: #fff;
+    border-top: 1px solid #e5e5e5;
+    padding: 6px 16px;
+    font-size: 11px;
+    color: #888;
+    display: flex;
+    gap: 16px;
+  }
+</style>
+</head>
+<body>
+<div class="controls">
+  <button id="btn-add-batch" class="active">Add 10 logs</button>
+  <button id="btn-stream">Start streaming (every 200ms)</button>
+  <button id="btn-clear">Clear</button>
+  <span class="label">|</span>
+  <button id="btn-mode-current" class="active">Current (opacity fade)</button>
+  <button id="btn-mode-fixed">Fixed (no animation)</button>
+  <span class="label" id="mode-label">Mode: current</span>
+</div>
+<div id="log-container"></div>
+<div class="status-bar">
+  <span id="count-label">0 lines</span>
+</div>
+
+<script>
+  const container = document.getElementById('log-container');
+  const countLabel = document.getElementById('count-label');
+  const modeLabel = document.getElementById('mode-label');
+  let lineCount = 0;
+  let streamTimer = null;
+  let mode = 'current'; // 'current' | 'fixed'
+  
+  const services = [
+    { name: 'api-server', cls: 'svc-a' },
+    { name: 'voice-worker', cls: 'svc-b' },
+    { name: 'test-runner', cls: 'svc-c' },
+  ];
+  const messages = [
+    "ignoring text stream with topic 'lk.agent.events', no callback attached",
+    "ignoring text stream with topic 'lk.transcription', no callback attached",
+    "Test agent transcript text=Hello, how can I help you?",
+    "Test agent transcript final=True",
+    "Test agent transcript final=False",
+    "Request completed: GET /health -> 200",
+    "Incoming GET request to /health",
+    "Established new Cartesia TTS WebSocket connection",
+    "event loop monitor",
+    "conversation_item_added",
+    "function_tool_completed",
+    "LiveKit analytics metrics collected",
+  ];
+  const levels = ['inf', 'inf', 'inf', 'inf', 'inf', 'inf', 'inf', 'wrn', 'err', 'inf'];
+
+  function now() {
+    const d = new Date();
+    const pad = (n, w=2) => String(n).padStart(w, '0');
+    return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(),3)}`;
+  }
+
+  function addLogRow() {
+    lineCount++;
+    const svc = services[Math.floor(Math.random() * services.length)];
+    const msg = messages[Math.floor(Math.random() * messages.length)];
+    const lvl = levels[Math.floor(Math.random() * levels.length)];
+    const cls = mode === 'current' ? 'log-line-current' : 'log-line-fixed';
+    
+    const row = document.createElement('div');
+    row.className = cls;
+    row.innerHTML = `
+      <span class="log-num">${lineCount}</span>
+      <span class="log-ts">${now()}</span>
+      <span class="log-svc ${svc.cls}">${svc.name}</span>
+      <span class="log-level"><span class="${lvl}">${lvl === 'inf' ? 'INF' : lvl === 'wrn' ? 'WRN' : 'ERR'}</span></span>
+      <span class="log-msg">${msg}</span>
+    `;
+    
+    // Prepend (newest first, like desc mode)
+    container.prepend(row);
+    countLabel.textContent = `${lineCount} lines`;
+  }
+  
+  function addBatch(n) {
+    for (let i = 0; i < n; i++) addLogRow();
+  }
+
+  document.getElementById('btn-add-batch').onclick = () => addBatch(10);
+  
+  document.getElementById('btn-stream').onclick = (e) => {
+    if (streamTimer) {
+      clearInterval(streamTimer);
+      streamTimer = null;
+      e.target.textContent = 'Start streaming (every 200ms)';
+      e.target.classList.remove('active');
+    } else {
+      streamTimer = setInterval(() => addLogRow(), 200);
+      e.target.textContent = 'Stop streaming';
+      e.target.classList.add('active');
+    }
+  };
+
+  document.getElementById('btn-clear').onclick = () => {
+    container.innerHTML = '';
+    lineCount = 0;
+    countLabel.textContent = '0 lines';
+  };
+
+  document.getElementById('btn-mode-current').onclick = () => {
+    mode = 'current';
+    modeLabel.textContent = 'Mode: current (opacity fade)';
+    document.getElementById('btn-mode-current').classList.add('active');
+    document.getElementById('btn-mode-fixed').classList.remove('active');
+  };
+
+  document.getElementById('btn-mode-fixed').onclick = () => {
+    mode = 'fixed';
+    modeLabel.textContent = 'Mode: fixed (no animation)';
+    document.getElementById('btn-mode-fixed').classList.add('active');
+    document.getElementById('btn-mode-current').classList.remove('active');
+  };
+  
+  // Pre-populate some rows
+  addBatch(20);
+</script>
+</body>
+</html>

@@ -4,7 +4,6 @@ import viteTsConfigPaths from "vite-tsconfig-paths";
 import tailwindcss from "@tailwindcss/vite";
 import { request } from "undici";
 import { Agent } from "undici";
-import { Readable } from "stream";
 import { homedir } from "os";
 import { platform } from "process";
 
@@ -60,14 +59,18 @@ function unixSocketProxy(): Plugin {
             }
             res.flushHeaders();
 
-            const stream = Readable.fromWeb(response.body as never);
-            req.on("close", () => stream.destroy());
-            stream.on("error", (error) => {
-              if (!res.writableEnded) {
-                res.destroy(error);
-              }
+            response.body.on("data", (chunk: Buffer) => {
+              res.write(chunk);
             });
-            stream.pipe(res);
+            response.body.on("end", () => {
+              if (!res.writableEnded) res.end();
+            });
+            response.body.on("error", () => {
+              if (!res.writableEnded) res.end();
+            });
+            req.on("close", () => {
+              response.body.destroy();
+            });
             return;
           }
 
