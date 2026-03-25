@@ -1,0 +1,6 @@
+[term]
+quiet = true
+progress.when = "never"
+
+[target.'cfg(unix)']
+runner = ".cargo/test-runner.sh"
