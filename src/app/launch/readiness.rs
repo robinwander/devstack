@@ -537,7 +537,7 @@ async fn enrich_readiness_error(
     if let Ok(Some(status)) = app.systemd.unit_status(unit_name).await
         && let Some(reason) = format_terminal_unit_status(&status)
     {
-        message = format!("service '{service}' {reason}");
+        message = format!("service {reason} for '{service}'");
     }
 
     let recent_logs = tail_log_messages(log_path, 10);
