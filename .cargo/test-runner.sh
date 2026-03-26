@@ -23,6 +23,7 @@ cleanup() {
 trap cleanup EXIT
 
 if "$binary" "$@" >"$output" 2>&1; then
+  grep '^test result:' "$output" 2>/dev/null || echo "all tests passed"
   exit 0
 else
   status=$?

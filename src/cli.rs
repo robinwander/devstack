@@ -2914,7 +2914,12 @@ fn open_dashboard() -> Result<()> {
         );
     }
 
-    // Don't fail in headless environments or minimal installs; always print the URL.
+    println!("Opening dashboard at {}", url);
+
+    if std::env::var("DEVSTACK_DISABLE_DASHBOARD").ok().map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")).unwrap_or(false) {
+        return Ok(());
+    }
+
     #[cfg(target_os = "macos")]
     {
         if let Err(e) = Command::new("open").arg(&url).spawn() {
@@ -2929,7 +2934,6 @@ fn open_dashboard() -> Result<()> {
         }
     }
 
-    println!("Opening dashboard at {}", url);
     Ok(())
 }
 
