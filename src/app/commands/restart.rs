@@ -6,7 +6,7 @@ use crate::app::launch::{
     load_post_init_context_for_run_service, mark_service_failed, mark_service_ready,
     spawn_readiness_task,
 };
-use crate::app::runtime::persist_manifest;
+use crate::app::runtime::{persist_manifest, run_response};
 use crate::manifest::ServiceState;
 use crate::services::readiness::ReadinessContext;
 use crate::stores::{recompute_run_state, set_service_state};
@@ -16,7 +16,7 @@ pub async fn restart_service(
     run_id: &str,
     service: &str,
     no_wait: bool,
-) -> AppResult<crate::manifest::RunManifest> {
+) -> AppResult<crate::api::RunResponse> {
     restart_service_inner(app, run_id, service, no_wait).await
 }
 
@@ -24,7 +24,7 @@ pub async fn restart_service_no_wait(
     app: &AppContext,
     run_id: &str,
     service: &str,
-) -> AppResult<crate::manifest::RunManifest> {
+) -> AppResult<crate::api::RunResponse> {
     restart_service_inner(app, run_id, service, true).await
 }
 
@@ -33,7 +33,7 @@ async fn restart_service_inner(
     run_id: &str,
     service: &str,
     no_wait: bool,
-) -> AppResult<crate::manifest::RunManifest> {
+) -> AppResult<crate::api::RunResponse> {
     let (unit_name, readiness, port, scheme, log_path, cwd, env, stack, project_dir, events) = app
         .runs
         .with_run_mut(run_id, |run| -> Result<_, AppError> {
@@ -109,7 +109,10 @@ async fn restart_service_inner(
             unit_name.clone(),
             post_init,
         );
-        return persist_manifest(app, run_id).await.map_err(AppError::from);
+        persist_manifest(app, run_id)
+            .await
+            .map_err(AppError::from)?;
+        return run_response(app, run_id).await.map_err(AppError::from);
     }
 
     let context = ReadinessContext {
@@ -154,5 +157,8 @@ async fn restart_service_inner(
         }
     }
 
-    persist_manifest(app, run_id).await.map_err(AppError::from)
+    persist_manifest(app, run_id)
+        .await
+        .map_err(AppError::from)?;
+    run_response(app, run_id).await.map_err(AppError::from)
 }

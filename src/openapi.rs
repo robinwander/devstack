@@ -6,13 +6,13 @@ use crate::api::{
     DownRequest, ErrorResponse, FacetFilter, FacetValueCount, GcRequest, GcResponse, GlobalSummary,
     GlobalsResponse, HealthStatus, KillRequest, LatestAgentSessionResponse, LogEntry, LogViewQuery,
     LogViewResponse, LogsQuery, LogsResponse, NavigationIntent, NavigationIntentResponse,
-    PingResponse, RestartServiceRequest, RunListResponse, RunStatusResponse, RunSummary,
-    RunWatchResponse, ServiceStatus, SetNavigationIntentRequest, ShareAgentMessageRequest,
-    ShareAgentMessageResponse, SourceSummary, SourcesResponse, StartTaskRequest, StartTaskResponse,
-    SystemdStatus, TaskExecutionState, TaskExecutionSummary, TaskStatusResponse, TasksResponse,
-    UpRequest, WatchControlRequest, WatchServiceStatus,
+    PingResponse, RestartServiceRequest, RunListResponse, RunResponse, RunStatusResponse,
+    RunSummary, RunWatchResponse, ServiceResponse, ServiceStatus, SetNavigationIntentRequest,
+    ShareAgentMessageRequest, ShareAgentMessageResponse, SourceSummary, SourcesResponse,
+    StartTaskRequest, StartTaskResponse, SystemdStatus, TaskExecutionState, TaskExecutionSummary,
+    TaskStatusResponse, TasksResponse, UpRequest, WatchControlRequest, WatchServiceStatus,
 };
-use crate::manifest::{RunLifecycle, RunManifest, ServiceManifest, ServiceState};
+use crate::manifest::{RunLifecycle, ServiceState};
 
 #[derive(OpenApi)]
 #[openapi(
@@ -67,8 +67,8 @@ use crate::manifest::{RunLifecycle, RunManifest, ServiceManifest, ServiceState};
             ShareAgentMessageResponse,
             RunSummary,
             RunListResponse,
-            RunManifest,
-            ServiceManifest,
+            RunResponse,
+            ServiceResponse,
             RunStatusResponse,
             StartTaskRequest,
             StartTaskResponse,

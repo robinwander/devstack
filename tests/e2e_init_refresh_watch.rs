@@ -19,7 +19,9 @@ async fn init_runs_before_service_start() -> Result<()> {
         .wait_for_line_count_at_least(fixtures::InitPostInitFixture::ORDER_LOG, 3)
         .await?;
 
-    let order = t.fs(&project).read_text(fixtures::InitPostInitFixture::ORDER_LOG)?;
+    let order = t
+        .fs(&project)
+        .read_text(fixtures::InitPostInitFixture::ORDER_LOG)?;
     let lines: Vec<_> = order.lines().collect();
     assert_eq!(lines[0], "init-task");
     assert_eq!(lines[1], "service-start");
@@ -67,7 +69,9 @@ async fn post_init_runs_after_readiness() -> Result<()> {
         .wait_for_line_count_at_least(fixtures::InitPostInitFixture::POST_INIT_LOG, 1)
         .await?;
 
-    let order = t.fs(&project).read_text(fixtures::InitPostInitFixture::ORDER_LOG)?;
+    let order = t
+        .fs(&project)
+        .read_text(fixtures::InitPostInitFixture::ORDER_LOG)?;
     let lines: Vec<_> = order.lines().collect();
     assert_eq!(lines[1], "service-start");
     assert_eq!(lines[2], "post-init");
@@ -128,7 +132,9 @@ async fn failing_init_marks_service_failed_without_starting_process() -> Result<
     let project = t
         .fixture(fixtures::init_post_init())
         .with_config_patch(|config| {
-            config.task("init-task")?.cmd("echo init-broke >&2; exit 17");
+            config
+                .task("init-task")?
+                .cmd("echo init-broke >&2; exit 17");
             Ok(())
         })?
         .create()
@@ -142,11 +148,13 @@ async fn failing_init_marks_service_failed_without_starting_process() -> Result<
         .assert_missing(fixtures::InitPostInitFixture::STARTS_LOG)?;
 
     let status = run.status().await?;
-    assert!(status.services["api"]
-        .last_failure
-        .as_deref()
-        .unwrap_or_default()
-        .contains("init task failed"));
+    assert!(
+        status.services["api"]
+            .last_failure
+            .as_deref()
+            .unwrap_or_default()
+            .contains("init task failed")
+    );
 
     daemon.stop().await?;
     Ok(())
@@ -158,7 +166,9 @@ async fn failing_post_init_marks_service_failed() -> Result<()> {
     let project = t
         .fixture(fixtures::init_post_init())
         .with_config_patch(|config| {
-            config.task("post-init")?.cmd("echo post-init-broke >&2; exit 19");
+            config
+                .task("post-init")?
+                .cmd("echo post-init-broke >&2; exit 19");
             Ok(())
         })?
         .create()
@@ -169,7 +179,13 @@ async fn failing_post_init_marks_service_failed() -> Result<()> {
         .cli()
         .run_in(
             &project,
-            &["up", "--project", project.path().to_string_lossy().as_ref(), "--stack", "dev"],
+            &[
+                "up",
+                "--project",
+                project.path().to_string_lossy().as_ref(),
+                "--stack",
+                "dev",
+            ],
         )
         .await?
         .failure()?;
@@ -277,6 +293,27 @@ async fn watched_file_change_triggers_restart() -> Result<()> {
         .wait_for_line_count_at_least(fixtures::WatchRestartFixture::STARTS_LOG, 2)
         .await?;
     run.service("api").assert_ready().await?;
+
+    run.down().await?;
+    daemon.stop().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn daemon_restart_restores_watch_metadata() -> Result<()> {
+    let t = TestHarness::new().await?;
+    let fixture = fixtures::watch_restart();
+    let (daemon, _project, run) = start_fixture_run(&t, fixture).await?;
+
+    run.assert_service_ready("api").await?;
+    let initial_watch = run.watch_status().await?;
+    assert!(initial_watch.services["api"].auto_restart);
+
+    let daemon = daemon.restart().await?;
+    daemon.assert_ping().await?;
+
+    let restored_watch = run.watch_status().await?;
+    assert!(restored_watch.services["api"].auto_restart);
 
     run.down().await?;
     daemon.stop().await?;

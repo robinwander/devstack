@@ -4,9 +4,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{Result, anyhow};
 
 use crate::config::ServiceConfig;
-use crate::ids::{RunId, ServiceName};
+use crate::ids::ServiceName;
 use crate::manifest::ServiceState;
-use crate::model::{ServiceLaunchPlan, ServiceRecord, ServiceSpec};
+use crate::model::{InstanceScope, ServiceLaunchPlan, ServiceRecord, ServiceSpec};
 use crate::paths;
 use crate::port::{allocate_ports, reserve_available_port, reserve_port};
 use crate::services::readiness::{ReadinessSpec, readiness_url};
@@ -77,8 +77,7 @@ impl PreparedService {
 
 #[allow(clippy::too_many_arguments)]
 pub fn prepare_service(
-    run_id: &RunId,
-    stack: &str,
+    scope: &InstanceScope,
     project_dir: &Path,
     config_dir: &Path,
     svc_name: &str,
@@ -91,8 +90,7 @@ pub fn prepare_service(
     let scheme = svc.scheme();
     let url = port.map(|value| readiness_url(&scheme, value));
 
-    let template_context =
-        build_template_context(run_id, stack, project_dir, port_map, service_schemes)?;
+    let template_context = build_template_context(scope, project_dir, port_map, service_schemes)?;
     let rendered_cwd = resolve_cwd_path(
         &svc.cwd_or(project_dir).to_string_lossy(),
         &template_context,
@@ -113,8 +111,8 @@ pub fn prepare_service(
     env.insert("DEV_GRACE_MS".to_string(), "2000".to_string());
 
     let readiness = svc.readiness_spec(port.is_some())?;
-    let unit_name = unit_name_for_run(run_id.as_str(), svc_name);
-    let log_path = paths::run_log_path(run_id, &ServiceName::new(svc_name.to_string()))?;
+    let unit_name = unit_name_for_scope(scope, svc_name);
+    let log_path = log_path_for_scope(scope, project_dir, svc_name)?;
     let cmd = render_template(&svc.cmd, &template_context)?;
 
     let rendered_watch = render_patterns(&svc.watch, &template_context)?;
@@ -240,4 +238,26 @@ pub fn unit_name_for_run(run_id: &str, service: &str) -> String {
     let run = sanitize_env_key(run_id);
     let svc = sanitize_env_key(service);
     format!("devstack-run-{run}-{svc}.service")
+}
+
+pub fn unit_name_for_global(key: &str, service: &str) -> String {
+    let key = sanitize_env_key(key);
+    let svc = sanitize_env_key(service);
+    format!("devstack-global-{key}-{svc}.service")
+}
+
+pub fn unit_name_for_scope(scope: &InstanceScope, service: &str) -> String {
+    match scope {
+        InstanceScope::Run { run_id, .. } => unit_name_for_run(run_id.as_str(), service),
+        InstanceScope::Global { key, .. } => unit_name_for_global(key, service),
+    }
+}
+
+fn log_path_for_scope(scope: &InstanceScope, project_dir: &Path, service: &str) -> Result<PathBuf> {
+    match scope {
+        InstanceScope::Run { run_id, .. } => {
+            paths::run_log_path(run_id, &ServiceName::new(service.to_string()))
+        }
+        InstanceScope::Global { name, .. } => paths::global_log_path(project_dir, name),
+    }
 }

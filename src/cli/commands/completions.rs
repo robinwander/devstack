@@ -5,8 +5,8 @@ use crate::cli::context::{
     sort_runs_for_project,
 };
 use crate::config::ConfigFile;
-use crate::manifest::RunManifest;
 use crate::paths;
+use crate::persistence::PersistedRun;
 
 pub(crate) async fn complete(
     context: &CliContext,
@@ -17,7 +17,10 @@ pub(crate) async fn complete(
         return Ok(());
     }
     if words[0] != "devstack"
-        && let Some((idx, _)) = words.iter().enumerate().find(|(_, word)| *word == "devstack")
+        && let Some((idx, _)) = words
+            .iter()
+            .enumerate()
+            .find(|(_, word)| *word == "devstack")
     {
         words = words[idx..].to_vec();
     }
@@ -134,15 +137,24 @@ pub(crate) async fn complete(
 pub(crate) fn print(shell: &str) -> Result<()> {
     match shell {
         "bash" => {
-            print!("{}", include_str!("../../../scripts/completions/devstack.bash"));
+            print!(
+                "{}",
+                include_str!("../../../scripts/completions/devstack.bash")
+            );
             Ok(())
         }
         "zsh" => {
-            print!("{}", include_str!("../../../scripts/completions/devstack.zsh"));
+            print!(
+                "{}",
+                include_str!("../../../scripts/completions/devstack.zsh")
+            );
             Ok(())
         }
         "fish" => {
-            print!("{}", include_str!("../../../scripts/completions/devstack.fish"));
+            print!(
+                "{}",
+                include_str!("../../../scripts/completions/devstack.fish")
+            );
             Ok(())
         }
         _ => Err(anyhow!(
@@ -381,14 +393,17 @@ fn completion_tasks() -> Result<Vec<String>> {
     Ok(tasks)
 }
 
-async fn completion_services(context: &CliContext, words: &[String]) -> Result<Option<Vec<String>>> {
+async fn completion_services(
+    context: &CliContext,
+    words: &[String],
+) -> Result<Option<Vec<String>>> {
     let run_id = completion_run_id(context, words).await?;
     let run_id = match run_id {
         Some(run_id) => run_id,
         None => return Ok(None),
     };
     let manifest_path = paths::run_manifest_path(&crate::ids::RunId::new(&run_id))?;
-    let manifest = match RunManifest::load_from_path(&manifest_path) {
+    let manifest = match PersistedRun::load_from_path(&manifest_path) {
         Ok(manifest) => manifest,
         Err(_) => return Ok(None),
     };
@@ -412,7 +427,10 @@ async fn completion_run_id(context: &CliContext, words: &[String]) -> Result<Opt
         Ok(runs) => runs,
         Err(_) => return Ok(None),
     };
-    Ok(crate::cli::context::select_latest_run(&runs.runs, &project_dir).map(|run| run.run_id.clone()))
+    Ok(
+        crate::cli::context::select_latest_run(&runs.runs, &project_dir)
+            .map(|run| run.run_id.clone()),
+    )
 }
 
 fn extract_arg_value(words: &[String], option: &str) -> Option<String> {

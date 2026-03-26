@@ -4,10 +4,9 @@ use std::process::ExitStatus;
 use anyhow::{Context, Result, anyhow};
 use assert_cmd::Command;
 use devstack::api::{
-    LogsResponse, ProjectsResponse, RunStatusResponse, RunWatchResponse, SourcesResponse,
-    StartTaskResponse, TaskStatusResponse,
+    LogsResponse, ProjectsResponse, RunResponse, RunStatusResponse, RunWatchResponse,
+    SourcesResponse, StartTaskResponse, TaskStatusResponse,
 };
-use devstack::manifest::RunManifest;
 use serde::de::DeserializeOwned;
 
 use super::{ProjectHandle, RunHandle, TaskHandle, TaskStartOptions, TestHarness, UpOptions};
@@ -61,7 +60,7 @@ impl CliHandle {
         }
         let args_ref: Vec<&str> = args.iter().map(String::as_str).collect();
         let result = self.run_in(project, &args_ref).await?;
-        let manifest: RunManifest = result.success()?.stdout_json()?;
+        let manifest: RunResponse = result.success()?.stdout_json()?;
         Ok(RunHandle::new(
             self.harness.clone(),
             project.clone(),

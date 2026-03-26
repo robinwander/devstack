@@ -4,8 +4,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
-use devstack::api::{LogsQuery, RunStatusResponse, RunWatchResponse, TaskExecutionState, TaskStatusResponse};
-use devstack::manifest::{RunLifecycle, RunManifest, ServiceState};
+use devstack::api::{
+    LogsQuery, RunResponse, RunStatusResponse, RunWatchResponse, TaskExecutionState,
+    TaskStatusResponse,
+};
+use devstack::manifest::{RunLifecycle, ServiceState};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::time::{Instant, sleep};
 
@@ -104,11 +107,11 @@ impl RunHandle {
         self.harness.api().watch_status(&self.run_id).await
     }
 
-    pub async fn down(&self) -> Result<RunManifest> {
+    pub async fn down(&self) -> Result<RunResponse> {
         self.harness.api().down(&self.run_id).await
     }
 
-    pub async fn kill(&self) -> Result<RunManifest> {
+    pub async fn kill(&self) -> Result<RunResponse> {
         self.harness.api().kill(&self.run_id).await
     }
 }

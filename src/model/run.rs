@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use crate::manifest::RunLifecycle;
 use super::{RunId, ServiceRecord};
+use crate::manifest::RunLifecycle;
 
 /// Represents a run's state in memory (renamed from RunState in daemon.rs)
 #[derive(Clone, Debug)]
@@ -10,6 +10,7 @@ pub struct RunRecord {
     pub run_id: RunId,
     pub stack: String,
     pub project_dir: PathBuf,
+    pub config_dir: PathBuf,
     pub base_env: BTreeMap<String, String>,
     pub services: BTreeMap<String, ServiceRecord>,
     pub state: RunLifecycle,
@@ -22,12 +23,14 @@ impl RunRecord {
         run_id: RunId,
         stack: String,
         project_dir: PathBuf,
+        config_dir: PathBuf,
         base_env: BTreeMap<String, String>,
     ) -> Self {
         Self {
             run_id,
             stack,
             project_dir,
+            config_dir,
             base_env,
             services: BTreeMap::new(),
             state: RunLifecycle::Starting,

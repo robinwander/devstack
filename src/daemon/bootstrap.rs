@@ -11,6 +11,7 @@ use tokio::net::UnixStream;
 use tokio::sync::Mutex;
 
 use crate::app::AppContext;
+use crate::app::launch::sync_service_auto_restart_watcher;
 use crate::app::runtime::sync_port_reservations_from_disk;
 use crate::infra::logs::index::LogIndex;
 use crate::paths;
@@ -59,6 +60,7 @@ pub async fn run_daemon() -> Result<()> {
     };
 
     sync_port_reservations_from_disk(&app).await?;
+    restore_auto_restart_watchers(&app).await;
 
     if let Ok(runs_dir) = paths::runs_dir()
         && let Ok(mut ledger) = ProjectsLedger::load()
@@ -86,6 +88,24 @@ pub async fn run_daemon() -> Result<()> {
     }
 
     Ok(())
+}
+
+async fn restore_auto_restart_watchers(app: &crate::app::context::AppContext) {
+    let runs = app.runs.list_runs().await;
+    for run in runs {
+        for service_name in run.services.keys() {
+            if let Err(err) =
+                sync_service_auto_restart_watcher(app, run.run_id.as_str(), service_name).await
+            {
+                eprintln!(
+                    "devstack: failed to restore watcher for {}.{}: {}",
+                    run.run_id.as_str(),
+                    service_name,
+                    err
+                );
+            }
+        }
+    }
 }
 
 fn acquire_daemon_lock() -> Result<Arc<std::fs::File>> {
@@ -210,7 +230,10 @@ async fn spawn_dashboard() -> Option<tokio::process::Child> {
         }
     };
     if !dashboard_dir.join("package.json").exists() {
-        eprintln!("[dashboard] no package.json found at {:?}, skipping", dashboard_dir);
+        eprintln!(
+            "[dashboard] no package.json found at {:?}, skipping",
+            dashboard_dir
+        );
         return None;
     }
 
@@ -358,7 +381,10 @@ async fn ping_daemon_socket() -> bool {
     let body = response.into_body().collect().await.ok();
     if let Some(body) = body {
         let value: serde_json::Value = serde_json::from_slice(&body.to_bytes()).unwrap_or_default();
-        return value.get("ok").and_then(|value| value.as_bool()).unwrap_or(false);
+        return value
+            .get("ok")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false);
     }
     false
 }

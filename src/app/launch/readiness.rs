@@ -29,14 +29,14 @@ pub struct PostInitContext {
     pub tasks_map: BTreeMap<String, TaskConfig>,
     pub post_init_tasks: Vec<String>,
     pub project_dir: PathBuf,
-    pub run_id: RunId,
+    pub run_id: Option<RunId>,
 }
 
 pub fn build_post_init_context(
     service: &ServiceConfig,
     tasks_map: &BTreeMap<String, TaskConfig>,
     project_dir: &Path,
-    run_id: &RunId,
+    run_id: Option<RunId>,
 ) -> Option<PostInitContext> {
     let post_init = service.post_init.as_ref()?;
     if post_init.is_empty() {
@@ -46,7 +46,7 @@ pub fn build_post_init_context(
         tasks_map: tasks_map.clone(),
         post_init_tasks: post_init.clone(),
         project_dir: project_dir.to_path_buf(),
-        run_id: run_id.clone(),
+        run_id,
     })
 }
 
@@ -78,7 +78,7 @@ pub fn load_post_init_context_for_run_service(
             &service_config,
             &tasks_map,
             project_dir,
-            &RunId::new(run_id),
+            Some(RunId::new(run_id)),
         )
     }))
 }

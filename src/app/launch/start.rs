@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 
-use crate::ids::RunId;
+use crate::model::InstanceScope;
 use crate::services::readiness::ReadinessKind;
 use crate::systemd::{ExecStart, UnitProperties};
 
@@ -11,7 +11,7 @@ use crate::app::context::AppContext;
 
 pub async fn start_prepared_service(
     app: &AppContext,
-    run_id: &RunId,
+    scope: &InstanceScope,
     prepared: &PreparedService,
     restart_existing: bool,
 ) -> Result<()> {
@@ -42,7 +42,7 @@ pub async fn start_prepared_service(
             binary.clone(),
             "__shim".to_string(),
             "--run-id".to_string(),
-            run_id.as_str().to_string(),
+            scope_identifier(scope).to_string(),
             "--service".to_string(),
             prepared.name.clone(),
             "--cmd".to_string(),
@@ -56,7 +56,7 @@ pub async fn start_prepared_service(
     };
 
     let properties = UnitProperties::new(
-        format!("devstack {} {}", run_id.as_str(), prepared.name),
+        format!("devstack {} {}", scope_label(scope), prepared.name),
         &prepared.cwd,
         prepared
             .env
@@ -73,4 +73,18 @@ pub async fn start_prepared_service(
         .await
         .with_context(|| format!("start unit {}", prepared.unit_name))?;
     Ok(())
+}
+
+fn scope_identifier(scope: &InstanceScope) -> &str {
+    match scope {
+        InstanceScope::Run { run_id, .. } => run_id.as_str(),
+        InstanceScope::Global { key, .. } => key,
+    }
+}
+
+fn scope_label(scope: &InstanceScope) -> String {
+    match scope {
+        InstanceScope::Run { run_id, .. } => run_id.as_str().to_string(),
+        InstanceScope::Global { key, .. } => format!("global:{key}"),
+    }
 }

@@ -40,15 +40,22 @@ pub async fn run_post_init_tasks_blocking(
     tasks_map: BTreeMap<String, TaskConfig>,
     post_init_tasks: Vec<String>,
     project_dir: PathBuf,
-    run_id: RunId,
+    run_id: Option<RunId>,
 ) -> Result<()> {
-    let history_path = paths::task_history_path(&run_id)?;
+    let history_path = match &run_id {
+        Some(run_id) => paths::task_history_path(run_id)?,
+        None => paths::ad_hoc_task_history_path(&project_dir)?,
+    };
     tokio::task::spawn_blocking(move || {
+        let log_scope = match &run_id {
+            Some(run_id) => crate::tasks::TaskLogScope::Run(run_id),
+            None => crate::tasks::TaskLogScope::AdHoc,
+        };
         crate::tasks::run_post_init_tasks(
             &tasks_map,
             &post_init_tasks,
             &project_dir,
-            crate::tasks::TaskLogScope::Run(&run_id),
+            log_scope,
             &history_path,
             false,
         )

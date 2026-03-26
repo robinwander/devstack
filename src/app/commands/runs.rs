@@ -15,19 +15,19 @@ use crate::app::launch::{
 };
 use crate::app::runtime::{
     find_latest_run_for_project_stack, persist_manifest, release_service_port, run_created_event,
-    run_removed_event, run_state_changed_event,
+    run_removed_event, run_response, run_state_changed_event,
 };
 use crate::config::{ConfigFile, StackPlan};
 use crate::ids::RunId;
 use crate::manifest::{RunLifecycle, ServiceState};
-use crate::model::RunRecord;
+use crate::model::{InstanceScope, RunRecord};
 use crate::paths;
 use crate::port::allocate_ports;
 use crate::projects::ProjectsLedger;
 use crate::stores::{recompute_run_state, service_state_changed_event, set_service_state};
 use crate::util::{atomic_write, now_rfc3339};
 
-pub async fn up(app: &AppContext, request: UpRequest) -> AppResult<crate::manifest::RunManifest> {
+pub async fn up(app: &AppContext, request: UpRequest) -> AppResult<crate::api::RunResponse> {
     let project_dir = PathBuf::from(&request.project_dir);
 
     if let Ok(mut ledger) = ProjectsLedger::load() {
@@ -106,18 +106,14 @@ pub async fn up(app: &AppContext, request: UpRequest) -> AppResult<crate::manife
         port_map.entry(name.clone()).or_insert(*port);
     }
 
-    let base_env = build_base_env(
-        &run_id,
-        &stack_plan.name,
-        &project_dir,
-        &port_map,
-        &service_schemes,
-    )
-    .map_err(AppError::from)?;
+    let scope = InstanceScope::run(run_id.clone(), stack_plan.name.clone());
+    let base_env = build_base_env(&scope, &project_dir, &port_map, &service_schemes)
+        .map_err(AppError::from)?;
     let run_record = RunRecord::new(
         run_id.clone(),
         stack_plan.name.clone(),
         project_dir.clone(),
+        config_dir.clone(),
         base_env.clone(),
     );
     app.runs
@@ -155,6 +151,9 @@ pub async fn up(app: &AppContext, request: UpRequest) -> AppResult<crate::manife
 
     persist_manifest(app, run_id.as_str())
         .await
+        .map_err(AppError::from)?;
+    run_response(app, run_id.as_str())
+        .await
         .map_err(AppError::from)
 }
 
@@ -168,7 +167,7 @@ pub async fn refresh_run(
     config_path: &Path,
     no_wait: bool,
     force: bool,
-) -> AppResult<crate::manifest::RunManifest> {
+) -> AppResult<crate::api::RunResponse> {
     let run_id = RunId::new(run_id.to_string());
     let config_dir = config_path.parent().unwrap_or(project_dir);
 
@@ -258,14 +257,9 @@ pub async fn refresh_run(
         port_map.entry(name.clone()).or_insert(*port);
     }
 
-    let base_env = build_base_env(
-        &run_id,
-        &stack_plan.name,
-        project_dir,
-        &port_map,
-        &service_schemes,
-    )
-    .map_err(AppError::from)?;
+    let scope = InstanceScope::run(run_id.clone(), stack_plan.name.clone());
+    let base_env =
+        build_base_env(&scope, project_dir, &port_map, &service_schemes).map_err(AppError::from)?;
 
     let events = app
         .runs
@@ -315,6 +309,9 @@ pub async fn refresh_run(
 
     persist_manifest(app, run_id.as_str())
         .await
+        .map_err(AppError::from)?;
+    run_response(app, run_id.as_str())
+        .await
         .map_err(AppError::from)
 }
 
@@ -322,7 +319,7 @@ pub async fn down(
     app: &AppContext,
     run_id: &str,
     purge: bool,
-) -> AppResult<crate::manifest::RunManifest> {
+) -> AppResult<crate::api::RunResponse> {
     stop_service_handles(app, run_id).await;
     let services = app
         .runs
@@ -363,9 +360,10 @@ pub async fn down(
         .map_err(AppError::from)?;
     app.emit_events(events);
 
-    let manifest = persist_manifest(app, run_id)
+    persist_manifest(app, run_id)
         .await
         .map_err(AppError::from)?;
+    let response = run_response(app, run_id).await.map_err(AppError::from)?;
     if purge {
         let run_dir = paths::run_dir(&RunId::new(run_id)).map_err(AppError::from)?;
         let _ = std::fs::remove_dir_all(run_dir);
@@ -380,10 +378,10 @@ pub async fn down(
             .ok();
         let _ = crate::app::runtime::write_daemon_state(app).await;
     }
-    Ok(manifest)
+    Ok(response)
 }
 
-pub async fn kill(app: &AppContext, run_id: &str) -> AppResult<crate::manifest::RunManifest> {
+pub async fn kill(app: &AppContext, run_id: &str) -> AppResult<crate::api::RunResponse> {
     stop_service_handles(app, run_id).await;
     let services = app
         .runs
@@ -425,7 +423,10 @@ pub async fn kill(app: &AppContext, run_id: &str) -> AppResult<crate::manifest::
         .map_err(AppError::from)?;
     app.emit_events(events);
 
-    persist_manifest(app, run_id).await.map_err(AppError::from)
+    persist_manifest(app, run_id)
+        .await
+        .map_err(AppError::from)?;
+    run_response(app, run_id).await.map_err(AppError::from)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -443,14 +444,15 @@ async fn launch_services(
     force: bool,
     existing: &BTreeMap<String, ExistingServiceSnapshot>,
 ) -> AppResult<()> {
+    let scope = InstanceScope::run(run_id.clone(), stack_plan.name.clone());
+
     for service_name in &stack_plan.order {
         let service = stack_plan
             .services
             .get(service_name)
             .ok_or_else(|| AppError::bad_request(format!("service {service_name} missing")))?;
         let prepared = prepare_service(
-            run_id,
-            &stack_plan.name,
+            &scope,
             project_dir,
             config_dir,
             service_name,
@@ -521,7 +523,7 @@ async fn launch_services(
         }
 
         let restart_existing = existing.contains_key(service_name);
-        let start_result = start_prepared_service(app, run_id, &prepared, restart_existing).await;
+        let start_result = start_prepared_service(app, &scope, &prepared, restart_existing).await;
         if let Some(previous_port) = existing
             .get(service_name)
             .and_then(|snapshot| snapshot.port)
@@ -578,7 +580,7 @@ async fn launch_services(
                 run_id.as_str(),
                 &prepared,
                 no_wait,
-                build_post_init_context(service, tasks_map, project_dir, run_id),
+                build_post_init_context(service, tasks_map, project_dir, Some(run_id.clone())),
             )
             .await
         {

@@ -183,6 +183,26 @@ pub struct RunListResponse {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+pub struct ServiceResponse {
+    pub port: Option<u16>,
+    pub url: Option<String>,
+    pub state: ServiceState,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+pub struct RunResponse {
+    pub run_id: String,
+    pub project_dir: String,
+    pub stack: String,
+    pub manifest_path: String,
+    pub services: BTreeMap<String, ServiceResponse>,
+    pub env: BTreeMap<String, String>,
+    pub state: RunLifecycle,
+    pub created_at: String,
+    pub stopped_at: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct SystemdStatus {
     pub active_state: String,
     pub sub_state: String,

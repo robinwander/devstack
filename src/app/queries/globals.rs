@@ -2,8 +2,8 @@ use anyhow::Result;
 
 use crate::api::{GlobalSummary, GlobalsResponse};
 use crate::app::context::AppContext;
-use crate::manifest::RunManifest;
 use crate::paths;
+use crate::persistence::PersistedGlobal;
 
 pub async fn list_globals(_app: &AppContext) -> Result<GlobalsResponse> {
     Ok(GlobalsResponse {
@@ -20,22 +20,18 @@ pub fn list_globals_from_disk() -> Result<Vec<GlobalSummary>> {
 
     for entry in std::fs::read_dir(root)? {
         let entry = entry?;
-        let key = entry.file_name().to_string_lossy().to_string();
         let manifest_path = entry.path().join("manifest.json");
         if !manifest_path.exists() {
             continue;
         }
-        let manifest = RunManifest::load_from_path(&manifest_path)?;
-        let Some((name, service)) = manifest.services.iter().next() else {
-            continue;
-        };
+        let manifest = PersistedGlobal::load_from_path(&manifest_path)?;
         globals.push(GlobalSummary {
-            key,
-            name: name.clone(),
-            project_dir: manifest.project_dir.clone(),
+            key: manifest.key,
+            name: manifest.name,
+            project_dir: manifest.project_dir,
             state: manifest.state,
-            port: service.port,
-            url: service.url.clone(),
+            port: manifest.service.port,
+            url: manifest.service.url,
         });
     }
 

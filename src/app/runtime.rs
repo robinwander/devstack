@@ -4,12 +4,13 @@ use anyhow::{Result, anyhow};
 
 use crate::api::{
     DaemonEvent, DaemonGlobalEvent, DaemonGlobalEventKind, DaemonRunEvent, DaemonRunEventKind,
-    DaemonServiceEvent, DaemonServiceEventKind, DaemonTaskEvent, DaemonTaskEventKind,
-    TaskExecutionState, TaskExecutionSummary, TaskStatusResponse,
+    DaemonServiceEvent, DaemonServiceEventKind, DaemonTaskEvent, DaemonTaskEventKind, RunResponse,
+    ServiceResponse, TaskExecutionState, TaskExecutionSummary, TaskStatusResponse,
 };
-use crate::manifest::{RunLifecycle, RunManifest, ServiceManifest, ServiceState};
+use crate::manifest::{RunLifecycle, ServiceState};
 use crate::model::RunRecord;
 use crate::paths;
+use crate::persistence::{PersistedRun, PersistedService};
 use crate::stores::DetachedTaskExecution;
 use crate::util::{atomic_write, now_rfc3339};
 
@@ -134,7 +135,7 @@ pub fn task_duration_ms(task: &DetachedTaskExecution) -> u64 {
     })
 }
 
-pub async fn persist_manifest(app: &AppContext, run_id: &str) -> Result<RunManifest> {
+pub async fn persist_manifest(app: &AppContext, run_id: &str) -> Result<()> {
     let (manifest, path) = app
         .runs
         .with_run(run_id, |run| {
@@ -144,22 +145,26 @@ pub async fn persist_manifest(app: &AppContext, run_id: &str) -> Result<RunManif
                 .map(|(name, service)| {
                     (
                         name.clone(),
-                        ServiceManifest {
+                        PersistedService {
                             port: service.launch.port,
                             url: service.launch.url.clone(),
                             state: service.runtime.state.clone(),
                             watch_hash: Some(service.launch.watch_hash.clone()),
+                            last_failure: service.runtime.last_failure.clone(),
+                            last_started_at: service.runtime.last_started_at.clone(),
+                            watch_paused: service.runtime.watch_paused,
                         },
                     )
                 })
                 .collect();
             let path = paths::run_manifest_path(&run.run_id).unwrap();
             (
-                RunManifest {
+                PersistedRun {
                     run_id: run.run_id.as_str().to_string(),
                     project_dir: run.project_dir.to_string_lossy().to_string(),
-                    stack: run.stack.clone(),
+                    config_dir: run.config_dir.to_string_lossy().to_string(),
                     manifest_path: path.to_string_lossy().to_string(),
+                    stack: run.stack.clone(),
                     services,
                     env: run.base_env.clone(),
                     state: run.state.clone(),
@@ -174,7 +179,44 @@ pub async fn persist_manifest(app: &AppContext, run_id: &str) -> Result<RunManif
 
     manifest.write_to_path(&path)?;
     write_daemon_state(app).await?;
-    Ok(manifest)
+    Ok(())
+}
+
+pub async fn run_response(app: &AppContext, run_id: &str) -> Result<RunResponse> {
+    app.runs
+        .with_run(run_id, run_response_from_record)
+        .await
+        .map_err(|err| anyhow!(err))
+}
+
+pub fn run_response_from_record(run: &RunRecord) -> RunResponse {
+    let manifest_path = paths::run_manifest_path(&run.run_id).unwrap();
+    let services = run
+        .services
+        .iter()
+        .map(|(name, service)| {
+            (
+                name.clone(),
+                ServiceResponse {
+                    port: service.launch.port,
+                    url: service.launch.url.clone(),
+                    state: service.runtime.state.clone(),
+                },
+            )
+        })
+        .collect();
+
+    RunResponse {
+        run_id: run.run_id.as_str().to_string(),
+        project_dir: run.project_dir.to_string_lossy().to_string(),
+        stack: run.stack.clone(),
+        manifest_path: manifest_path.to_string_lossy().to_string(),
+        services,
+        env: run.base_env.clone(),
+        state: run.state.clone(),
+        created_at: run.created_at.clone(),
+        stopped_at: run.stopped_at.clone(),
+    }
 }
 
 pub async fn write_daemon_state(app: &AppContext) -> Result<()> {
@@ -241,7 +283,11 @@ pub async fn find_latest_run_for_project_stack(
 }
 
 pub fn port_owner(run_id: &str, service: &str) -> String {
-    format!("{run_id}:{service}")
+    format!("run:{run_id}:{service}")
+}
+
+pub fn global_port_owner(key: &str, service: &str) -> String {
+    format!("global:{key}:{service}")
 }
 
 pub async fn sync_port_reservations_from_disk(app: &AppContext) -> Result<()> {
@@ -256,7 +302,7 @@ pub async fn sync_port_reservations_from_disk(app: &AppContext) -> Result<()> {
         if !manifest_path.exists() {
             continue;
         }
-        let manifest = RunManifest::load_from_path(&manifest_path)?;
+        let manifest = PersistedRun::load_from_path(&manifest_path)?;
         if manifest.state == RunLifecycle::Stopped || manifest.stopped_at.is_some() {
             continue;
         }

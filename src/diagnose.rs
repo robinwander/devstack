@@ -6,8 +6,8 @@ use serde::Serialize;
 
 use crate::api::{HealthStatus, RunStatusResponse, ServiceStatus};
 use crate::ids::{RunId, ServiceName};
-use crate::manifest::RunManifest;
 use crate::paths;
+use crate::persistence::PersistedRun;
 use crate::readiness::PortBindingInfo;
 use crate::util::{now_rfc3339, sanitize_env_key, strip_ansi_if_needed};
 
@@ -48,7 +48,7 @@ pub struct DiagnosePid {
 pub async fn diagnose_run(
     run_id: &str,
     status: RunStatusResponse,
-    manifest: RunManifest,
+    manifest: PersistedRun,
     service_filter: Option<&str>,
 ) -> Result<DiagnoseResponse> {
     let mut services = Vec::new();

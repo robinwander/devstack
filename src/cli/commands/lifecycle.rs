@@ -11,14 +11,14 @@ use crate::api::{
 };
 use crate::cli::args::WatchAction;
 use crate::cli::context::{
-    CliContext, DAEMON_LONG_TIMEOUT, DAEMON_TIMEOUT, normalize_since_arg, resolve_project_dir_from_cwd,
-    resolve_run_id, resolve_stack_name, resolve_up_context, fetch_runs_with_fallback,
+    CliContext, DAEMON_LONG_TIMEOUT, DAEMON_TIMEOUT, fetch_runs_with_fallback, normalize_since_arg,
+    resolve_project_dir_from_cwd, resolve_run_id, resolve_stack_name, resolve_up_context,
     status_from_manifest,
 };
 use crate::cli::output::{print_json, print_status_human, print_watch_status_human};
 use crate::config::ConfigFile;
-use crate::manifest::RunManifest;
 use crate::paths;
+use crate::persistence::PersistedRun;
 
 const DASHBOARD_PORT: u16 = 47832;
 
@@ -80,11 +80,7 @@ pub(crate) async fn up(
     Ok(())
 }
 
-pub(crate) async fn status(
-    context: &CliContext,
-    run_id: Option<String>,
-    json: bool,
-) -> Result<()> {
+pub(crate) async fn status(context: &CliContext, run_id: Option<String>, json: bool) -> Result<()> {
     let project_dir = resolve_project_dir_from_cwd()?;
     let run_id = resolve_run_id(context, &project_dir, run_id).await?;
     let path = format!("/v1/runs/{run_id}/status");
@@ -104,7 +100,10 @@ pub(crate) async fn status(
         }
         Err(err) => {
             if let Ok(fallback) = status_from_manifest(&run_id) {
-                eprintln!("warning: daemon unavailable ({}); using cached manifest", err);
+                eprintln!(
+                    "warning: daemon unavailable ({}); using cached manifest",
+                    err
+                );
                 if output_json {
                     print_json(serde_json::to_value(fallback)?, context.pretty);
                 } else {
@@ -165,7 +164,7 @@ pub(crate) async fn diagnose(
     let status: crate::api::RunStatusResponse = serde_json::from_value(value)?;
 
     let manifest_path = paths::run_manifest_path(&crate::ids::RunId::new(&run_id))?;
-    let manifest = RunManifest::load_from_path(&manifest_path)?;
+    let manifest = PersistedRun::load_from_path(&manifest_path)?;
 
     let diag = crate::diagnose::diagnose_run(&run_id, status, manifest, service.as_deref()).await?;
     print_json(serde_json::to_value(diag)?, context.pretty);
@@ -250,7 +249,12 @@ pub(crate) async fn down(context: &CliContext, run_id: Option<String>, purge: bo
     let run_id = resolve_run_id(context, &project_dir, run_id).await?;
     let req = DownRequest { run_id, purge };
     let response = context
-        .daemon_request("POST", "/v1/runs/down", Some(req), Some(DAEMON_LONG_TIMEOUT))
+        .daemon_request(
+            "POST",
+            "/v1/runs/down",
+            Some(req),
+            Some(DAEMON_LONG_TIMEOUT),
+        )
         .await?;
     print_json(response, context.pretty);
     Ok(())
@@ -261,7 +265,12 @@ pub(crate) async fn kill(context: &CliContext, run_id: Option<String>) -> Result
     let run_id = resolve_run_id(context, &project_dir, run_id).await?;
     let req = KillRequest { run_id };
     let response = context
-        .daemon_request("POST", "/v1/runs/kill", Some(req), Some(DAEMON_LONG_TIMEOUT))
+        .daemon_request(
+            "POST",
+            "/v1/runs/kill",
+            Some(req),
+            Some(DAEMON_LONG_TIMEOUT),
+        )
         .await?;
     print_json(response, context.pretty);
     Ok(())
@@ -277,11 +286,7 @@ pub(crate) async fn exec(
     exec_command(&run_id, &command)
 }
 
-pub(crate) async fn gc(
-    context: &CliContext,
-    older_than: Option<String>,
-    all: bool,
-) -> Result<()> {
+pub(crate) async fn gc(context: &CliContext, older_than: Option<String>, all: bool) -> Result<()> {
     let req = GcRequest { older_than, all };
     let response = context
         .daemon_request("POST", "/v1/gc", Some(req), Some(DAEMON_LONG_TIMEOUT))
@@ -328,7 +333,12 @@ fn open_dashboard() -> Result<()> {
 
     if std::env::var("DEVSTACK_DISABLE_DASHBOARD")
         .ok()
-        .map(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
         .unwrap_or(false)
     {
         return Ok(());
@@ -356,7 +366,7 @@ fn exec_command(run_id: &str, command: &[String]) -> Result<()> {
         return Err(anyhow!("exec requires a command"));
     }
     let manifest_path = paths::run_manifest_path(&crate::ids::RunId::new(run_id))?;
-    let manifest = RunManifest::load_from_path(&manifest_path)?;
+    let manifest = PersistedRun::load_from_path(&manifest_path)?;
 
     let mut cmd = Command::new(&command[0]);
     if command.len() > 1 {

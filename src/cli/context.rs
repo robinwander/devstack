@@ -12,8 +12,9 @@ use time::format_description::well_known::Rfc3339;
 use crate::api::{RunListResponse, RunSummary};
 use crate::config::ConfigFile;
 use crate::infra::ipc::UnixDaemonClient;
-use crate::manifest::{RunLifecycle, RunManifest};
+use crate::manifest::RunLifecycle;
 use crate::paths;
+use crate::persistence::PersistedRun;
 use crate::util::expand_home;
 
 pub(crate) const DAEMON_TIMEOUT: Duration = Duration::from_secs(2);
@@ -214,7 +215,10 @@ pub(crate) fn resolve_up_context(
     Ok((context, stack))
 }
 
-pub(crate) fn resolve_stack_name(stack: Option<String>, config_path: Option<&Path>) -> Result<String> {
+pub(crate) fn resolve_stack_name(
+    stack: Option<String>,
+    config_path: Option<&Path>,
+) -> Result<String> {
     if let Some(name) = stack {
         if let Some(config_path) = config_path.filter(|p| p.is_file())
             && let Ok(config) = ConfigFile::load_from_path(config_path)
@@ -259,7 +263,9 @@ pub(crate) fn resolve_stack_name(stack: Option<String>, config_path: Option<&Pat
     }
 }
 
-pub(crate) async fn fetch_runs_with_fallback(context: &CliContext) -> Result<(RunListResponse, bool)> {
+pub(crate) async fn fetch_runs_with_fallback(
+    context: &CliContext,
+) -> Result<(RunListResponse, bool)> {
     match context
         .daemon_request_json::<(), RunListResponse>("GET", "/v1/runs", None, Some(DAEMON_TIMEOUT))
         .await
@@ -276,7 +282,9 @@ pub(crate) async fn fetch_runs_with_fallback(context: &CliContext) -> Result<(Ru
 }
 
 pub(crate) async fn fetch_runs(context: &CliContext) -> Result<RunListResponse> {
-    fetch_runs_with_fallback(context).await.map(|(runs, _)| runs)
+    fetch_runs_with_fallback(context)
+        .await
+        .map(|(runs, _)| runs)
 }
 
 fn runs_from_disk() -> Result<Vec<RunSummary>> {
@@ -291,7 +299,7 @@ fn runs_from_disk() -> Result<Vec<RunSummary>> {
         if !manifest_path.exists() {
             continue;
         }
-        let manifest = match RunManifest::load_from_path(&manifest_path) {
+        let manifest = match PersistedRun::load_from_path(&manifest_path) {
             Ok(manifest) => manifest,
             Err(_) => continue,
         };
@@ -309,7 +317,7 @@ fn runs_from_disk() -> Result<Vec<RunSummary>> {
 
 pub(crate) fn status_from_manifest(run_id: &str) -> Result<crate::api::RunStatusResponse> {
     let manifest_path = paths::run_manifest_path(&crate::ids::RunId::new(run_id))?;
-    let manifest = RunManifest::load_from_path(&manifest_path)?;
+    let manifest = PersistedRun::load_from_path(&manifest_path)?;
     let desired = if manifest.state == crate::manifest::RunLifecycle::Stopped {
         "stopped".to_string()
     } else {
@@ -324,7 +332,7 @@ pub(crate) fn status_from_manifest(run_id: &str) -> Result<crate::api::RunStatus
                 systemd: None,
                 ready: svc.state == crate::manifest::ServiceState::Ready,
                 state: svc.state,
-                last_failure: None,
+                last_failure: svc.last_failure,
                 health: None,
                 health_check_stats: None,
                 uptime_seconds: None,
@@ -379,7 +387,10 @@ pub(crate) async fn resolve_active_run_id(
     Ok(select_latest_active_run(&runs.runs, project_dir).map(|run| run.run_id.clone()))
 }
 
-pub(crate) fn select_latest_run<'a>(runs: &'a [RunSummary], project_dir: &Path) -> Option<&'a RunSummary> {
+pub(crate) fn select_latest_run<'a>(
+    runs: &'a [RunSummary],
+    project_dir: &Path,
+) -> Option<&'a RunSummary> {
     runs.iter()
         .filter(|run| same_project_dir(&run.project_dir, project_dir))
         .max_by(|a, b| compare_run_recency(a, b))

@@ -5,8 +5,9 @@ use crate::app::context::{AppContext, AppResult};
 use crate::app::error::AppError;
 use crate::app::runtime::{run_removed_event, write_daemon_state};
 use crate::ids::RunId;
-use crate::manifest::{RunLifecycle, RunManifest};
+use crate::manifest::RunLifecycle;
 use crate::paths;
+use crate::persistence::PersistedGlobal;
 
 pub async fn run_gc(app: &AppContext, request: GcRequest) -> AppResult<GcResponse> {
     let older_than = request
@@ -63,7 +64,7 @@ pub async fn run_gc(app: &AppContext, request: GcRequest) -> AppResult<GcRespons
                 if !manifest_path.exists() {
                     continue;
                 }
-                if let Ok(manifest) = RunManifest::load_from_path(&manifest_path) {
+                if let Ok(manifest) = PersistedGlobal::load_from_path(&manifest_path) {
                     if manifest.state != RunLifecycle::Stopped {
                         continue;
                     }

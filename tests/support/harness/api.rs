@@ -5,14 +5,12 @@ use devstack::api::{
     AddSourceRequest, AddSourceResponse, AgentSession, AgentSessionMessageRequest,
     AgentSessionMessageResponse, AgentSessionPollResponse, AgentSessionRegisterRequest,
     DownRequest, GcRequest, GcResponse, GlobalsResponse, KillRequest, LatestAgentSessionResponse,
-    LogViewQuery, LogViewResponse, LogsQuery, LogsResponse, NavigationIntentResponse,
-    PingResponse, ProjectsResponse, RegisterProjectRequest, RegisterProjectResponse,
-    RestartServiceRequest, RunListResponse, RunStatusResponse, RunWatchResponse,
-    SetNavigationIntentRequest, ShareAgentMessageRequest, ShareAgentMessageResponse,
-    SourcesResponse, StartTaskRequest, StartTaskResponse, TaskStatusResponse, TasksResponse,
-    UpRequest, WatchControlRequest,
+    LogViewQuery, LogViewResponse, LogsQuery, LogsResponse, NavigationIntentResponse, PingResponse,
+    ProjectsResponse, RegisterProjectRequest, RegisterProjectResponse, RestartServiceRequest,
+    RunListResponse, RunResponse, RunStatusResponse, RunWatchResponse, SetNavigationIntentRequest,
+    ShareAgentMessageRequest, ShareAgentMessageResponse, SourcesResponse, StartTaskRequest,
+    StartTaskResponse, TaskStatusResponse, TasksResponse, UpRequest, WatchControlRequest,
 };
-use devstack::manifest::RunManifest;
 use http_body_util::{BodyExt, Full};
 use hyper::Request;
 use hyper_util::rt::TokioIo;
@@ -34,7 +32,7 @@ impl ApiHandle {
     }
 
     pub async fn up_with(&self, project: &ProjectHandle, options: &UpOptions) -> Result<RunHandle> {
-        let manifest: RunManifest = self
+        let manifest: RunResponse = self
             .post(
                 "/v1/runs/up",
                 &UpRequest {
@@ -63,8 +61,9 @@ impl ApiHandle {
         self.get("/v1/runs").await
     }
 
-    pub async fn restart_service(&self, run_id: &str, service: &str) -> Result<RunManifest> {
-        self.restart_service_with_options(run_id, service, false).await
+    pub async fn restart_service(&self, run_id: &str, service: &str) -> Result<RunResponse> {
+        self.restart_service_with_options(run_id, service, false)
+            .await
     }
 
     pub async fn restart_service_with_options(
@@ -72,7 +71,7 @@ impl ApiHandle {
         run_id: &str,
         service: &str,
         no_wait: bool,
-    ) -> Result<RunManifest> {
+    ) -> Result<RunResponse> {
         self.post(
             &format!("/v1/runs/{run_id}/restart-service"),
             &RestartServiceRequest {
@@ -217,7 +216,7 @@ impl ApiHandle {
         self.get(&format!("/v1/runs/{run_id}/tasks")).await
     }
 
-    pub async fn down(&self, run_id: &str) -> Result<RunManifest> {
+    pub async fn down(&self, run_id: &str) -> Result<RunResponse> {
         self.post(
             "/v1/runs/down",
             &DownRequest {
@@ -228,7 +227,7 @@ impl ApiHandle {
         .await
     }
 
-    pub async fn kill(&self, run_id: &str) -> Result<RunManifest> {
+    pub async fn kill(&self, run_id: &str) -> Result<RunResponse> {
         self.post(
             "/v1/runs/kill",
             &KillRequest {
@@ -279,11 +278,7 @@ impl ApiHandle {
         self.delete(&format!("/v1/sources/{name}")).await
     }
 
-    pub async fn source_logs(
-        &self,
-        name: &str,
-        query: &LogViewQuery,
-    ) -> Result<LogViewResponse> {
+    pub async fn source_logs(&self, name: &str, query: &LogViewQuery) -> Result<LogViewResponse> {
         let mut params = Vec::new();
         if let Some(last) = query.last {
             params.push(format!("last={last}"));

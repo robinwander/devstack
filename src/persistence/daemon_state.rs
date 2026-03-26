@@ -1,14 +1,14 @@
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::ids::RunId;
+use crate::app::launch::prepare_service;
 use crate::manifest::RunLifecycle;
-use crate::model::{RunRecord, ServiceLaunchPlan, ServiceRecord, ServiceSpec};
+use crate::model::{InstanceScope, RunRecord};
 use crate::paths;
-use crate::services::readiness::{ReadinessKind, ReadinessSpec};
+use crate::persistence::{PersistedGlobal, PersistedRun};
 use crate::util::atomic_write;
 
 #[derive(Serialize, Deserialize)]
@@ -31,67 +31,131 @@ pub fn load_state_from_disk() -> Result<BTreeMap<String, RunRecord>> {
             continue;
         }
 
-        if let Ok(manifest) = crate::manifest::RunManifest::load_from_path(&manifest_path) {
-            if manifest.state == RunLifecycle::Stopped || manifest.stopped_at.is_some() {
-                continue;
-            }
-
-            let record = convert_manifest_to_run_record(manifest, &entry.path());
-            runs.insert(record.run_id.as_str().to_string(), record);
+        let manifest = match PersistedRun::load_from_path(&manifest_path) {
+            Ok(manifest) => manifest,
+            Err(_) => continue,
+        };
+        if manifest.state == RunLifecycle::Stopped || manifest.stopped_at.is_some() {
+            continue;
         }
+
+        let snapshot_path = paths::run_snapshot_path(&crate::ids::RunId::new(&manifest.run_id))?;
+        if !snapshot_path.exists() {
+            continue;
+        }
+        let config = crate::config::ConfigFile::load_from_path(&snapshot_path)
+            .with_context(|| format!("load run snapshot {}", snapshot_path.display()))?;
+        let record = convert_manifest_to_run_record(manifest, &config)?;
+        runs.insert(record.run_id.as_str().to_string(), record);
     }
 
     Ok(runs)
 }
 
 fn convert_manifest_to_run_record(
-    manifest: crate::manifest::RunManifest,
-    run_dir: &std::path::Path,
-) -> RunRecord {
-    let run_id = RunId::new(manifest.run_id.clone());
-    let mut record = RunRecord::new(
-        run_id.clone(),
-        manifest.stack,
-        PathBuf::from(manifest.project_dir),
-        manifest.env,
-    );
-    record.state = manifest.state;
-    record.created_at = manifest.created_at;
-    record.stopped_at = manifest.stopped_at;
+    manifest: PersistedRun,
+    config: &crate::config::ConfigFile,
+) -> Result<RunRecord> {
+    let PersistedRun {
+        run_id,
+        project_dir,
+        config_dir,
+        manifest_path: _,
+        stack,
+        services,
+        env,
+        state,
+        created_at,
+        stopped_at,
+    } = manifest;
 
-    for (name, service) in manifest.services {
-        let spec = ServiceSpec {
-            name: name.clone(),
-            deps: Vec::new(),
-            readiness: ReadinessSpec::new(ReadinessKind::None),
-            auto_restart: false,
-            watch_patterns: Vec::new(),
-            ignore_patterns: Vec::new(),
-        };
-        let launch = ServiceLaunchPlan {
-            unit_name: unit_name_for_run(run_id.as_str(), &name),
-            cwd: record.project_dir.clone(),
-            env: record.base_env.clone(),
-            cmd: String::new(),
-            log_path: run_dir.join("logs").join(format!("{name}.log")),
-            port: service.port,
-            scheme: "http".to_string(),
-            url: service.url,
-            watch_hash: service.watch_hash.unwrap_or_default(),
-            watch_fingerprint: Vec::new(),
-            watch_extra_files: Vec::new(),
-        };
-        let mut service_record = ServiceRecord::new(spec, launch);
-        service_record.runtime.state = service.state;
-        service_record.runtime.last_started_at = Some(record.created_at.clone());
-        record.insert_service(name, service_record);
+    let run_id = crate::ids::RunId::new(run_id);
+    let project_dir = PathBuf::from(project_dir);
+    let config_dir = PathBuf::from(config_dir);
+    let scope = InstanceScope::run(run_id.clone(), stack.clone());
+    let stack_plan = config.stack_plan(&stack)?;
+
+    let mut port_map = services
+        .iter()
+        .map(|(name, service)| (name.clone(), service.port))
+        .collect::<BTreeMap<_, _>>();
+    let globals = config.globals_map();
+    for (name, port) in global_port_map(&project_dir, &globals)? {
+        port_map.entry(name).or_insert(port);
     }
 
-    record
+    let mut service_schemes = stack_plan
+        .services
+        .iter()
+        .map(|(name, service)| (name.clone(), service.scheme()))
+        .collect::<BTreeMap<_, _>>();
+    for (name, service) in &globals {
+        service_schemes.insert(name.clone(), service.scheme());
+    }
+
+    let mut record = RunRecord::new(
+        run_id.clone(),
+        stack,
+        project_dir.clone(),
+        config_dir.clone(),
+        env.clone(),
+    );
+    record.state = state;
+    record.created_at = created_at;
+    record.stopped_at = stopped_at;
+
+    for service_name in &stack_plan.order {
+        let Some(saved_service) = services.get(service_name) else {
+            continue;
+        };
+        let Some(service_config) = stack_plan.services.get(service_name) else {
+            continue;
+        };
+
+        let mut prepared = prepare_service(
+            &scope,
+            &project_dir,
+            &config_dir,
+            service_name,
+            service_config,
+            &port_map,
+            &service_schemes,
+            &env,
+        )?;
+        if let Some(watch_hash) = &saved_service.watch_hash {
+            prepared.watch_hash = watch_hash.clone();
+        }
+
+        let mut service_record = prepared.into_service_record(
+            saved_service.state.clone(),
+            saved_service.last_failure.clone(),
+            saved_service.last_started_at.clone(),
+        );
+        service_record.runtime.watch_paused = saved_service.watch_paused;
+        record.insert_service(service_name.clone(), service_record);
+    }
+
+    Ok(record)
 }
 
-fn unit_name_for_run(run_id: &str, service: &str) -> String {
-    format!("devstack-{}-{}.service", run_id, service)
+fn global_port_map(
+    project_dir: &Path,
+    globals: &BTreeMap<String, crate::config::ServiceConfig>,
+) -> Result<BTreeMap<String, Option<u16>>> {
+    let mut ports = BTreeMap::new();
+    for (name, service) in globals {
+        let manifest_path = paths::global_manifest_path(project_dir, name)?;
+        let port = if manifest_path.exists() {
+            PersistedGlobal::load_from_path(&manifest_path)
+                .ok()
+                .map(|manifest| manifest.service.port)
+                .unwrap_or_else(|| service.port.as_ref().and_then(|port| port.fixed()))
+        } else {
+            service.port.as_ref().and_then(|port| port.fixed())
+        };
+        ports.insert(name.clone(), port);
+    }
+    Ok(ports)
 }
 
 pub fn write_daemon_state_file(runs: &BTreeMap<String, RunRecord>) -> Result<()> {

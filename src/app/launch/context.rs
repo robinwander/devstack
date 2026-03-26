@@ -4,20 +4,28 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 
 use crate::config::ServiceConfig;
-use crate::ids::RunId;
+use crate::model::InstanceScope;
 use crate::services::readiness::{ReadinessSpec, readiness_url};
 use crate::util::{expand_home, sanitize_env_key};
 
 pub fn build_base_env(
-    run_id: &RunId,
-    stack: &str,
+    scope: &InstanceScope,
     project_dir: &Path,
     port_map: &BTreeMap<String, Option<u16>>,
     schemes: &BTreeMap<String, String>,
 ) -> Result<BTreeMap<String, String>> {
     let mut env = BTreeMap::new();
-    env.insert("DEV_RUN_ID".to_string(), run_id.as_str().to_string());
-    env.insert("DEV_STACK".to_string(), stack.to_string());
+    match scope {
+        InstanceScope::Run { run_id, stack } => {
+            env.insert("DEV_RUN_ID".to_string(), run_id.as_str().to_string());
+            env.insert("DEV_STACK".to_string(), stack.clone());
+        }
+        InstanceScope::Global { key, name, .. } => {
+            env.insert("DEV_STACK".to_string(), "globals".to_string());
+            env.insert("DEV_GLOBAL_KEY".to_string(), key.clone());
+            env.insert("DEV_GLOBAL_NAME".to_string(), name.clone());
+        }
+    }
     env.insert(
         "DEV_PROJECT_DIR".to_string(),
         project_dir.to_string_lossy().to_string(),
@@ -58,8 +66,7 @@ pub fn inject_dep_env(
 }
 
 pub fn build_template_context(
-    run_id: &RunId,
-    stack: &str,
+    scope: &InstanceScope,
     project_dir: &Path,
     port_map: &BTreeMap<String, Option<u16>>,
     schemes: &BTreeMap<String, String>,
@@ -84,10 +91,24 @@ pub fn build_template_context(
         services.insert(service.clone(), serde_json::Value::Object(entry));
     }
 
+    let (run_id, stack_name, global) = match scope {
+        InstanceScope::Run { run_id, stack } => (
+            serde_json::json!(run_id.as_str()),
+            stack.clone(),
+            serde_json::Value::Null,
+        ),
+        InstanceScope::Global { key, name, .. } => (
+            serde_json::Value::Null,
+            "globals".to_string(),
+            serde_json::json!({ "key": key, "name": name }),
+        ),
+    };
+
     Ok(serde_json::json!({
-        "run": { "id": run_id.as_str() },
+        "run": { "id": run_id },
+        "global": global,
         "project": { "dir": project_dir.to_string_lossy() },
-        "stack": { "name": stack },
+        "stack": { "name": stack_name },
         "services": services,
     }))
 }
