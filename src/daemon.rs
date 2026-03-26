@@ -50,6 +50,9 @@ use crate::api::{
 };
 use crate::config::{ConfigFile, ServiceConfig, StackPlan, TaskConfig};
 use crate::ids::{RunId, ServiceName};
+// TODO: Gradually migrate to use these new modules:
+// use crate::model::*;
+// use crate::stores::*;
 use crate::log_index::{LogIndex, LogSource};
 use crate::logfmt::{classify_line_level, extract_log_content, extract_timestamp_str};
 use crate::manifest::{RunLifecycle, RunManifest, ServiceManifest, ServiceState};
@@ -79,6 +82,9 @@ pub(crate) struct AppState {
     log_tails: Arc<Mutex<RunLogTailRegistry>>,
     _lock: Arc<std::fs::File>,
 }
+
+// TODO: Replace with individual stores - work in progress
+// New stores are available in src/stores/ but integration is incomplete
 
 type AppResult<T> = Result<T, AppError>;
 
@@ -121,6 +127,7 @@ impl Drop for LogTailSubscription {
     }
 }
 
+// TODO: Migrate to src/model/agent_session.rs 
 struct AgentSessionState {
     agent_id: String,
     project_dir: String,
@@ -131,12 +138,14 @@ struct AgentSessionState {
     pending_messages: VecDeque<String>,
 }
 
+// TODO: Migrate to src/persistence/daemon_state.rs
 #[derive(Serialize)]
 struct DaemonStateFile {
     runs: Vec<String>,
     updated_at: String,
 }
 
+// TODO: Migrate to src/model/run.rs as RunRecord
 struct RunState {
     run_id: String,
     stack: String,
@@ -148,6 +157,7 @@ struct RunState {
     stopped_at: Option<String>,
 }
 
+// TODO: Migrate to src/stores/tasks.rs
 #[derive(Clone)]
 struct DetachedTaskExecution {
     execution_id: String,
@@ -162,6 +172,7 @@ struct DetachedTaskExecution {
     duration_ms: Option<u64>,
 }
 
+// TODO: Split into ServiceSpec/ServiceLaunchPlan/ServiceRuntimeState and move to src/model/service.rs
 struct ServiceRuntime {
     name: String,
     unit_name: String,
@@ -207,6 +218,7 @@ struct PreparedService {
     auto_restart: bool,
 }
 
+// TODO: Move to src/model/service.rs
 #[derive(Clone)]
 struct ServiceWatchHandle {
     stop_flag: Arc<AtomicBool>,
@@ -222,6 +234,7 @@ type WatchStartArgs = (
     bool,
 );
 
+// TODO: Move to src/model/service.rs
 /// Per-service health monitor handle.  Lives in an `Arc` so the background
 /// monitor task and the status endpoint can both reach the stats without
 /// going through the global `DaemonState` mutex.
@@ -231,6 +244,7 @@ struct HealthHandle {
     stats: Arc<std::sync::Mutex<HealthSnapshot>>,
 }
 
+// TODO: Move to src/model/service.rs
 /// Counters updated by the health-monitor task.  Protected by its own
 /// lightweight `std::sync::Mutex` (held for nanoseconds) — never behind
 /// the global async `DaemonState` mutex.
@@ -2263,7 +2277,7 @@ fn load_state_from_disk() -> Result<DaemonState> {
                                 url: svc.url.clone(),
                                 deps: Vec::new(),
                                 readiness: ReadinessSpec::new(
-                                    crate::readiness::ReadinessKind::None,
+                                    crate::services::readiness::ReadinessKind::None,
                                 ),
                                 log_path: entry.path().join("logs").join(format!("{name}.log")),
                                 cwd: PathBuf::from(&manifest.project_dir),
