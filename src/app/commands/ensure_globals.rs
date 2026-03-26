@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Result, anyhow};
 
 use crate::app::commands::tasks::run_post_init_tasks_blocking;
 use crate::app::context::AppContext;
