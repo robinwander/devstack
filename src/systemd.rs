@@ -447,7 +447,6 @@ impl SystemdManager for LocalSystemd {
                     }));
                 }
 
-                units.remove(unit_name);
                 Ok(Some(UnitStatus {
                     active_state: "inactive".to_string(),
                     sub_state: "exited".to_string(),

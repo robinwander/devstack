@@ -1,7 +1,8 @@
 mod support;
 
 use anyhow::Result;
-use devstack::manifest::{RunLifecycle, RunManifest, ServiceState};
+use devstack::manifest::{RunLifecycle, ServiceState};
+use devstack::persistence::PersistedRun;
 use support::fixtures;
 use support::workflows::start_fixture_run;
 use support::{TestHarness, UpOptions};
@@ -81,7 +82,8 @@ async fn down_stops_run_and_marks_manifest_stopped() -> Result<()> {
     run.down().await?;
     run.assert_stopped().await?;
 
-    let manifest: RunManifest = serde_json::from_str(&std::fs::read_to_string(run.manifest_path())?)?;
+    let manifest: PersistedRun =
+        serde_json::from_str(&std::fs::read_to_string(run.manifest_path())?)?;
     assert_eq!(manifest.state, RunLifecycle::Stopped);
     assert!(manifest.stopped_at.is_some());
 
@@ -98,7 +100,8 @@ async fn kill_force_stops_run_and_marks_manifest_stopped() -> Result<()> {
     run.kill().await?;
     run.assert_stopped().await?;
 
-    let manifest: RunManifest = serde_json::from_str(&std::fs::read_to_string(run.manifest_path())?)?;
+    let manifest: PersistedRun =
+        serde_json::from_str(&std::fs::read_to_string(run.manifest_path())?)?;
     assert_eq!(manifest.state, RunLifecycle::Stopped);
     assert!(manifest.stopped_at.is_some());
 
@@ -152,6 +155,59 @@ async fn daemon_restart_preserves_visible_run_state() -> Result<()> {
     let status = run.status().await?;
     assert_eq!(status.state, RunLifecycle::Running);
     assert_eq!(status.services["api"].state, ServiceState::Ready);
+
+    run.down().await?;
+    daemon.stop().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn list_runs_reconciles_exited_service_state_and_persists_manifest() -> Result<()> {
+    let t = TestHarness::new().await?;
+    let project = t
+        .fixture(fixtures::simple_http())
+        .with_config_patch(|config| {
+            config
+                .service("dev", "api")?
+                .cmd("bash -lc 'echo api-ready; sleep 1; exit 17'")
+                .port_none()
+                .readiness_log_regex("api-ready");
+            Ok(())
+        })?
+        .create()
+        .await?;
+    let daemon = t.daemon().start().await?;
+    let run = t.cli().up(&project).await?;
+
+    run.assert_service_ready("api").await?;
+
+    t.wait_until(
+        std::time::Duration::from_secs(10),
+        "run list to reconcile exited service state",
+        || {
+            let api = t.api();
+            let run_id = run.id().to_string();
+            async move {
+                let runs = api.list_runs().await?;
+                let state = runs
+                    .runs
+                    .iter()
+                    .find(|candidate| candidate.run_id == run_id)
+                    .map(|candidate| candidate.state.clone());
+                if state == Some(RunLifecycle::Degraded) {
+                    Ok(Some(()))
+                } else {
+                    Ok(None)
+                }
+            }
+        },
+    )
+    .await?;
+
+    let manifest: PersistedRun =
+        serde_json::from_str(&std::fs::read_to_string(run.manifest_path())?)?;
+    assert_eq!(manifest.state, RunLifecycle::Degraded);
+    assert_eq!(manifest.services["api"].state, ServiceState::Degraded);
 
     run.down().await?;
     daemon.stop().await?;

@@ -45,8 +45,14 @@ pub async fn build_status(app: &AppContext, run_id: &str) -> AppResult<RunStatus
         let mut derived_state = service.runtime.state.clone();
         let mut derived_failure = service.runtime.last_failure.clone();
         if let Some(systemd) = &status
+            && run.state != RunLifecycle::Stopped
             && (systemd.active_state == "failed"
-                || systemd.result.as_deref() == Some("start-limit-hit"))
+                || systemd.result.as_deref() == Some("start-limit-hit")
+                || (systemd.active_state != "active"
+                    && systemd
+                        .result
+                        .as_deref()
+                        .is_some_and(|result| result != "success")))
         {
             derived_state = match service.runtime.state {
                 ServiceState::Starting => ServiceState::Failed,
