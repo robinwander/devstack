@@ -15,7 +15,7 @@ use crate::app::launch::{
 };
 use crate::app::runtime::{
     find_latest_run_for_project_stack, persist_manifest, release_service_port, run_created_event,
-    run_removed_event, run_response, run_state_changed_event,
+    run_removed_event, run_response, run_state_changed_event, sync_port_reservations_from_disk,
 };
 use crate::config::{ConfigFile, StackPlan};
 use crate::ids::RunId;
@@ -79,6 +79,10 @@ pub async fn up(app: &AppContext, request: UpRequest) -> AppResult<crate::api::R
     let snapshot_path = paths::run_snapshot_path(&run_id).map_err(AppError::from)?;
     let raw = std::fs::read(&config_path).map_err(AppError::from)?;
     atomic_write(&snapshot_path, &raw).map_err(AppError::from)?;
+
+    sync_port_reservations_from_disk(app)
+        .await
+        .map_err(AppError::from)?;
 
     let mut port_map = allocate_ports(&stack_plan.services, |service| {
         crate::app::runtime::port_owner(run_id.as_str(), service)
@@ -235,6 +239,10 @@ pub async fn refresh_run(
         }
         app.emit_events(events);
     }
+
+    sync_port_reservations_from_disk(app)
+        .await
+        .map_err(AppError::from)?;
 
     let mut port_map = resolve_ports_for_refresh(
         run_id.as_str(),
