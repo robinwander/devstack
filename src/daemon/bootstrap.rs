@@ -11,13 +11,14 @@ use tokio::net::UnixStream;
 use tokio::sync::Mutex;
 
 use crate::app::AppContext;
-use crate::app::launch::sync_service_auto_restart_watcher;
+use crate::app::commands::ensure_globals::ensure_globals;
+use crate::app::launch::{sync_global_auto_restart_watcher, sync_service_auto_restart_watcher};
 use crate::app::runtime::sync_port_reservations_from_disk;
 use crate::infra::logs::index::LogIndex;
 use crate::paths;
-use crate::persistence::daemon_state::load_state_from_disk;
+use crate::persistence::daemon_state::{load_globals_from_disk, load_state_from_disk};
 use crate::projects::ProjectsLedger;
-use crate::stores::{AgentSessionStore, NavigationStore, RunStore, TaskStore};
+use crate::stores::{AgentSessionStore, GlobalStore, NavigationStore, RunStore, TaskStore};
 use crate::systemd::SystemdManager;
 
 #[cfg(unix)]
@@ -36,6 +37,7 @@ pub async fn run_daemon() -> Result<()> {
     let systemd = build_process_manager().await?;
     let binary_path = std::env::current_exe().context("current_exe")?;
     let runs = Arc::new(RunStore::from_runs(load_state_from_disk()?));
+    let globals = Arc::new(GlobalStore::from_globals(load_globals_from_disk()?));
     let tasks = Arc::new(TaskStore::new());
     let agent_sessions = Arc::new(AgentSessionStore::new());
     let navigation = Arc::new(NavigationStore::new());
@@ -45,6 +47,7 @@ pub async fn run_daemon() -> Result<()> {
     let app = AppContext {
         systemd,
         runs,
+        globals,
         tasks,
         agent_sessions,
         navigation,
@@ -60,6 +63,7 @@ pub async fn run_daemon() -> Result<()> {
     };
 
     sync_port_reservations_from_disk(&app).await?;
+    restore_active_globals(&app).await?;
     restore_auto_restart_watchers(&app).await;
 
     if let Ok(runs_dir) = paths::runs_dir()
@@ -90,6 +94,63 @@ pub async fn run_daemon() -> Result<()> {
     Ok(())
 }
 
+async fn restore_active_globals(app: &crate::app::context::AppContext) -> Result<()> {
+    let globals_root = paths::globals_root()?;
+    if !globals_root.exists() {
+        return Ok(());
+    }
+
+    for entry in std::fs::read_dir(globals_root)? {
+        let entry = entry?;
+        let manifest_path = entry.path().join("manifest.json");
+        if !manifest_path.exists() {
+            continue;
+        }
+
+        let manifest = match crate::persistence::PersistedGlobal::load_from_path(&manifest_path) {
+            Ok(manifest) => manifest,
+            Err(_) => continue,
+        };
+        if manifest.state == crate::manifest::RunLifecycle::Stopped || manifest.stopped_at.is_some()
+        {
+            continue;
+        }
+
+        let config_path = std::path::PathBuf::from(&manifest.config_path);
+        if !config_path.exists() {
+            continue;
+        }
+        let config = match crate::config::ConfigFile::load_from_path(&config_path) {
+            Ok(config) => config,
+            Err(_) => continue,
+        };
+        let globals = config.globals_map();
+        let Some(service) = globals.get(&manifest.name).cloned() else {
+            continue;
+        };
+        let tasks_map = config
+            .tasks
+            .as_ref()
+            .map(|tasks| tasks.as_map().clone())
+            .unwrap_or_default();
+        let mut single_global = std::collections::BTreeMap::new();
+        single_global.insert(manifest.name.clone(), service);
+        ensure_globals(
+            app,
+            &single_global,
+            &tasks_map,
+            std::path::Path::new(&manifest.project_dir),
+            &config_path,
+            config_path
+                .parent()
+                .unwrap_or(std::path::Path::new(&manifest.project_dir)),
+        )
+        .await?;
+    }
+
+    Ok(())
+}
+
 async fn restore_auto_restart_watchers(app: &crate::app::context::AppContext) {
     let runs = app.runs.list_runs().await;
     for run in runs {
@@ -104,6 +165,16 @@ async fn restore_auto_restart_watchers(app: &crate::app::context::AppContext) {
                     err
                 );
             }
+        }
+    }
+
+    let globals = app.globals.list_globals().await;
+    for global in globals {
+        if let Err(err) = sync_global_auto_restart_watcher(app, &global.key).await {
+            eprintln!(
+                "devstack: failed to restore watcher for global {}.{}: {}",
+                global.key, global.name, err
+            );
         }
     }
 }

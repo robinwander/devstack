@@ -8,9 +8,9 @@ use crate::api::{
     ServiceResponse, TaskExecutionState, TaskExecutionSummary, TaskStatusResponse,
 };
 use crate::manifest::{RunLifecycle, ServiceState};
-use crate::model::RunRecord;
+use crate::model::{GlobalRecord, RunRecord};
 use crate::paths;
-use crate::persistence::{PersistedRun, PersistedService};
+use crate::persistence::{PersistedGlobal, PersistedRun, PersistedService};
 use crate::stores::DetachedTaskExecution;
 use crate::util::{atomic_write, now_rfc3339};
 
@@ -189,6 +189,43 @@ pub async fn run_response(app: &AppContext, run_id: &str) -> Result<RunResponse>
         .map_err(|err| anyhow!(err))
 }
 
+pub async fn persist_global_manifest(app: &AppContext, key: &str) -> Result<()> {
+    let (manifest, path) = app
+        .globals
+        .with_global_mut(key, |global| {
+            let path = paths::global_manifest_path(&global.project_dir, &global.name).unwrap();
+            (persisted_global_from_record(global, &path), path)
+        })
+        .await
+        .map_err(|err| anyhow!(err))?;
+
+    manifest.write_to_path(&path)?;
+    Ok(())
+}
+
+pub fn persisted_global_from_record(global: &GlobalRecord, path: &Path) -> PersistedGlobal {
+    PersistedGlobal {
+        key: global.key.clone(),
+        name: global.name.clone(),
+        project_dir: global.project_dir.to_string_lossy().to_string(),
+        config_path: global.config_path.to_string_lossy().to_string(),
+        manifest_path: path.to_string_lossy().to_string(),
+        service: PersistedService {
+            port: global.service.launch.port,
+            url: global.service.launch.url.clone(),
+            state: global.service.runtime.state.clone(),
+            watch_hash: Some(global.service.launch.watch_hash.clone()),
+            last_failure: global.service.runtime.last_failure.clone(),
+            last_started_at: global.service.runtime.last_started_at.clone(),
+            watch_paused: global.service.runtime.watch_paused,
+        },
+        env: global.service.launch.env.clone(),
+        state: global.state.clone(),
+        created_at: global.created_at.clone(),
+        stopped_at: global.stopped_at.clone(),
+    }
+}
+
 pub fn run_response_from_record(run: &RunRecord) -> RunResponse {
     let manifest_path = paths::run_manifest_path(&run.run_id).unwrap();
     let services = run
@@ -292,23 +329,39 @@ pub fn global_port_owner(key: &str, service: &str) -> String {
 
 pub async fn sync_port_reservations_from_disk(app: &AppContext) -> Result<()> {
     let runs_dir = paths::runs_dir()?;
-    if !runs_dir.exists() {
-        return Ok(());
+    if runs_dir.exists() {
+        for entry in std::fs::read_dir(&runs_dir)? {
+            let entry = entry?;
+            let manifest_path = entry.path().join("manifest.json");
+            if !manifest_path.exists() {
+                continue;
+            }
+            let manifest = PersistedRun::load_from_path(&manifest_path)?;
+            if manifest.state == RunLifecycle::Stopped || manifest.stopped_at.is_some() {
+                continue;
+            }
+            for (service, record) in manifest.services {
+                if let Some(port) = record.port {
+                    crate::port::reserve_port(port, &port_owner(&manifest.run_id, &service))?;
+                }
+            }
+        }
     }
 
-    for entry in std::fs::read_dir(&runs_dir)? {
-        let entry = entry?;
-        let manifest_path = entry.path().join("manifest.json");
-        if !manifest_path.exists() {
-            continue;
-        }
-        let manifest = PersistedRun::load_from_path(&manifest_path)?;
-        if manifest.state == RunLifecycle::Stopped || manifest.stopped_at.is_some() {
-            continue;
-        }
-        for (service, record) in manifest.services {
-            if let Some(port) = record.port {
-                crate::port::reserve_port(port, &port_owner(&manifest.run_id, &service))?;
+    let globals_root = paths::globals_root()?;
+    if globals_root.exists() {
+        for entry in std::fs::read_dir(&globals_root)? {
+            let entry = entry?;
+            let manifest_path = entry.path().join("manifest.json");
+            if !manifest_path.exists() {
+                continue;
+            }
+            let manifest = PersistedGlobal::load_from_path(&manifest_path)?;
+            if manifest.state == RunLifecycle::Stopped || manifest.stopped_at.is_some() {
+                continue;
+            }
+            if let Some(port) = manifest.service.port {
+                crate::port::reserve_port(port, &global_port_owner(&manifest.key, &manifest.name))?;
             }
         }
     }

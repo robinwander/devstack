@@ -116,6 +116,42 @@ async fn globals_run_post_init() -> Result<()> {
 }
 
 #[tokio::test]
+async fn globals_auto_restart_is_restored_after_daemon_restart() -> Result<()> {
+    let t = TestHarness::new().await?;
+    let project = t
+        .fixture(fixtures::globals_fixture())
+        .with_file("src/watched.txt", b"initial\n".to_vec())
+        .with_config_patch(|config| {
+            config
+                .global_service("cache")?
+                .auto_restart(true)
+                .watch(&["src/**"]);
+            Ok(())
+        })?
+        .create()
+        .await?;
+    let daemon = t.daemon().start().await?;
+    let run = t.cli().up(&project).await?;
+
+    run.assert_ready().await?;
+    t.fs(&project)
+        .wait_for_line_count_at_least(fixtures::GlobalsFixture::GLOBAL_STARTS_LOG, 1)
+        .await?;
+
+    let daemon = daemon.restart().await?;
+    daemon.assert_ping().await?;
+
+    t.fs(&project).append_text("src/watched.txt", "changed\n")?;
+    t.fs(&project)
+        .wait_for_line_count_at_least(fixtures::GlobalsFixture::GLOBAL_STARTS_LOG, 2)
+        .await?;
+
+    run.down().await?;
+    daemon.stop().await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn gc_all_removes_stopped_globals() -> Result<()> {
     let t = TestHarness::new().await?;
     let (daemon, project, run) = start_fixture_run(&t, fixtures::globals_fixture()).await?;

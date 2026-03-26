@@ -13,6 +13,11 @@ fn service_port(url: &str) -> Result<u16> {
         .map_err(Into::into)
 }
 
+fn available_port() -> Result<u16> {
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
+    Ok(listener.local_addr()?.port())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_daemons_allocate_distinct_ports_for_same_stack() -> Result<()> {
     let t1 = TestHarness::new().await?;
@@ -170,6 +175,59 @@ async fn daemon_restart_rehydrates_failed_run_port_reservations() -> Result<()> 
     assert_eq!(service_port(&run2.service("api").url().await?)?, PORT);
 
     run2.down().await?;
+    daemon1.stop().await?;
+    daemon2.stop().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn daemon_restart_rehydrates_global_port_reservations() -> Result<()> {
+    let port = available_port()?;
+
+    let t1 = TestHarness::new().await?;
+    let t2 = TestHarness::new().await?;
+    let globals_project = t1
+        .fixture(fixtures::globals_fixture())
+        .with_config_patch(|config| {
+            config.global_service("cache")?.port_fixed(port);
+            Ok(())
+        })?
+        .create()
+        .await?;
+    let competing = t2
+        .fixture(fixtures::simple_http())
+        .with_config_patch(|config| {
+            config.service("dev", "api")?.port_fixed(port);
+            Ok(())
+        })?
+        .create()
+        .await?;
+
+    let daemon1 = t1.daemon().start().await?;
+    let daemon2 = t2.daemon().start().await?;
+    let run = t1.cli().up(&globals_project).await?;
+    run.assert_ready().await?;
+
+    let daemon1 = daemon1.restart().await?;
+    daemon1.assert_ping().await?;
+
+    let conflict = t2
+        .cli()
+        .run_in(
+            &competing,
+            &[
+                "up",
+                "--project",
+                &competing.path_string(),
+                "--stack",
+                "dev",
+            ],
+        )
+        .await?
+        .failure()?;
+    conflict.assert_stderr_contains("reserved by another devstack service")?;
+
+    run.down().await?;
     daemon1.stop().await?;
     daemon2.stop().await?;
     Ok(())

@@ -54,6 +54,7 @@ pub struct PersistedGlobal {
     pub key: String,
     pub name: String,
     pub project_dir: String,
+    pub config_path: String,
     pub manifest_path: String,
     pub service: PersistedService,
     pub env: BTreeMap<String, String>,

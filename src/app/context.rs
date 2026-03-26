@@ -5,7 +5,7 @@ use tokio::sync::broadcast;
 
 use crate::api::DaemonEvent;
 use crate::infra::logs::index::LogIndex;
-use crate::stores::{AgentSessionStore, NavigationStore, RunStore, TaskStore};
+use crate::stores::{AgentSessionStore, GlobalStore, NavigationStore, RunStore, TaskStore};
 use crate::systemd::SystemdManager;
 
 use super::error::AppError;
@@ -16,6 +16,7 @@ pub type AppResult<T> = Result<T, AppError>;
 pub struct AppContext {
     pub(crate) systemd: Arc<dyn SystemdManager>,
     pub(crate) runs: Arc<RunStore>,
+    pub(crate) globals: Arc<GlobalStore>,
     pub(crate) tasks: Arc<TaskStore>,
     pub(crate) agent_sessions: Arc<AgentSessionStore>,
     pub(crate) navigation: Arc<NavigationStore>,

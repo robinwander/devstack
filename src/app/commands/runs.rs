@@ -91,9 +91,16 @@ pub async fn up(app: &AppContext, request: UpRequest) -> AppResult<crate::api::R
         .unwrap_or_default();
 
     let globals = config.globals_map();
-    let global_ports = ensure_globals(app, &globals, &tasks_map, &project_dir, &config_dir)
-        .await
-        .map_err(AppError::from)?;
+    let global_ports = ensure_globals(
+        app,
+        &globals,
+        &tasks_map,
+        &project_dir,
+        &config_path,
+        &config_dir,
+    )
+    .await
+    .map_err(AppError::from)?;
 
     let mut service_schemes = BTreeMap::new();
     for (name, service) in &stack_plan.services {
@@ -242,9 +249,16 @@ pub async fn refresh_run(
         .map(|tasks| tasks.as_map().clone())
         .unwrap_or_default();
     let globals = config.globals_map();
-    let global_ports = ensure_globals(app, &globals, &tasks_map, project_dir, config_dir)
-        .await
-        .map_err(AppError::from)?;
+    let global_ports = ensure_globals(
+        app,
+        &globals,
+        &tasks_map,
+        project_dir,
+        config_path,
+        config_dir,
+    )
+    .await
+    .map_err(AppError::from)?;
 
     let mut service_schemes = BTreeMap::new();
     for (name, service) in &stack_plan.services {

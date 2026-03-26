@@ -4,9 +4,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::app::launch::prepare_service;
+use crate::app::launch::{build_base_env, prepare_service};
 use crate::manifest::RunLifecycle;
-use crate::model::{InstanceScope, RunRecord};
+use crate::model::{GlobalRecord, InstanceScope, RunRecord};
 use crate::paths;
 use crate::persistence::{PersistedGlobal, PersistedRun};
 use crate::util::atomic_write;
@@ -50,6 +50,41 @@ pub fn load_state_from_disk() -> Result<BTreeMap<String, RunRecord>> {
     }
 
     Ok(runs)
+}
+
+pub fn load_globals_from_disk() -> Result<BTreeMap<String, GlobalRecord>> {
+    let mut globals = BTreeMap::new();
+    let globals_root = paths::globals_root()?;
+    if !globals_root.exists() {
+        return Ok(globals);
+    }
+
+    for entry in std::fs::read_dir(globals_root)? {
+        let entry = entry?;
+        let manifest_path = entry.path().join("manifest.json");
+        if !manifest_path.exists() {
+            continue;
+        }
+
+        let manifest = match PersistedGlobal::load_from_path(&manifest_path) {
+            Ok(manifest) => manifest,
+            Err(_) => continue,
+        };
+        if manifest.state == RunLifecycle::Stopped || manifest.stopped_at.is_some() {
+            continue;
+        }
+
+        let config_path = PathBuf::from(&manifest.config_path);
+        if !config_path.exists() {
+            continue;
+        }
+        let config = crate::config::ConfigFile::load_from_path(&config_path)
+            .with_context(|| format!("load global config {}", config_path.display()))?;
+        let record = convert_manifest_to_global_record(manifest, &config)?;
+        globals.insert(record.key.clone(), record);
+    }
+
+    Ok(globals)
 }
 
 fn convert_manifest_to_run_record(
@@ -136,6 +171,69 @@ fn convert_manifest_to_run_record(
     }
 
     Ok(record)
+}
+
+fn convert_manifest_to_global_record(
+    manifest: PersistedGlobal,
+    config: &crate::config::ConfigFile,
+) -> Result<GlobalRecord> {
+    let PersistedGlobal {
+        key,
+        name,
+        project_dir,
+        config_path,
+        manifest_path: _,
+        service,
+        env: _,
+        state,
+        created_at,
+        stopped_at,
+    } = manifest;
+
+    let project_dir = PathBuf::from(project_dir);
+    let config_path = PathBuf::from(config_path);
+    let Some(service_config) = config.globals_map().get(&name).cloned() else {
+        anyhow::bail!("global {name} missing from {}", config_path.display());
+    };
+    let tasks_map = config
+        .tasks
+        .as_ref()
+        .map(|tasks| tasks.as_map().clone())
+        .unwrap_or_default();
+    let scope = InstanceScope::global(key.clone(), project_dir.clone(), name.clone());
+    let port_map = BTreeMap::from([(name.clone(), service.port)]);
+    let service_schemes = BTreeMap::from([(name.clone(), service_config.scheme())]);
+    let base_env = build_base_env(&scope, &project_dir, &port_map, &service_schemes)?;
+    let mut prepared = prepare_service(
+        &scope,
+        &project_dir,
+        config_path.parent().unwrap_or(&project_dir),
+        &name,
+        &service_config,
+        &port_map,
+        &service_schemes,
+        &base_env,
+    )?;
+    if let Some(watch_hash) = &service.watch_hash {
+        prepared.watch_hash = watch_hash.clone();
+    }
+
+    let mut service_record =
+        prepared.into_service_record(service.state, service.last_failure, service.last_started_at);
+    service_record.runtime.watch_paused = service.watch_paused;
+
+    Ok(GlobalRecord {
+        key,
+        name,
+        project_dir,
+        config_path,
+        service_config,
+        tasks_map,
+        service: service_record,
+        state,
+        created_at,
+        stopped_at,
+    })
 }
 
 fn global_port_map(
