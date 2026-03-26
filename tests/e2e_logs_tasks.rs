@@ -110,6 +110,7 @@ async fn logs_since_filters_older_entries() -> Result<()> {
     tokio::time::sleep(Duration::from_secs(1)).await;
     let response = run.service("api").http_get("/").await?;
     assert!(response.contains("200 OK"));
+    run.service("api").assert_log_contains("http-access").await?;
 
     let logs = t
         .api()
