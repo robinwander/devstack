@@ -83,7 +83,7 @@ impl LogIndex {
             .reader_builder()
             .reload_policy(ReloadPolicy::OnCommitWithDelay)
             .try_into()?;
-        let writer = index.writer(32 * 1024 * 1024)?;
+        let writer = Self::open_writer_with_retry(&index)?;
         writer.set_merge_policy(Box::new(Self::merge_policy()));
 
         let ingest = if ingest_state_path.exists() {
@@ -106,6 +106,20 @@ impl LogIndex {
             ingest_gate: std::sync::Mutex::new(()),
             ingest: std::sync::Mutex::new(ingest),
         })
+    }
+
+    fn open_writer_with_retry(index: &Index) -> Result<tantivy::IndexWriter> {
+        let mut attempt = 0;
+        loop {
+            match index.writer(32 * 1024 * 1024) {
+                Ok(writer) => return Ok(writer),
+                Err(err) if err.to_string().contains("LockBusy") && attempt < 5 => {
+                    attempt += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(10 * attempt));
+                }
+                Err(err) => return Err(err.into()),
+            }
+        }
     }
 
     fn build_schema() -> tantivy::schema::Schema {
@@ -206,7 +220,7 @@ impl LogIndex {
             .reader_builder()
             .reload_policy(ReloadPolicy::OnCommitWithDelay)
             .try_into()?;
-        let writer = index.writer(32 * 1024 * 1024)?;
+        let writer = Self::open_writer_with_retry(&index)?;
         writer.set_merge_policy(Box::new(Self::merge_policy()));
         Self::resolve_fields(&schema)?;
         let cached_names: Vec<String> = state.dynamic_fields.keys().cloned().collect();

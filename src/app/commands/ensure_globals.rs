@@ -1,21 +1,21 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 
-use crate::app::commands::tasks::run_post_init_tasks_blocking;
 use crate::app::context::AppContext;
 use crate::app::launch::{
-    build_base_env, build_post_init_context, build_template_context, render_env, render_template,
-    resolve_cwd_path, resolve_env_file_path, unit_name_for_run,
+    PreparedService, build_base_env, build_post_init_context, build_template_context,
+    render_env, render_template, resolve_cwd_path, resolve_env_file_path, unit_name_for_run,
 };
+use crate::app::launch::pipeline::wait_for_prepared_service;
 use crate::app::runtime::{global_state_changed_event, port_owner};
 use crate::config::{ServiceConfig, TaskConfig};
 use crate::ids::RunId;
 use crate::manifest::{RunLifecycle, RunManifest, ServiceManifest, ServiceState};
 use crate::paths;
 use crate::port::{allocate_ports, reserve_available_port, reserve_port};
-use crate::services::readiness::{ReadinessContext, ReadinessKind, readiness_url};
+use crate::services::readiness::{ReadinessKind, readiness_url};
 use crate::systemd::{ExecStart, UnitProperties};
 use crate::util::now_rfc3339;
 
@@ -142,16 +142,26 @@ pub async fn ensure_globals(
         )
         .with_restart("no")
         .with_remain_after_exit(matches!(readiness.kind, ReadinessKind::Exit));
-        let context = ReadinessContext {
+        let post_init = build_post_init_context(service, tasks_map, project_dir, &run_id);
+        let prepared = PreparedService {
+            name: name.clone(),
+            unit_name: unit_name.clone(),
             port,
             scheme: scheme.clone(),
+            url: url.clone(),
+            deps: Vec::new(),
+            readiness: readiness.clone(),
             log_path: log_path.clone(),
             cwd: rendered_cwd.clone(),
             env: env.clone(),
-            unit_name: Some(unit_name.clone()),
-            systemd: Some(app.systemd.clone()),
+            cmd: render_template(&service.cmd, &template_context)?,
+            watch_hash: String::new(),
+            watch_patterns: Vec::new(),
+            ignore_patterns: Vec::new(),
+            watch_extra_files: Vec::new(),
+            watch_fingerprint: Vec::new(),
+            auto_restart: false,
         };
-        let post_init = build_post_init_context(service, tasks_map, project_dir, &run_id);
 
         let mut service_state = ServiceState::Ready;
         let mut lifecycle = RunLifecycle::Running;
@@ -163,24 +173,10 @@ pub async fn ensure_globals(
             .await
         {
             Ok(()) => {
-                if let Err(err) = crate::readiness::wait_for_ready(&readiness, &context).await {
+                if let Err(err) = wait_for_prepared_service(app, name, &prepared, post_init).await {
                     service_state = ServiceState::Failed;
                     lifecycle = RunLifecycle::Degraded;
-                    startup_error =
-                        Some(anyhow!("global service '{name}' failed readiness: {err}"));
-                } else if let Some(post_init) = post_init
-                    && let Err(err) = run_post_init_tasks_blocking(
-                        post_init.tasks_map,
-                        post_init.post_init_tasks,
-                        post_init.project_dir,
-                        post_init.run_id,
-                    )
-                    .await
-                {
-                    service_state = ServiceState::Failed;
-                    lifecycle = RunLifecycle::Degraded;
-                    startup_error =
-                        Some(anyhow!("global service '{name}' post_init failed: {err}"));
+                    startup_error = Some(err.context(format!("launch global service '{name}'")));
                 }
             }
             Err(err) => {

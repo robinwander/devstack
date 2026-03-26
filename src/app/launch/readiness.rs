@@ -9,7 +9,6 @@ use std::time::Duration;
 use anyhow::{Result, anyhow};
 
 use crate::app::commands::restart::restart_service_no_wait;
-use crate::app::commands::tasks::run_post_init_tasks_blocking;
 use crate::app::context::{AppContext, AppResult};
 use crate::app::error::AppError;
 use crate::app::runtime::persist_manifest;
@@ -22,6 +21,7 @@ use crate::paths;
 use crate::services::readiness::{ReadinessContext, ReadinessKind, ReadinessSpec};
 use crate::stores::{recompute_run_state, set_service_state};
 
+use super::pipeline::wait_for_prepared_service;
 use super::prepare::PreparedService;
 
 #[derive(Clone)]
@@ -107,34 +107,8 @@ pub async fn handle_readiness(
         return Ok(());
     }
 
-    let context = ReadinessContext {
-        port: prepared.port,
-        scheme: prepared.scheme.clone(),
-        log_path: prepared.log_path.clone(),
-        cwd: prepared.cwd.clone(),
-        env: prepared.env.clone(),
-        unit_name: Some(prepared.unit_name.clone()),
-        systemd: Some(app.systemd.clone()),
-    };
-
-    match crate::readiness::wait_for_ready(&prepared.readiness, &context).await {
+    match wait_for_prepared_service(&app, &prepared.name, prepared, post_init).await {
         Ok(()) => {
-            if let Some(post_init) = post_init
-                && let Err(err) = run_post_init_tasks_blocking(
-                    post_init.tasks_map,
-                    post_init.post_init_tasks,
-                    post_init.project_dir,
-                    post_init.run_id,
-                )
-                .await
-            {
-                let reason = format!("post_init task failed: {err}");
-                eprintln!("[{}] {reason}", prepared.name);
-                mark_service_failed(&app, run_id, &prepared.name, &reason)
-                    .await
-                    .map_err(AppError::from)?;
-                return Err(AppError::Internal(anyhow!(reason)));
-            }
             mark_service_ready(&app, run_id, &prepared.name)
                 .await
                 .map_err(AppError::from)?;
@@ -453,42 +427,27 @@ pub fn spawn_readiness_task(
     post_init: Option<PostInitContext>,
 ) {
     tokio::spawn(async move {
-        let context = ReadinessContext {
+        let prepared = PreparedService {
+            name: service.clone(),
+            unit_name: unit_name.clone(),
             port,
             scheme,
+            url: None,
+            deps: Vec::new(),
+            readiness,
             log_path: log_path.clone(),
             cwd,
             env,
-            unit_name: Some(unit_name.clone()),
-            systemd: Some(app.systemd.clone()),
+            cmd: String::new(),
+            watch_hash: String::new(),
+            watch_patterns: Vec::new(),
+            ignore_patterns: Vec::new(),
+            watch_extra_files: Vec::new(),
+            watch_fingerprint: Vec::new(),
+            auto_restart: false,
         };
-        match crate::readiness::wait_for_ready(&readiness, &context).await {
+        match wait_for_prepared_service(&app, &service, &prepared, post_init).await {
             Ok(()) => {
-                if let Some(post_init) = post_init
-                    && let Err(err) = run_post_init_tasks_blocking(
-                        post_init.tasks_map,
-                        post_init.post_init_tasks,
-                        post_init.project_dir,
-                        post_init.run_id,
-                    )
-                    .await
-                {
-                    let reason = format!("post_init task failed: {err}");
-                    eprintln!("[{service}] {reason}");
-                    if let Err(mark_err) =
-                        mark_service_failed(&app, &run_id, &service, &reason).await
-                    {
-                        eprintln!(
-                            "devstack: failed to mark service {service} failed for run {run_id}: {mark_err}"
-                        );
-                    }
-                    if let Err(err) = persist_manifest(&app, &run_id).await {
-                        eprintln!(
-                            "devstack: failed to persist manifest after post_init failure for {run_id}/{service}: {err}"
-                        );
-                    }
-                    return;
-                }
                 if let Err(err) = mark_service_ready(&app, &run_id, &service).await {
                     eprintln!(
                         "devstack: failed to mark service {service} ready for run {run_id}: {err}"
