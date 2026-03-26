@@ -5,7 +5,6 @@ use std::sync::{Arc, atomic::AtomicBool};
 use crate::manifest::ServiceState;
 use crate::services::readiness::ReadinessSpec;
 
-/// Immutable service specification from config
 #[derive(Clone, Debug)]
 pub struct ServiceSpec {
     pub name: String,
@@ -16,7 +15,6 @@ pub struct ServiceSpec {
     pub ignore_patterns: Vec<String>,
 }
 
-/// Computed launch plan for a service (immutable after preparation)
 #[derive(Clone, Debug)]
 pub struct ServiceLaunchPlan {
     pub unit_name: String,
@@ -32,7 +30,6 @@ pub struct ServiceLaunchPlan {
     pub watch_extra_files: Vec<PathBuf>,
 }
 
-/// Mutable runtime state that changes during execution
 #[derive(Clone, Debug)]
 pub struct ServiceRuntimeState {
     pub state: ServiceState,
@@ -41,30 +38,19 @@ pub struct ServiceRuntimeState {
     pub watch_paused: bool,
 }
 
-/// Background task handles (not cloneable)
-pub struct ServiceHandles {
-    pub health: Option<HealthHandle>,
-    pub watch: Option<ServiceWatchHandle>,
-}
-
-/// Complete service record combining all aspects
-#[derive(Clone, Debug)]
-pub struct ServiceRecord {
-    pub spec: ServiceSpec,
-    pub launch: ServiceLaunchPlan,
-    pub runtime: ServiceRuntimeState,
-    // Note: handles are stored separately as they're not Clone
-}
-
-/// Per-service health monitor handle (extracted from daemon.rs)
 #[derive(Clone)]
 pub struct HealthHandle {
     pub stop_flag: Arc<AtomicBool>,
     pub stats: Arc<std::sync::Mutex<HealthSnapshot>>,
 }
 
-/// Health monitor statistics
-#[derive(Clone, Default)]
+impl std::fmt::Debug for HealthHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HealthHandle").finish_non_exhaustive()
+    }
+}
+
+#[derive(Clone, Default, Debug)]
 pub struct HealthSnapshot {
     pub passes: u64,
     pub failures: u64,
@@ -73,44 +59,36 @@ pub struct HealthSnapshot {
     pub last_ok: Option<bool>,
 }
 
-/// Service watch handle 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct ServiceWatchHandle {
     pub stop_flag: Arc<AtomicBool>,
     pub paused: Arc<AtomicBool>,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct ServiceHandles {
+    pub health: Option<HealthHandle>,
+    pub watch: Option<ServiceWatchHandle>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ServiceRecord {
+    pub spec: ServiceSpec,
+    pub launch: ServiceLaunchPlan,
+    pub runtime: ServiceRuntimeState,
+    pub handles: ServiceHandles,
+}
+
 impl ServiceRecord {
-    /// Create a new service record
     pub fn new(spec: ServiceSpec, launch: ServiceLaunchPlan) -> Self {
         Self {
             spec,
             launch,
-            runtime: ServiceRuntimeState {
-                state: ServiceState::Starting,
-                last_failure: None,
-                last_started_at: None,
-                watch_paused: false,
-            },
+            runtime: ServiceRuntimeState::default(),
+            handles: ServiceHandles::default(),
         }
     }
 
-    /// Check if service is ready
-    pub fn is_ready(&self) -> bool {
-        matches!(self.runtime.state, ServiceState::Ready)
-    }
-
-    /// Check if service is stopped
-    pub fn is_stopped(&self) -> bool {
-        matches!(self.runtime.state, ServiceState::Stopped)
-    }
-
-    /// Check if service is failed
-    pub fn is_failed(&self) -> bool {
-        matches!(self.runtime.state, ServiceState::Failed)
-    }
-
-    /// Update the service state
     pub fn set_state(&mut self, state: ServiceState) {
         if matches!(state, ServiceState::Ready) {
             self.runtime.last_started_at = Some(crate::util::now_rfc3339());
@@ -118,10 +96,25 @@ impl ServiceRecord {
         self.runtime.state = state;
     }
 
-    /// Set failure reason
     pub fn set_failure(&mut self, reason: String) {
         self.runtime.state = ServiceState::Failed;
         self.runtime.last_failure = Some(reason);
+    }
+
+    pub fn stop_health_monitor(&mut self) {
+        if let Some(health) = self.handles.health.take() {
+            health.stop_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    pub fn stop_watch(&mut self) {
+        if let Some(handle) = self.handles.watch.take() {
+            handle.stop_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    pub fn watch_active(&self) -> bool {
+        self.spec.auto_restart && self.handles.watch.is_some() && !self.runtime.watch_paused
     }
 }
 

@@ -4,21 +4,19 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::manifest::RunLifecycle;
-use crate::model::{RunRecord, ServiceRecord, ServiceSpec, ServiceLaunchPlan, ServiceRuntimeState};
-use crate::paths;
-use crate::services::readiness::ReadinessSpec;
-use crate::util::atomic_write;
 use crate::ids::RunId;
+use crate::manifest::RunLifecycle;
+use crate::model::{RunRecord, ServiceLaunchPlan, ServiceRecord, ServiceSpec};
+use crate::paths;
+use crate::services::readiness::{ReadinessKind, ReadinessSpec};
+use crate::util::atomic_write;
 
-/// Daemon state file format for persistence
 #[derive(Serialize, Deserialize)]
 pub struct DaemonStateFile {
     pub runs: Vec<String>,
     pub updated_at: String,
 }
 
-/// Load daemon state from disk, reconstructing run records from manifests
 pub fn load_state_from_disk() -> Result<BTreeMap<String, RunRecord>> {
     let mut runs = BTreeMap::new();
     let runs_dir = paths::runs_dir()?;
@@ -32,94 +30,76 @@ pub fn load_state_from_disk() -> Result<BTreeMap<String, RunRecord>> {
         if !manifest_path.exists() {
             continue;
         }
-        
+
         if let Ok(manifest) = crate::manifest::RunManifest::load_from_path(&manifest_path) {
-            // Skip stopped runs during daemon startup
             if manifest.state == RunLifecycle::Stopped || manifest.stopped_at.is_some() {
                 continue;
             }
-            
-            let run_record = convert_manifest_to_run_record(manifest, &entry.path())?;
-            runs.insert(run_record.run_id.as_str().to_string(), run_record);
+
+            let record = convert_manifest_to_run_record(manifest, &entry.path());
+            runs.insert(record.run_id.as_str().to_string(), record);
         }
     }
-    
+
     Ok(runs)
 }
 
-/// Convert a RunManifest back to a RunRecord for in-memory state
 fn convert_manifest_to_run_record(
     manifest: crate::manifest::RunManifest,
     run_dir: &std::path::Path,
-) -> Result<RunRecord> {
+) -> RunRecord {
     let run_id = RunId::new(manifest.run_id.clone());
-    let mut run_record = RunRecord::new(
+    let mut record = RunRecord::new(
         run_id.clone(),
         manifest.stack,
         PathBuf::from(manifest.project_dir),
         manifest.env,
     );
-    
-    run_record.state = manifest.state;
-    run_record.created_at = manifest.created_at;
-    run_record.stopped_at = manifest.stopped_at;
-    
-    // Convert service manifests to service records
-    for (name, svc) in manifest.services {
+    record.state = manifest.state;
+    record.created_at = manifest.created_at;
+    record.stopped_at = manifest.stopped_at;
+
+    for (name, service) in manifest.services {
         let spec = ServiceSpec {
             name: name.clone(),
-            deps: Vec::new(),  // Not stored in manifest, will be recomputed
-            readiness: ReadinessSpec::new(crate::services::readiness::ReadinessKind::None),
+            deps: Vec::new(),
+            readiness: ReadinessSpec::new(ReadinessKind::None),
             auto_restart: false,
             watch_patterns: Vec::new(),
             ignore_patterns: Vec::new(),
         };
-        
         let launch = ServiceLaunchPlan {
             unit_name: unit_name_for_run(run_id.as_str(), &name),
-            cwd: PathBuf::from(&run_record.project_dir),
-            env: run_record.base_env.clone(),
-            cmd: String::new(),  // Not stored in manifest
+            cwd: record.project_dir.clone(),
+            env: record.base_env.clone(),
+            cmd: String::new(),
             log_path: run_dir.join("logs").join(format!("{name}.log")),
-            port: svc.port,
+            port: service.port,
             scheme: "http".to_string(),
-            url: svc.url,
-            watch_hash: svc.watch_hash.unwrap_or_default(),
+            url: service.url,
+            watch_hash: service.watch_hash.unwrap_or_default(),
             watch_fingerprint: Vec::new(),
             watch_extra_files: Vec::new(),
         };
-        
-        let runtime = ServiceRuntimeState {
-            state: svc.state,
-            last_failure: None,
-            last_started_at: Some(run_record.created_at.clone()),
-            watch_paused: false,
-        };
-        
-        let service_record = ServiceRecord {
-            spec,
-            launch,
-            runtime,
-        };
-        
-        run_record.insert_service(name, service_record);
+        let mut service_record = ServiceRecord::new(spec, launch);
+        service_record.runtime.state = service.state;
+        service_record.runtime.last_started_at = Some(record.created_at.clone());
+        record.insert_service(name, service_record);
     }
-    
-    Ok(run_record)
+
+    record
 }
 
-/// Generate systemd unit name for a service in a run
 fn unit_name_for_run(run_id: &str, service: &str) -> String {
     format!("devstack-{}-{}.service", run_id, service)
 }
 
-/// Write daemon state file 
 pub fn write_daemon_state_file(runs: &BTreeMap<String, RunRecord>) -> Result<()> {
     let daemon_state = DaemonStateFile {
         runs: runs.keys().cloned().collect(),
         updated_at: crate::util::now_rfc3339(),
     };
-    
+
     let state_path = paths::daemon_state_path()?;
     let json = serde_json::to_vec_pretty(&daemon_state).context("serialize daemon state")?;
     atomic_write(&state_path, &json).context("write daemon state")
