@@ -17,36 +17,36 @@ use crate::manifest::{RunLifecycle, RunManifest, ServiceManifest, ServiceState};
 #[derive(OpenApi)]
 #[openapi(
     paths(
-        crate::daemon::ping,
-        crate::daemon::register_agent_session,
-        crate::daemon::unregister_agent_session,
-        crate::daemon::post_agent_message,
-        crate::daemon::poll_agent_messages,
-        crate::daemon::get_latest_agent_session,
-        crate::daemon::share_agent_message,
-        crate::daemon::up,
-        crate::daemon::down,
-        crate::daemon::kill,
-        crate::daemon::restart_service,
-        crate::daemon::status,
-        crate::daemon::start_task,
-        crate::daemon::task_status,
-        crate::daemon::run_tasks,
-        crate::daemon::watch_status,
-        crate::daemon::watch_pause,
-        crate::daemon::watch_resume,
-        crate::daemon::logs,
-        crate::daemon::logs_view,
-        crate::daemon::list_runs,
-        crate::daemon::list_globals,
-        crate::daemon::list_sources,
-        crate::daemon::add_source,
-        crate::daemon::remove_source,
-        crate::daemon::source_logs_view,
-        crate::daemon::set_navigation_intent,
-        crate::daemon::get_navigation_intent,
-        crate::daemon::clear_navigation_intent,
-        crate::daemon::gc
+        crate::daemon::handlers::ping::ping,
+        crate::daemon::handlers::agent::register_agent_session,
+        crate::daemon::handlers::agent::unregister_agent_session,
+        crate::daemon::handlers::agent::post_agent_message,
+        crate::daemon::handlers::agent::poll_agent_messages,
+        crate::daemon::handlers::agent::get_latest_agent_session,
+        crate::daemon::handlers::agent::share_agent_message,
+        crate::daemon::handlers::runs::up,
+        crate::daemon::handlers::runs::down,
+        crate::daemon::handlers::runs::kill,
+        crate::daemon::handlers::runs::restart_service,
+        crate::daemon::handlers::runs::status,
+        crate::daemon::handlers::tasks::start_task,
+        crate::daemon::handlers::tasks::task_status,
+        crate::daemon::handlers::tasks::run_tasks,
+        crate::daemon::handlers::watch::watch_status,
+        crate::daemon::handlers::watch::watch_pause,
+        crate::daemon::handlers::watch::watch_resume,
+        crate::daemon::handlers::logs::logs,
+        crate::daemon::handlers::logs::logs_view,
+        crate::daemon::handlers::runs::list_runs,
+        crate::daemon::handlers::globals::list_globals,
+        crate::daemon::handlers::sources::list_sources,
+        crate::daemon::handlers::sources::add_source,
+        crate::daemon::handlers::sources::remove_source,
+        crate::daemon::handlers::sources::source_logs_view,
+        crate::daemon::handlers::navigation::set_navigation_intent,
+        crate::daemon::handlers::navigation::get_navigation_intent,
+        crate::daemon::handlers::navigation::clear_navigation_intent,
+        crate::daemon::handlers::gc::gc
     ),
     components(
         schemas(
@@ -103,9 +103,7 @@ use crate::manifest::{RunLifecycle, RunManifest, ServiceManifest, ServiceState};
             ServiceState
         )
     ),
-    tags(
-        (name = "daemon", description = "Devstack daemon API")
-    )
+    tags((name = "daemon", description = "Devstack daemon API"))
 )]
 pub struct ApiDoc;
 
