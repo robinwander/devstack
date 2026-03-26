@@ -146,6 +146,7 @@ async fn restore_active_globals(app: &crate::app::context::AppContext) -> Result
                 .unwrap_or(std::path::Path::new(&manifest.project_dir)),
         )
         .await?;
+        sync_global_auto_restart_watcher(app, &manifest.key).await?;
     }
 
     Ok(())

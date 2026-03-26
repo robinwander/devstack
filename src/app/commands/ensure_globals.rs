@@ -75,13 +75,8 @@ pub async fn ensure_globals(
                     service_config.clone(),
                     tasks_map.clone(),
                     prepared.clone(),
-                    existing
-                        .as_ref()
-                        .map(|manifest| manifest.service.state.clone())
-                        .unwrap_or(ServiceState::Ready),
-                    existing
-                        .as_ref()
-                        .and_then(|manifest| manifest.service.last_failure.clone()),
+                    ServiceState::Ready,
+                    None,
                     existing
                         .as_ref()
                         .and_then(|manifest| manifest.service.last_started_at.clone())
@@ -90,12 +85,16 @@ pub async fn ensure_globals(
                         .as_ref()
                         .map(|manifest| manifest.service.watch_paused)
                         .unwrap_or(false),
-                    previous_state.clone().unwrap_or(RunLifecycle::Running),
+                    RunLifecycle::Running,
                     existing_created_at,
                     None,
                 ))
                 .await;
+            persist_global_manifest(app, &key).await?;
             sync_global_auto_restart_watcher(app, &key).await?;
+            if previous_state.as_ref() != Some(&RunLifecycle::Running) {
+                app.emit_event(global_state_changed_event(&key, RunLifecycle::Running));
+            }
             ports.insert(name.clone(), prepared.port);
             continue;
         }
