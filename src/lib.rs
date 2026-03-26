@@ -7,7 +7,6 @@ pub mod daemon;
 pub mod diagnose;
 pub mod ids;
 pub mod infra;
-pub mod log_index;
 pub mod logfmt;
 pub mod logs;
 pub mod manifest;
