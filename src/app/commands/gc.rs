@@ -97,6 +97,7 @@ pub async fn run_gc(app: &AppContext, request: GcRequest) -> AppResult<GcRespons
             for run_id in removed {
                 let _ = index.delete_run(&run_id);
             }
+            let _ = index.force_compact();
         })
         .await
         .ok();

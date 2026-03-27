@@ -3,6 +3,7 @@ use std::os::unix::io::AsRawFd;
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use http_body_util::{BodyExt, Full};
@@ -65,6 +66,7 @@ pub async fn run_daemon() -> Result<()> {
     sync_port_reservations_from_disk(&app).await?;
     restore_active_globals(&app).await?;
     restore_auto_restart_watchers(&app).await;
+    spawn_log_index_compaction_task(app.log_index.clone());
 
     if let Ok(runs_dir) = paths::runs_dir()
         && let Ok(mut ledger) = ProjectsLedger::load()
@@ -111,8 +113,7 @@ async fn restore_active_globals(app: &crate::app::context::AppContext) -> Result
             Ok(manifest) => manifest,
             Err(_) => continue,
         };
-        if manifest.state == crate::manifest::RunLifecycle::Stopped || manifest.stopped_at.is_some()
-        {
+        if manifest.state == crate::model::RunLifecycle::Stopped || manifest.stopped_at.is_some() {
             continue;
         }
 
@@ -277,6 +278,19 @@ async fn build_process_manager() -> Result<Arc<dyn SystemdManager>> {
 }
 
 const DASHBOARD_PORT: u16 = 47832;
+const LOG_INDEX_COMPACTION_INTERVAL: Duration = Duration::from_secs(10 * 60);
+
+fn spawn_log_index_compaction_task(log_index: Arc<LogIndex>) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(LOG_INDEX_COMPACTION_INTERVAL);
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            let index = log_index.clone();
+            let _ = tokio::task::spawn_blocking(move || index.force_compact()).await;
+        }
+    });
+}
 
 fn dashboard_disabled() -> bool {
     std::env::var("DEVSTACK_DISABLE_DASHBOARD")
