@@ -174,9 +174,7 @@ pub(crate) fn spawn_service_auto_restart_watcher(
             let should_restart = match app
                 .runs
                 .with_run_mut(&run_id, |run| {
-                    let Some(record) = run.services.get_mut(&service) else {
-                        return None;
-                    };
+                    let record = run.services.get_mut(&service)?;
                     paused_flag_task.store(record.runtime.watch_paused, Ordering::SeqCst);
                     if !record.spec.auto_restart
                         || record.runtime.watch_paused
@@ -215,9 +213,7 @@ pub async fn sync_service_auto_restart_watcher(
     let start_args: Option<WatchStartArgs> = app
         .runs
         .with_run_mut(run_id, |run| {
-            let Some(record) = run.services.get_mut(service) else {
-                return None;
-            };
+            let record = run.services.get_mut(service)?;
 
             if !record.spec.auto_restart || record.runtime.last_started_at.is_none() {
                 stop_watch_for_service(record);

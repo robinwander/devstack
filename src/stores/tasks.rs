@@ -1,7 +1,8 @@
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant as StdInstant;
-use anyhow::{anyhow, Result};
+
+use anyhow::{Result, anyhow};
 use tokio::sync::Mutex;
 
 use crate::api::{DaemonEvent, DaemonTaskEvent, DaemonTaskEventKind, TaskExecutionState};
@@ -103,7 +104,10 @@ impl TaskStore {
     pub async fn add_task(&self, task: DetachedTaskExecution) -> Result<()> {
         let mut guard = self.inner.lock().await;
         if guard.contains_key(&task.execution_id) {
-            return Err(anyhow!("task execution {} already exists", task.execution_id));
+            return Err(anyhow!(
+                "task execution {} already exists",
+                task.execution_id
+            ));
         }
         guard.insert(task.execution_id.clone(), task);
         Ok(())
@@ -132,7 +136,12 @@ impl TaskStore {
     }
 
     /// Check for duplicate running tasks
-    pub async fn has_running_task(&self, task_name: &str, run_id: Option<&str>, project_dir: &PathBuf) -> bool {
+    pub async fn has_running_task(
+        &self,
+        task_name: &str,
+        run_id: Option<&str>,
+        project_dir: &Path,
+    ) -> bool {
         let guard = self.inner.lock().await;
         guard.values().any(|task| {
             task.state == TaskExecutionState::Running
@@ -180,11 +189,11 @@ impl TaskStore {
         let before_count = guard.len();
         guard.retain(|_, task| {
             match task.state {
-                TaskExecutionState::Running => true, // Keep running tasks
+                TaskExecutionState::Running => true,   // Keep running tasks
                 _ => task.started_at_instant > cutoff, // Remove old finished tasks
             }
         });
-        
+
         before_count - guard.len()
     }
 }
@@ -211,6 +220,6 @@ pub fn task_event(task: &DetachedTaskExecution, kind: DaemonTaskEventKind) -> Da
 }
 
 /// Helper function to check if two paths refer to the same project directory
-fn same_project_dir(a: &PathBuf, b: &PathBuf) -> bool {
+fn same_project_dir(a: &Path, b: &Path) -> bool {
     a.canonicalize().ok() == b.canonicalize().ok()
 }

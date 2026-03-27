@@ -35,6 +35,17 @@ struct LaunchResources {
     base_env: BTreeMap<String, String>,
 }
 
+struct RefreshLaunchInputs<'a> {
+    app: &'a AppContext,
+    run_id: &'a RunId,
+    stack_plan: &'a StackPlan,
+    config: &'a ConfigFile,
+    project_dir: &'a Path,
+    config_path: &'a Path,
+    existing: &'a BTreeMap<String, ExistingServiceSnapshot>,
+    reuse_ports: bool,
+}
+
 fn load_requested_stack(
     request: &UpRequest,
     project_dir: &Path,
@@ -144,43 +155,40 @@ async fn build_new_launch_resources(
 }
 
 async fn build_refresh_launch_resources(
-    app: &AppContext,
-    run_id: &RunId,
-    stack_plan: &StackPlan,
-    config: &ConfigFile,
-    project_dir: &Path,
-    config_path: &Path,
-    config_dir: &Path,
-    existing: &BTreeMap<String, ExistingServiceSnapshot>,
-    reuse_ports: bool,
+    inputs: RefreshLaunchInputs<'_>,
 ) -> AppResult<LaunchResources> {
-    sync_port_reservations_from_disk(app)
+    sync_port_reservations_from_disk(inputs.app)
         .await
         .map_err(AppError::from)?;
 
-    let mut port_map =
-        resolve_ports_for_refresh(run_id.as_str(), &stack_plan.services, existing, reuse_ports)
-            .map_err(AppError::from)?;
-    let tasks_map = build_tasks_map(config);
-    let globals = config.globals_map();
+    let mut port_map = resolve_ports_for_refresh(
+        inputs.run_id.as_str(),
+        &inputs.stack_plan.services,
+        inputs.existing,
+        inputs.reuse_ports,
+    )
+    .map_err(AppError::from)?;
+    let tasks_map = build_tasks_map(inputs.config);
+    let globals = inputs.config.globals_map();
+    let config_dir = inputs.config_path.parent().unwrap_or(inputs.project_dir);
     let global_ports = ensure_globals(
-        app,
+        inputs.app,
         &globals,
         &tasks_map,
-        project_dir,
-        config_path,
+        inputs.project_dir,
+        inputs.config_path,
         config_dir,
     )
     .await
     .map_err(AppError::from)?;
-    let service_schemes = build_service_schemes(stack_plan, &globals);
+    let service_schemes = build_service_schemes(inputs.stack_plan, &globals);
     for (name, port) in global_ports {
         port_map.entry(name).or_insert(port);
     }
 
-    let scope = InstanceScope::run(run_id.clone(), stack_plan.name.clone());
-    let base_env =
-        build_base_env(&scope, project_dir, &port_map, &service_schemes).map_err(AppError::from)?;
+    let scope = InstanceScope::run(inputs.run_id.clone(), inputs.stack_plan.name.clone());
+    let base_env = build_base_env(&scope, inputs.project_dir, &port_map, &service_schemes)
+        .map_err(AppError::from)?;
 
     Ok(LaunchResources {
         config_dir: config_dir.to_path_buf(),
@@ -388,7 +396,6 @@ pub async fn refresh_run(
     force: bool,
 ) -> AppResult<crate::api::RunResponse> {
     let run_id = RunId::new(run_id.to_string());
-    let config_dir = config_path.parent().unwrap_or(project_dir);
 
     let (existing, removed, reuse_ports) = app
         .runs
@@ -418,17 +425,16 @@ pub async fn refresh_run(
 
     remove_services_missing_from_stack(app, &run_id, &removed, &existing).await?;
 
-    let resources = build_refresh_launch_resources(
+    let resources = build_refresh_launch_resources(RefreshLaunchInputs {
         app,
-        &run_id,
+        run_id: &run_id,
         stack_plan,
         config,
         project_dir,
         config_path,
-        config_dir,
-        &existing,
+        existing: &existing,
         reuse_ports,
-    )
+    })
     .await?;
     update_run_launch_resources(app, &run_id, &resources.base_env).await?;
     snapshot_run_config(&run_id, config_path)?;

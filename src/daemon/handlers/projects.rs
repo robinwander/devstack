@@ -4,7 +4,7 @@ use anyhow::anyhow;
 use axum::{Json, extract::Path as AxumPath};
 
 use crate::api::{ProjectsResponse, RegisterProjectRequest, RegisterProjectResponse};
-use crate::daemon::error::AppError;
+use crate::app::error::AppError;
 use crate::projects::ProjectsLedger;
 
 #[utoipa::path(
@@ -62,7 +62,10 @@ pub async fn remove_project(
     let mut ledger = ProjectsLedger::load().map_err(AppError::from)?;
     let removed = ledger.remove(&project_id).map_err(AppError::from)?;
     if !removed {
-        return Err(AppError::not_found(format!("project {} not found", project_id)));
+        return Err(AppError::not_found(format!(
+            "project {} not found",
+            project_id
+        )));
     }
     Ok(Json(serde_json::json!({ "ok": true })))
 }

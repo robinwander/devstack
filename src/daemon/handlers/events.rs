@@ -6,7 +6,7 @@ use axum::{
 };
 use tokio_stream::wrappers::ReceiverStream;
 
-use crate::daemon::error::AppError;
+use crate::app::error::AppError;
 use crate::daemon::log_tailing::{release_run_log_tail, retain_run_log_tail};
 use crate::daemon::router::DaemonState;
 
@@ -41,7 +41,9 @@ pub async fn events(
         if !exists {
             return Err(AppError::not_found(format!("run {run_id} not found")));
         }
-        retain_run_log_tail(&state, run_id).await.map_err(AppError::from)?;
+        retain_run_log_tail(&state, run_id)
+            .await
+            .map_err(AppError::from)?;
     }
 
     let mut event_rx = state.app.event_tx.subscribe();
@@ -50,8 +52,7 @@ pub async fn events(
         state: state.clone(),
         run_id: run_filter.clone(),
     };
-    let (stream_tx, stream_rx) =
-        tokio::sync::mpsc::channel::<Result<Event, Infallible>>(32);
+    let (stream_tx, stream_rx) = tokio::sync::mpsc::channel::<Result<Event, Infallible>>(32);
 
     tokio::spawn(async move {
         let _subscription = subscription;

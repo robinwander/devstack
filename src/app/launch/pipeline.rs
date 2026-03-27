@@ -23,7 +23,7 @@ pub async fn wait_for_prepared_service(
         systemd: Some(app.systemd.clone()),
     };
 
-    crate::readiness::wait_for_ready(&prepared.readiness, &context).await?;
+    crate::services::readiness::wait_for_ready(&prepared.readiness, &context).await?;
 
     if let Some(post_init) = post_init {
         run_post_init_tasks_blocking(

@@ -1,5 +1,5 @@
 #[cfg(test)]
-mod tests {
+mod config_tests {
     use crate::model::ReadinessKind;
     use std::collections::BTreeMap;
     use std::fs;

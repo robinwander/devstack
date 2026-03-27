@@ -17,24 +17,21 @@ pub async fn verify_port_binding(port: u16, ctx: &ReadinessContext) -> Result<()
     {
         let info = linux_port_binding_info(port, ctx.unit_name.as_deref())?;
         if !info.has_listener {
+            return Err(anyhow!("port {} is not bound by any process", port));
+        }
+
+        if let Some(unit_name) = &ctx.unit_name
+            && let Some(false) = info.owned_by_unit
+        {
             return Err(anyhow!(
-                "port {} is not bound by any process",
-                port
+                "port {} is bound but not by unit '{}' (bound by PIDs: {:?})",
+                port,
+                unit_name,
+                info.listening_pids
             ));
         }
 
-        if let Some(unit_name) = &ctx.unit_name {
-            if let Some(false) = info.owned_by_unit {
-                return Err(anyhow!(
-                    "port {} is bound but not by unit '{}' (bound by PIDs: {:?})",
-                    port,
-                    unit_name,
-                    info.listening_pids
-                ));
-            }
-        }
-
-        return Ok(());
+        Ok(())
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -47,8 +44,6 @@ pub async fn verify_port_binding(port: u16, ctx: &ReadinessContext) -> Result<()
         }
     }
 }
-
-
 
 pub async fn port_binding_info(port: u16, unit_name: Option<&str>) -> Result<PortBindingInfo> {
     #[cfg(target_os = "linux")]
@@ -78,9 +73,10 @@ fn linux_port_binding_info_impl(port: u16, unit_name: Option<&str>) -> Result<Po
     if let Some((bound, pids)) = linux_port_binding_info_from_ss(port) {
         let owned_by_unit = if let Some(unit_name) = unit_name {
             let control_group = linux_unit_control_group(unit_name);
-            Some(pids.iter().any(|&pid| {
-                pid_in_unit_cgroup(pid, unit_name, control_group.as_deref())
-            }))
+            Some(
+                pids.iter()
+                    .any(|&pid| pid_in_unit_cgroup(pid, unit_name, control_group.as_deref())),
+            )
         } else {
             None
         };
@@ -100,9 +96,10 @@ fn linux_port_binding_info_impl(port: u16, unit_name: Option<&str>) -> Result<Po
 
     let owned_by_unit = if let Some(unit_name) = unit_name {
         let control_group = linux_unit_control_group(unit_name);
-        Some(pids.iter().any(|&pid| {
-            pid_in_unit_cgroup(pid, unit_name, control_group.as_deref())
-        }))
+        Some(
+            pids.iter()
+                .any(|&pid| pid_in_unit_cgroup(pid, unit_name, control_group.as_deref())),
+        )
     } else {
         None
     };
@@ -145,14 +142,12 @@ fn linux_collect_inodes_from_proc_net(path: &str, port: u16, into: &mut HashSet<
         }
 
         // Parse local port from address (format: IP:PORT in hex)
-        if let Some((_ip, port_hex)) = local_address.split_once(':') {
-            if let Ok(parsed_port) = u16::from_str_radix(port_hex, 16) {
-                if parsed_port == port {
-                    if let Ok(inode) = fields[9].parse::<u64>() {
-                        into.insert(inode);
-                    }
-                }
-            }
+        if let Some((_ip, port_hex)) = local_address.split_once(':')
+            && let Ok(parsed_port) = u16::from_str_radix(port_hex, 16)
+            && parsed_port == port
+            && let Ok(inode) = fields[9].parse::<u64>()
+        {
+            into.insert(inode);
         }
     }
 }
@@ -180,15 +175,16 @@ fn linux_pids_for_inodes(inodes: &HashSet<u64>) -> Vec<u32> {
                 continue;
             };
 
-            if let Some(target_str) = link_target.to_str() {
-                if target_str.starts_with("socket:[") && target_str.ends_with(']') {
-                    let inode_str = &target_str[8..target_str.len() - 1];
-                    if let Ok(inode) = inode_str.parse::<u64>() {
-                        if inodes.contains(&inode) {
-                            pids.push(pid);
-                            break; // Found one socket for this PID, no need to check more
-                        }
-                    }
+            if let Some(target_str) = link_target.to_str()
+                && target_str.starts_with("socket:[")
+                && target_str.ends_with(']')
+            {
+                let inode_str = &target_str[8..target_str.len() - 1];
+                if let Ok(inode) = inode_str.parse::<u64>()
+                    && inodes.contains(&inode)
+                {
+                    pids.push(pid);
+                    break;
                 }
             }
         }
@@ -202,7 +198,7 @@ fn linux_port_binding_info_from_ss(port: u16) -> Option<(bool, Vec<u32>)> {
     use std::process::Command;
 
     let output = Command::new("ss")
-        .args(&["-tlnp", &format!("sport = :{}", port)])
+        .args(["-tlnp", &format!("sport = :{}", port)])
         .output()
         .ok()?;
 
@@ -229,14 +225,14 @@ fn parse_ss_output_for_pids(output: &str) -> (bool, Vec<u32>) {
 
         // Look for process info in the last field
         // Format is usually like: users:(("process_name",pid=12345,fd=3))
-        if let Some(process_info) = line.split_whitespace().last() {
-            if process_info.contains("pid=") {
-                for part in process_info.split(',') {
-                    if let Some(pid_part) = part.strip_prefix("pid=") {
-                        if let Ok(pid) = pid_part.parse::<u32>() {
-                            pids.push(pid);
-                        }
-                    }
+        if let Some(process_info) = line.split_whitespace().last()
+            && process_info.contains("pid=")
+        {
+            for part in process_info.split(',') {
+                if let Some(pid_part) = part.strip_prefix("pid=")
+                    && let Ok(pid) = pid_part.parse::<u32>()
+                {
+                    pids.push(pid);
                 }
             }
         }
@@ -250,7 +246,7 @@ fn linux_unit_control_group(unit_name: &str) -> Option<String> {
     use std::process::Command;
 
     let output = Command::new("systemctl")
-        .args(&["show", "-p", "ControlGroup", unit_name])
+        .args(["show", "-p", "ControlGroup", unit_name])
         .output()
         .ok()?;
 
@@ -260,10 +256,10 @@ fn linux_unit_control_group(unit_name: &str) -> Option<String> {
 
     let stdout = String::from_utf8(output.stdout).ok()?;
     for line in stdout.lines() {
-        if let Some(cgroup) = line.strip_prefix("ControlGroup=") {
-            if !cgroup.is_empty() {
-                return Some(cgroup.to_string());
-            }
+        if let Some(cgroup) = line.strip_prefix("ControlGroup=")
+            && !cgroup.is_empty()
+        {
+            return Some(cgroup.to_string());
         }
     }
 
@@ -281,10 +277,10 @@ fn pid_in_unit_cgroup(pid: u32, unit_name: &str, control_group: Option<&str>) ->
         return true;
     }
 
-    if let Some(target_path) = control_group {
-        if cgroup_content_has_path(&content, target_path) {
-            return true;
-        }
+    if let Some(target_path) = control_group
+        && cgroup_content_has_path(&content, target_path)
+    {
+        return true;
     }
 
     false
@@ -298,10 +294,10 @@ fn cgroup_content_mentions_unit(content: &str, unit_name: &str) -> bool {
 #[cfg(target_os = "linux")]
 fn cgroup_content_has_path(content: &str, target: &str) -> bool {
     for line in content.lines() {
-        if let Some(path) = cgroup_path_from_line(line) {
-            if path == target {
-                return true;
-            }
+        if let Some(path) = cgroup_path_from_line(line)
+            && path == target
+        {
+            return true;
         }
     }
     false

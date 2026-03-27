@@ -17,18 +17,15 @@ pub async fn start_prepared_service(
     if restart_existing {
         let _ = app.systemd.stop_unit(&prepared.unit_name).await;
         for _ in 0..50 {
-            match app.systemd.unit_status(&prepared.unit_name).await {
-                Ok(Some(status)) => {
-                    let active_state = status.active_state.as_str();
-                    if matches!(
-                        active_state,
-                        "active" | "activating" | "deactivating" | "reloading" | "maintenance"
-                    ) {
-                        tokio::time::sleep(Duration::from_millis(100)).await;
-                        continue;
-                    }
+            if let Ok(Some(status)) = app.systemd.unit_status(&prepared.unit_name).await {
+                let active_state = status.active_state.as_str();
+                if matches!(
+                    active_state,
+                    "active" | "activating" | "deactivating" | "reloading" | "maintenance"
+                ) {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    continue;
                 }
-                Ok(None) | Err(_) => {}
             }
             break;
         }

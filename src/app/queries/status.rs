@@ -168,7 +168,7 @@ fn push_recent_stderr_line(lines: &mut Vec<RecentErrorLine>, raw_line: &[u8], li
     }
 
     let raw_line = String::from_utf8_lossy(raw_line);
-    let raw_line = crate::util::strip_ansi_if_needed(raw_line.trim_end_matches(['\r', '\n']));
+    let raw_line = crate::logfmt::strip_ansi_if_needed(raw_line.trim_end_matches(['\r', '\n']));
     if raw_line.is_empty() {
         return;
     }
