@@ -216,7 +216,7 @@ where
         if bytes == 0 {
             break;
         }
-        let clean = crate::util::strip_ansi_if_needed(&line);
+        let clean = crate::logfmt::strip_ansi_if_needed(&line);
         let timestamp = now_rfc3339();
         let entry = encode_log_line(label, &clean, &timestamp);
         let mut file = log_file.lock().await;
