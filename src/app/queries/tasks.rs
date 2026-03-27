@@ -24,8 +24,9 @@ pub async fn run_tasks(app: &AppContext, run_id: &str) -> AppResult<TasksRespons
         .map_err(|_| AppError::not_found(format!("run {run_id} not found")))?;
 
     let detached_tasks = app.tasks.list_tasks_for_run(run_id).await;
-    let history = crate::tasks::TaskHistory::load(&paths::task_history_path(&RunId::new(run_id))?)
-        .map_err(AppError::from)?;
+    let history =
+        crate::services::tasks::TaskHistory::load(&paths::task_history_path(&RunId::new(run_id))?)
+            .map_err(AppError::from)?;
 
     let mut tasks = BTreeMap::new();
     for execution in history.latest_by_task().into_values() {

@@ -2,8 +2,8 @@ use axum::{Json, extract::State};
 
 use crate::api::{NavigationIntentResponse, SetNavigationIntentRequest};
 use crate::app::commands;
+use crate::app::error::AppError;
 use crate::app::queries;
-use crate::daemon::error::AppError;
 use crate::daemon::router::DaemonState;
 
 #[utoipa::path(
@@ -18,7 +18,9 @@ pub async fn set_navigation_intent(
     Json(request): Json<SetNavigationIntentRequest>,
 ) -> Result<Json<NavigationIntentResponse>, AppError> {
     let intent = commands::navigation::set_navigation_intent(&state.app, request).await;
-    Ok(Json(NavigationIntentResponse { intent: Some(intent) }))
+    Ok(Json(NavigationIntentResponse {
+        intent: Some(intent),
+    }))
 }
 
 #[utoipa::path(
@@ -30,7 +32,9 @@ pub async fn set_navigation_intent(
 pub async fn get_navigation_intent(
     State(state): State<DaemonState>,
 ) -> Result<Json<NavigationIntentResponse>, AppError> {
-    Ok(Json(queries::navigation::get_navigation_intent(&state.app).await))
+    Ok(Json(
+        queries::navigation::get_navigation_intent(&state.app).await,
+    ))
 }
 
 #[utoipa::path(

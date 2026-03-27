@@ -19,8 +19,8 @@ use crate::app::runtime::{
 };
 use crate::config::{ConfigFile, StackPlan};
 use crate::ids::RunId;
-use crate::manifest::{RunLifecycle, ServiceState};
 use crate::model::{InstanceScope, RunRecord};
+use crate::model::{RunLifecycle, ServiceState};
 use crate::paths;
 use crate::port::allocate_ports;
 use crate::projects::ProjectsLedger;

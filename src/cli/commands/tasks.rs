@@ -4,8 +4,7 @@ use anyhow::{Result, anyhow};
 
 use crate::api::{StartTaskRequest, StartTaskResponse, TaskStatusResponse};
 use crate::cli::context::{
-    CliContext, DAEMON_TIMEOUT, resolve_active_run_id, resolve_project_context,
-    resolve_stack_name,
+    CliContext, DAEMON_TIMEOUT, resolve_active_run_id, resolve_project_context, resolve_stack_name,
 };
 use crate::cli::output::print_json;
 use crate::config::ConfigFile;
@@ -18,10 +17,10 @@ enum TaskExecutionTarget {
 }
 
 impl TaskExecutionTarget {
-    fn scope(&self) -> crate::tasks::TaskLogScope<'_> {
+    fn scope(&self) -> crate::services::tasks::TaskLogScope<'_> {
         match self {
-            Self::Run(run_id) => crate::tasks::TaskLogScope::Run(run_id),
-            Self::AdHoc => crate::tasks::TaskLogScope::AdHoc,
+            Self::Run(run_id) => crate::services::tasks::TaskLogScope::Run(run_id),
+            Self::AdHoc => crate::services::tasks::TaskLogScope::AdHoc,
         }
     }
 
@@ -65,14 +64,21 @@ pub(crate) async fn run(
         if json {
             print_json(serde_json::to_value(status)?, context.pretty);
         } else {
-            let duration =
-                crate::tasks::format_task_duration(std::time::Duration::from_millis(status.duration_ms));
+            let duration = crate::services::tasks::format_task_duration(
+                std::time::Duration::from_millis(status.duration_ms),
+            );
             match status.state {
                 crate::api::TaskExecutionState::Running => {
-                    eprintln!("{} [{}] running for {duration}", status.task, status.execution_id);
+                    eprintln!(
+                        "{} [{}] running for {duration}",
+                        status.task, status.execution_id
+                    );
                 }
                 crate::api::TaskExecutionState::Completed => {
-                    eprintln!("{} [{}] completed in {duration}", status.task, status.execution_id);
+                    eprintln!(
+                        "{} [{}] completed in {duration}",
+                        status.task, status.execution_id
+                    );
                 }
                 crate::api::TaskExecutionState::Failed => {
                     let exit_code = status
@@ -111,7 +117,9 @@ pub(crate) async fn run(
     if init {
         let task_target = resolve_task_execution_target(context, &project_dir).await?;
         let stack_name = resolve_stack_name(stack, Some(&config_path))?;
-        let stack_plan = config.stack_plan(&stack_name).map_err(|err| anyhow!("{err}"))?;
+        let stack_plan = config
+            .stack_plan(&stack_name)
+            .map_err(|err| anyhow!("{err}"))?;
 
         let history_path = task_target.history_path(&project_dir)?;
         let mut ran_any = false;
@@ -120,7 +128,7 @@ pub(crate) async fn run(
             if let Some(init_tasks) = &svc.init
                 && !init_tasks.is_empty()
             {
-                crate::tasks::run_init_tasks(
+                crate::services::tasks::run_init_tasks(
                     &tasks_map,
                     init_tasks,
                     &project_dir,
@@ -192,7 +200,7 @@ pub(crate) async fn run(
         .ok_or_else(|| anyhow!("unknown task '{task_name}'"))?;
 
     let history_path = task_target.history_path(&project_dir)?;
-    let result = crate::tasks::run_task(
+    let result = crate::services::tasks::run_task(
         &task_name,
         task,
         &project_dir,
@@ -206,7 +214,7 @@ pub(crate) async fn run(
         let stderr_summary = result
             .last_stderr_line
             .as_deref()
-            .map(|line| crate::tasks::summarize_stderr_line(line, 120));
+            .map(|line| crate::services::tasks::summarize_stderr_line(line, 120));
         print_json(
             serde_json::json!({
                 "task": task_name,
@@ -220,19 +228,19 @@ pub(crate) async fn run(
         eprintln!(
             "✓ {} ({})",
             task_name,
-            crate::tasks::format_task_duration(result.duration)
+            crate::services::tasks::format_task_duration(result.duration)
         );
     } else {
         let reason = result
             .last_stderr_line
             .as_deref()
-            .map(|line| crate::tasks::summarize_stderr_line(line, 120))
+            .map(|line| crate::services::tasks::summarize_stderr_line(line, 120))
             .filter(|line| !line.is_empty())
             .unwrap_or_else(|| format!("exit code {}", result.exit_code));
         eprintln!(
             "✗ {} ({}) — {}",
             task_name,
-            crate::tasks::format_task_duration(result.duration),
+            crate::services::tasks::format_task_duration(result.duration),
             reason
         );
         eprintln!("  devstack logs --task {} --last 30", task_name);

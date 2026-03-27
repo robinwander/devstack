@@ -4,11 +4,11 @@ use std::time::Duration;
 
 use anyhow::Result;
 use devstack::api::{LogViewQuery, LogsQuery, TaskExecutionState};
-use time::OffsetDateTime;
-use time::format_description::well_known::Rfc3339;
 use support::fixtures;
 use support::workflows::start_fixture_run;
 use support::{TaskStartOptions, TestHarness, UpOptions};
+use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
 
 #[tokio::test]
 async fn service_logs_are_queryable_by_service() -> Result<()> {
@@ -32,7 +32,11 @@ async fn service_logs_are_queryable_by_service() -> Result<()> {
         )
         .await?;
 
-    assert!(logs.lines.iter().any(|line| line.contains("service-started name=api")));
+    assert!(
+        logs.lines
+            .iter()
+            .any(|line| line.contains("service-started name=api"))
+    );
     assert!(!logs.lines.iter().any(|line| line.contains("worker-ready")));
 
     run.down().await?;
@@ -110,7 +114,9 @@ async fn logs_since_filters_older_entries() -> Result<()> {
     tokio::time::sleep(Duration::from_secs(1)).await;
     let response = run.service("api").http_get("/").await?;
     assert!(response.contains("200 OK"));
-    run.service("api").assert_log_contains("http-access").await?;
+    run.service("api")
+        .assert_log_contains("http-access")
+        .await?;
 
     let logs = t
         .api()
@@ -129,7 +135,12 @@ async fn logs_since_filters_older_entries() -> Result<()> {
         .await?;
 
     assert!(logs.lines.iter().any(|line| line.contains("http-access")));
-    assert!(!logs.lines.iter().any(|line| line.contains("service-started name=api")));
+    assert!(
+        !logs
+            .lines
+            .iter()
+            .any(|line| line.contains("service-started name=api"))
+    );
 
     run.down().await?;
     daemon.stop().await?;
@@ -207,8 +218,18 @@ async fn logs_follow_returns_incremental_updates() -> Result<()> {
         )
         .await?;
 
-    assert!(updates.lines.iter().any(|line| line.contains("http-access")));
-    assert!(!updates.lines.iter().any(|line| line.contains("service-started name=api")));
+    assert!(
+        updates
+            .lines
+            .iter()
+            .any(|line| line.contains("http-access"))
+    );
+    assert!(
+        !updates
+            .lines
+            .iter()
+            .any(|line| line.contains("service-started name=api"))
+    );
 
     run.down().await?;
     daemon.stop().await?;
@@ -254,7 +275,11 @@ async fn logs_facets_returns_filter_metadata() -> Result<()> {
             },
         )
         .await?;
-    let fields: Vec<_> = view.filters.iter().map(|filter| filter.field.as_str()).collect();
+    let fields: Vec<_> = view
+        .filters
+        .iter()
+        .map(|filter| filter.field.as_str())
+        .collect();
 
     assert!(fields.contains(&"service"));
     assert!(fields.contains(&"level"));
@@ -270,7 +295,10 @@ async fn sse_emits_run_service_task_and_log_events() -> Result<()> {
     let t = TestHarness::new().await?;
     let project = t
         .fixture(fixtures::tasks_fixture())
-        .with_file(fixtures::TasksFixture::INPUT_FILE, b"hello from task\n".to_vec())
+        .with_file(
+            fixtures::TasksFixture::INPUT_FILE,
+            b"hello from task\n".to_vec(),
+        )
         .create()
         .await?;
     let daemon = t.daemon().start().await?;
@@ -289,7 +317,7 @@ async fn sse_emits_run_service_task_and_log_events() -> Result<()> {
     run.assert_service_ready("api").await?;
     events.assert_run_created(run.id()).await?;
     events
-        .assert_service_state(run.id(), "api", devstack::manifest::ServiceState::Ready)
+        .assert_service_state(run.id(), "api", devstack::model::ServiceState::Ready)
         .await?;
 
     let task = t
@@ -347,7 +375,10 @@ async fn run_detach_returns_execution_id_and_task_status_converges() -> Result<(
     let t = TestHarness::new().await?;
     let project = t
         .fixture(fixtures::tasks_fixture())
-        .with_file(fixtures::TasksFixture::INPUT_FILE, b"hello from task\n".to_vec())
+        .with_file(
+            fixtures::TasksFixture::INPUT_FILE,
+            b"hello from task\n".to_vec(),
+        )
         .create()
         .await?;
     let daemon = t.daemon().start().await?;
@@ -397,7 +428,11 @@ async fn run_verbose_streams_output() -> Result<()> {
     let t = TestHarness::new().await?;
     let project = t.fixture(fixtures::tasks_fixture()).create().await?;
 
-    let cmd = t.cli().run_task_verbose(&project, "chatty-task").await?.success()?;
+    let cmd = t
+        .cli()
+        .run_task_verbose(&project, "chatty-task")
+        .await?
+        .success()?;
     cmd.assert_stdout_contains("chatty-stdout")?;
     cmd.assert_stderr_contains("chatty-stderr")?;
     Ok(())

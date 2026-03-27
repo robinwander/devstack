@@ -8,7 +8,7 @@ use devstack::api::{
     LogsQuery, RunResponse, RunStatusResponse, RunWatchResponse, TaskExecutionState,
     TaskStatusResponse,
 };
-use devstack::manifest::{RunLifecycle, ServiceState};
+use devstack::model::{RunLifecycle, ServiceState};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::time::{Instant, sleep};
 

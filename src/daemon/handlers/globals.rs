@@ -1,8 +1,8 @@
 use axum::{Json, extract::State};
 
 use crate::api::GlobalsResponse;
+use crate::app::error::AppError;
 use crate::app::queries;
-use crate::daemon::error::AppError;
 use crate::daemon::router::DaemonState;
 
 #[utoipa::path(

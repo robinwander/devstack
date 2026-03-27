@@ -1,9 +1,6 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
@@ -11,14 +8,14 @@ use anyhow::{Result, anyhow};
 use crate::app::commands::restart::restart_service_no_wait;
 use crate::app::context::{AppContext, AppResult};
 use crate::app::error::AppError;
+use crate::app::handles::HealthHandle;
 use crate::app::runtime::persist_manifest;
 use crate::config::{ConfigFile, ServiceConfig, TaskConfig};
 use crate::ids::RunId;
 use crate::logfmt::extract_log_content;
-use crate::manifest::ServiceState;
-use crate::model::{HealthHandle, HealthSnapshot};
+use crate::model::{ReadinessKind, ReadinessSpec, ServiceState};
 use crate::paths;
-use crate::services::readiness::{ReadinessContext, ReadinessKind, ReadinessSpec};
+use crate::services::readiness::ReadinessContext;
 use crate::stores::{recompute_run_state, set_service_state};
 
 use super::pipeline::wait_for_prepared_service;
@@ -147,10 +144,7 @@ pub async fn mark_service_ready(app: &AppContext, run_id: &str, service: &str) -
                 if record.handles.health.is_none()
                     && !matches!(record.spec.readiness.kind, ReadinessKind::Exit)
                 {
-                    record.handles.health = Some(HealthHandle {
-                        stop_flag: Arc::new(AtomicBool::new(false)),
-                        stats: Arc::new(std::sync::Mutex::new(HealthSnapshot::default())),
-                    });
+                    record.handles.health = Some(HealthHandle::new());
                     start_monitor = true;
                 }
             }
@@ -237,7 +231,7 @@ pub fn start_health_monitor(app: AppContext, run_id: String, service: String) {
                 break;
             }
 
-            let ok = crate::readiness::check_ready_once(&readiness, &context)
+            let ok = crate::services::readiness::check_ready_once(&readiness, &context)
                 .await
                 .unwrap_or(false);
             let checked_at = crate::util::now_rfc3339();

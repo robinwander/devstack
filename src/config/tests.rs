@@ -1,13 +1,13 @@
 #[cfg(test)]
 mod tests {
-    use crate::readiness::ReadinessKind;
+    use crate::model::ReadinessKind;
     use std::collections::BTreeMap;
     use std::fs;
-    
+
     // Import the config types and functions
+    use crate::config::env;
     use crate::config::model::*;
     use crate::config::plan;
-    use crate::config::env;
 
     #[test]
     fn topo_sort_orders_deps() {
@@ -302,7 +302,10 @@ auto_restart = true
 "#;
         let config: ConfigFile = toml::from_str(toml_str).unwrap();
         let err = config.validate().unwrap_err();
-        assert!(err.to_string().contains("auto_restart requires watch patterns"));
+        assert!(
+            err.to_string()
+                .contains("auto_restart requires watch patterns")
+        );
     }
 
     #[test]

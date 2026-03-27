@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 
 use crate::config::ServiceConfig;
-use crate::model::InstanceScope;
-use crate::services::readiness::{ReadinessSpec, readiness_url};
+use crate::model::{InstanceScope, ReadinessSpec};
+use crate::services::readiness::readiness_url;
 use crate::util::{expand_home, sanitize_env_key};
 
 pub fn build_base_env(

@@ -13,9 +13,9 @@ use crate::api::{
 };
 use crate::app::context::{AppContext, AppResult};
 use crate::app::error::AppError;
+use crate::app::handles::HealthHandle;
 use crate::logfmt::{extract_log_content, extract_timestamp_str};
-use crate::manifest::{RunLifecycle, ServiceState};
-use crate::model::HealthHandle;
+use crate::model::{RunLifecycle, ServiceState};
 
 pub async fn build_status(app: &AppContext, run_id: &str) -> AppResult<RunStatusResponse> {
     let run = app

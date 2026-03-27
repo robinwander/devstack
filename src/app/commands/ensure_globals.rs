@@ -11,8 +11,8 @@ use crate::app::launch::{
 };
 use crate::app::runtime::{global_port_owner, global_state_changed_event, persist_global_manifest};
 use crate::config::{ServiceConfig, TaskConfig};
-use crate::manifest::{RunLifecycle, ServiceState};
 use crate::model::{GlobalRecord, InstanceScope};
+use crate::model::{RunLifecycle, ServiceState};
 use crate::paths;
 use crate::persistence::PersistedGlobal;
 use crate::port::{allocate_ports, reserve_available_port, reserve_port};

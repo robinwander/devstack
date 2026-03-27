@@ -1,8 +1,14 @@
 use anyhow::anyhow;
-use axum::{Json, extract::{Path as AxumPath, Query, State}};
+use axum::{
+    Json,
+    extract::{Path as AxumPath, Query, State},
+};
 
-use crate::api::{AddSourceRequest, AddSourceResponse, LogViewQuery, LogViewResponse, SourceSummary, SourcesResponse};
-use crate::daemon::error::AppError;
+use crate::api::{
+    AddSourceRequest, AddSourceResponse, LogViewQuery, LogViewResponse, SourceSummary,
+    SourcesResponse,
+};
+use crate::app::error::AppError;
 use crate::daemon::router::DaemonState;
 use crate::infra::logs::index::LogSource;
 use crate::sources::{SourcesLedger, source_run_id};
@@ -108,10 +114,11 @@ pub async fn source_logs_view(
 
     let run_id = source_run_id(&name);
     let index = state.app.log_index.clone();
-    let response: LogViewResponse = tokio::task::spawn_blocking(move || index.query_view(&run_id, query))
-        .await
-        .map_err(|err| AppError::Internal(anyhow!("source log view task failed: {err}")))?
-        .map_err(map_log_index_error)?;
+    let response: LogViewResponse =
+        tokio::task::spawn_blocking(move || index.query_view(&run_id, query))
+            .await
+            .map_err(|err| AppError::Internal(anyhow!("source log view task failed: {err}")))?
+            .map_err(map_log_index_error)?;
 
     Ok(Json(response))
 }

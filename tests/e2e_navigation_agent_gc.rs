@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use devstack::api::SetNavigationIntentRequest;
-use devstack::manifest::RunLifecycle;
+use devstack::model::RunLifecycle;
 use support::fixtures;
 use support::workflows::start_fixture_run;
 use support::{TestHarness, UpOptions};

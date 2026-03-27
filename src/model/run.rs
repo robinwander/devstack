@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use super::{RunId, ServiceRecord};
-use crate::manifest::RunLifecycle;
+use crate::model::RunLifecycle;
 
 /// Represents a run's state in memory (renamed from RunState in daemon.rs)
 #[derive(Clone, Debug)]

@@ -4,7 +4,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::manifest::{RunLifecycle, ServiceState};
+use crate::model::{RunLifecycle, ServiceState};
 use crate::util::atomic_write;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -5,8 +5,8 @@ use axum::{
 };
 
 use crate::api::{LogViewQuery, LogViewResponse, LogsQuery, LogsResponse};
+use crate::app::error::AppError;
 use crate::app::queries;
-use crate::daemon::error::AppError;
 use crate::daemon::router::DaemonState;
 use crate::ids::RunId;
 use crate::infra::logs::index::LogSource;

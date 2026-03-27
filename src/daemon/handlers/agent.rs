@@ -1,13 +1,16 @@
-use axum::{Json, extract::{Path as AxumPath, Query, State}};
+use axum::{
+    Json,
+    extract::{Path as AxumPath, Query, State},
+};
 
 use crate::api::{
     AgentSession, AgentSessionMessageRequest, AgentSessionMessageResponse,
     AgentSessionPollResponse, AgentSessionRegisterRequest, LatestAgentSessionQuery,
     LatestAgentSessionResponse, ShareAgentMessageRequest, ShareAgentMessageResponse,
 };
-use crate::app::commands as commands;
-use crate::app::queries as queries;
-use crate::daemon::error::AppError;
+use crate::app::commands;
+use crate::app::error::AppError;
+use crate::app::queries;
 use crate::daemon::router::DaemonState;
 
 #[utoipa::path(
@@ -24,7 +27,9 @@ pub async fn register_agent_session(
     State(state): State<DaemonState>,
     Json(request): Json<AgentSessionRegisterRequest>,
 ) -> Result<Json<AgentSession>, AppError> {
-    Ok(Json(commands::agent::register_agent_session(&state.app, request).await))
+    Ok(Json(
+        commands::agent::register_agent_session(&state.app, request).await,
+    ))
 }
 
 #[utoipa::path(
@@ -119,5 +124,7 @@ pub async fn share_agent_message(
     State(state): State<DaemonState>,
     Json(request): Json<ShareAgentMessageRequest>,
 ) -> Result<Json<ShareAgentMessageResponse>, AppError> {
-    Ok(Json(commands::agent::share_agent_message(&state.app, request).await?))
+    Ok(Json(
+        commands::agent::share_agent_message(&state.app, request).await?,
+    ))
 }

@@ -5,11 +5,12 @@ use anyhow::{Result, anyhow};
 
 use crate::config::ServiceConfig;
 use crate::ids::ServiceName;
-use crate::manifest::ServiceState;
-use crate::model::{InstanceScope, ServiceLaunchPlan, ServiceRecord, ServiceSpec};
+use crate::model::{
+    InstanceScope, ReadinessSpec, ServiceLaunchPlan, ServiceRecord, ServiceSpec, ServiceState,
+};
 use crate::paths;
 use crate::port::{allocate_ports, reserve_available_port, reserve_port};
-use crate::services::readiness::{ReadinessSpec, readiness_url};
+use crate::services::readiness::readiness_url;
 use crate::util::sanitize_env_key;
 use crate::watch::compute_watch_hash;
 

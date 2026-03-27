@@ -1,7 +1,7 @@
 mod support;
 
 use anyhow::Result;
-use devstack::manifest::{RunLifecycle, ServiceState};
+use devstack::model::{RunLifecycle, ServiceState};
 use devstack::persistence::PersistedRun;
 use support::fixtures;
 use support::workflows::start_fixture_run;

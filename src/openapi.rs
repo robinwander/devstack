@@ -12,7 +12,7 @@ use crate::api::{
     StartTaskRequest, StartTaskResponse, SystemdStatus, TaskExecutionState, TaskExecutionSummary,
     TaskStatusResponse, TasksResponse, UpRequest, WatchControlRequest, WatchServiceStatus,
 };
-use crate::manifest::{RunLifecycle, ServiceState};
+use crate::model::{RunLifecycle, ServiceState};
 
 #[derive(OpenApi)]
 #[openapi(

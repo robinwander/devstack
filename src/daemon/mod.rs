@@ -1,5 +1,4 @@
 pub mod bootstrap;
-pub mod error;
 pub mod event_bus;
 pub mod handlers;
 pub mod log_tailing;

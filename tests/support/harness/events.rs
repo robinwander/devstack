@@ -2,8 +2,11 @@ use std::fmt::Write as _;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
-use devstack::api::{DaemonEvent, DaemonGlobalEvent, DaemonLogEvent, DaemonRunEvent, DaemonServiceEvent, DaemonTaskEvent};
-use devstack::manifest::{RunLifecycle, ServiceState};
+use devstack::api::{
+    DaemonEvent, DaemonGlobalEvent, DaemonLogEvent, DaemonRunEvent, DaemonServiceEvent,
+    DaemonTaskEvent,
+};
+use devstack::model::{RunLifecycle, ServiceState};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tokio::time::timeout;

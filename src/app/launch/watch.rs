@@ -1,8 +1,5 @@
 use std::path::PathBuf;
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -12,8 +9,8 @@ use tokio::time::Instant;
 use crate::app::commands::ensure_globals::restart_global_no_wait;
 use crate::app::commands::restart::restart_service_no_wait;
 use crate::app::context::AppContext;
-use crate::manifest::{RunLifecycle, ServiceState};
-use crate::model::{GlobalRecord, ServiceRecord, ServiceWatchHandle};
+use crate::app::handles::ServiceWatchHandle;
+use crate::model::{GlobalRecord, RunLifecycle, ServiceRecord, ServiceState};
 use crate::watch::compute_watch_hash;
 
 use super::prepare::PreparedService;
@@ -86,7 +83,7 @@ pub fn apply_prepared_to_runtime(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn spawn_service_auto_restart_watcher(
+pub(crate) fn spawn_service_auto_restart_watcher(
     app: AppContext,
     run_id: String,
     service: String,
@@ -106,8 +103,9 @@ pub fn spawn_service_auto_restart_watcher(
         .watch(&cwd, RecursiveMode::Recursive)
         .with_context(|| format!("watch directory {}", cwd.to_string_lossy()))?;
 
-    let stop_flag = Arc::new(AtomicBool::new(false));
-    let paused_flag = Arc::new(AtomicBool::new(paused));
+    let handle = ServiceWatchHandle::new(paused);
+    let stop_flag = handle.stop_flag.clone();
+    let paused_flag = handle.paused.clone();
     let stop_flag_task = stop_flag.clone();
     let paused_flag_task = paused_flag.clone();
 
@@ -206,10 +204,7 @@ pub fn spawn_service_auto_restart_watcher(
         }
     });
 
-    Ok(ServiceWatchHandle {
-        stop_flag,
-        paused: paused_flag,
-    })
+    Ok(handle)
 }
 
 pub async fn sync_service_auto_restart_watcher(
@@ -301,7 +296,7 @@ pub async fn sync_service_auto_restart_watcher(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn spawn_global_auto_restart_watcher(
+pub(crate) fn spawn_global_auto_restart_watcher(
     app: AppContext,
     key: String,
     service: String,
@@ -321,8 +316,9 @@ pub fn spawn_global_auto_restart_watcher(
         .watch(&cwd, RecursiveMode::Recursive)
         .with_context(|| format!("watch directory {}", cwd.to_string_lossy()))?;
 
-    let stop_flag = Arc::new(AtomicBool::new(false));
-    let paused_flag = Arc::new(AtomicBool::new(paused));
+    let handle = ServiceWatchHandle::new(paused);
+    let stop_flag = handle.stop_flag.clone();
+    let paused_flag = handle.paused.clone();
     let stop_flag_task = stop_flag.clone();
     let paused_flag_task = paused_flag.clone();
 
@@ -420,10 +416,7 @@ pub fn spawn_global_auto_restart_watcher(
         }
     });
 
-    Ok(ServiceWatchHandle {
-        stop_flag,
-        paused: paused_flag,
-    })
+    Ok(handle)
 }
 
 pub async fn sync_global_auto_restart_watcher(app: &AppContext, key: &str) -> Result<()> {

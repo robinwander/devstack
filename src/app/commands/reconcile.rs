@@ -1,7 +1,7 @@
 use crate::app::context::{AppContext, AppResult};
 use crate::app::queries::status::build_status;
 use crate::app::runtime::{persist_manifest, run_state_changed_event, service_state_changed_event};
-use crate::manifest::RunLifecycle;
+use crate::model::RunLifecycle;
 
 pub async fn reconcile_run(app: &AppContext, run_id: &str) -> AppResult<()> {
     let status = build_status(app, run_id).await?;

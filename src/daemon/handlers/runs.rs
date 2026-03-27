@@ -8,8 +8,8 @@ use crate::api::{
     RunStatusResponse, UpRequest,
 };
 use crate::app::commands;
+use crate::app::error::AppError;
 use crate::app::queries;
-use crate::daemon::error::AppError;
 use crate::daemon::router::DaemonState;
 
 #[utoipa::path(

@@ -1,9 +1,12 @@
-use axum::{Json, extract::{Path as AxumPath, State}, Json as AxumJson};
+use axum::{
+    Json, Json as AxumJson,
+    extract::{Path as AxumPath, State},
+};
 
 use crate::api::{RunWatchResponse, WatchControlRequest};
 use crate::app::commands;
+use crate::app::error::AppError;
 use crate::app::queries;
-use crate::daemon::error::AppError;
 use crate::daemon::router::DaemonState;
 
 #[utoipa::path(
@@ -17,7 +20,9 @@ pub async fn watch_status(
     State(state): State<DaemonState>,
     AxumPath(run_id): AxumPath<String>,
 ) -> Result<Json<RunWatchResponse>, AppError> {
-    Ok(Json(queries::watch::build_watch_status(&state.app, &run_id).await?))
+    Ok(Json(
+        queries::watch::build_watch_status(&state.app, &run_id).await?,
+    ))
 }
 
 #[utoipa::path(
@@ -33,7 +38,9 @@ pub async fn watch_pause(
     AxumPath(run_id): AxumPath<String>,
     AxumJson(request): AxumJson<WatchControlRequest>,
 ) -> Result<Json<RunWatchResponse>, AppError> {
-    Ok(Json(commands::watch::pause_watch(&state.app, &run_id, request.service.as_deref()).await?))
+    Ok(Json(
+        commands::watch::pause_watch(&state.app, &run_id, request.service.as_deref()).await?,
+    ))
 }
 
 #[utoipa::path(
@@ -49,5 +56,7 @@ pub async fn watch_resume(
     AxumPath(run_id): AxumPath<String>,
     AxumJson(request): AxumJson<WatchControlRequest>,
 ) -> Result<Json<RunWatchResponse>, AppError> {
-    Ok(Json(commands::watch::resume_watch(&state.app, &run_id, request.service.as_deref()).await?))
+    Ok(Json(
+        commands::watch::resume_watch(&state.app, &run_id, request.service.as_deref()).await?,
+    ))
 }

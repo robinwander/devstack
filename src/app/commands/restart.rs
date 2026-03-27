@@ -7,7 +7,7 @@ use crate::app::launch::{
     spawn_readiness_task,
 };
 use crate::app::runtime::{persist_manifest, run_response};
-use crate::manifest::ServiceState;
+use crate::model::ServiceState;
 use crate::services::readiness::ReadinessContext;
 use crate::stores::{recompute_run_state, set_service_state};
 
@@ -124,7 +124,7 @@ async fn restart_service_inner(
         unit_name: Some(unit_name.clone()),
         systemd: Some(app.systemd.clone()),
     };
-    match crate::readiness::wait_for_ready(&readiness, &context).await {
+    match crate::services::readiness::wait_for_ready(&readiness, &context).await {
         Ok(()) => {
             if let Some(post_init) = post_init
                 && let Err(err) = crate::app::commands::tasks::run_post_init_tasks_blocking(

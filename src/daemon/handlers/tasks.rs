@@ -1,9 +1,12 @@
-use axum::{Json, extract::{Path as AxumPath, State}};
+use axum::{
+    Json,
+    extract::{Path as AxumPath, State},
+};
 
 use crate::api::{StartTaskRequest, StartTaskResponse, TaskStatusResponse, TasksResponse};
 use crate::app::commands;
+use crate::app::error::AppError;
 use crate::app::queries;
-use crate::daemon::error::AppError;
 use crate::daemon::router::DaemonState;
 
 #[utoipa::path(
@@ -17,7 +20,9 @@ pub async fn start_task(
     State(state): State<DaemonState>,
     Json(request): Json<StartTaskRequest>,
 ) -> Result<Json<StartTaskResponse>, AppError> {
-    Ok(Json(commands::tasks::start_task(&state.app, request).await?))
+    Ok(Json(
+        commands::tasks::start_task(&state.app, request).await?,
+    ))
 }
 
 #[utoipa::path(
@@ -31,7 +36,9 @@ pub async fn task_status(
     State(state): State<DaemonState>,
     AxumPath(execution_id): AxumPath<String>,
 ) -> Result<Json<TaskStatusResponse>, AppError> {
-    Ok(Json(queries::tasks::task_status(&state.app, &execution_id).await?))
+    Ok(Json(
+        queries::tasks::task_status(&state.app, &execution_id).await?,
+    ))
 }
 
 #[utoipa::path(

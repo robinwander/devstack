@@ -2,8 +2,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 
-use crate::model::InstanceScope;
-use crate::services::readiness::ReadinessKind;
+use crate::model::{InstanceScope, ReadinessKind};
 use crate::systemd::{ExecStart, UnitProperties};
 
 use super::prepare::PreparedService;

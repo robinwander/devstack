@@ -2,7 +2,7 @@ use axum::{Json, extract::State};
 
 use crate::api::{GcRequest, GcResponse};
 use crate::app::commands;
-use crate::daemon::error::AppError;
+use crate::app::error::AppError;
 use crate::daemon::router::DaemonState;
 
 #[utoipa::path(

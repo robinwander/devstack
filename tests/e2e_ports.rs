@@ -1,7 +1,7 @@
 mod support;
 
 use anyhow::{Result, anyhow};
-use devstack::manifest::ServiceState;
+use devstack::model::ServiceState;
 use support::TestHarness;
 use support::fixtures;
 

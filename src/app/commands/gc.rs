@@ -5,7 +5,7 @@ use crate::app::context::{AppContext, AppResult};
 use crate::app::error::AppError;
 use crate::app::runtime::{run_removed_event, write_daemon_state};
 use crate::ids::RunId;
-use crate::manifest::RunLifecycle;
+use crate::model::RunLifecycle;
 use crate::paths;
 use crate::persistence::PersistedGlobal;
 

@@ -7,7 +7,7 @@ use crate::logs::{
     is_health_noise_line, is_health_noise_message, structured_log_from_entry,
     structured_log_from_raw,
 };
-use crate::manifest::{RunLifecycle, ServiceState};
+use crate::model::{RunLifecycle, ServiceState};
 
 pub(crate) fn print_json(value: serde_json::Value, pretty: bool) {
     if pretty {
@@ -221,7 +221,12 @@ pub(crate) fn emit_line(line: &str, service: &str, json: bool, no_health: bool) 
     Ok(())
 }
 
-pub(crate) fn emit_lines(lines: &[String], service: &str, json: bool, no_health: bool) -> Result<()> {
+pub(crate) fn emit_lines(
+    lines: &[String],
+    service: &str,
+    json: bool,
+    no_health: bool,
+) -> Result<()> {
     for line in lines {
         emit_line(line, service, json, no_health)?;
     }

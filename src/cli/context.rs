@@ -12,7 +12,7 @@ use time::format_description::well_known::Rfc3339;
 use crate::api::{RunListResponse, RunSummary};
 use crate::config::ConfigFile;
 use crate::infra::ipc::UnixDaemonClient;
-use crate::manifest::RunLifecycle;
+use crate::model::RunLifecycle;
 use crate::paths;
 use crate::persistence::PersistedRun;
 use crate::util::expand_home;
@@ -318,7 +318,7 @@ fn runs_from_disk() -> Result<Vec<RunSummary>> {
 pub(crate) fn status_from_manifest(run_id: &str) -> Result<crate::api::RunStatusResponse> {
     let manifest_path = paths::run_manifest_path(&crate::ids::RunId::new(run_id))?;
     let manifest = PersistedRun::load_from_path(&manifest_path)?;
-    let desired = if manifest.state == crate::manifest::RunLifecycle::Stopped {
+    let desired = if manifest.state == crate::model::RunLifecycle::Stopped {
         "stopped".to_string()
     } else {
         "running".to_string()
@@ -330,7 +330,7 @@ pub(crate) fn status_from_manifest(run_id: &str) -> Result<crate::api::RunStatus
             crate::api::ServiceStatus {
                 desired: desired.clone(),
                 systemd: None,
-                ready: svc.state == crate::manifest::ServiceState::Ready,
+                ready: svc.state == crate::model::ServiceState::Ready,
                 state: svc.state,
                 last_failure: svc.last_failure,
                 health: None,

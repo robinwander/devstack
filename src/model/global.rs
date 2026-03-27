@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use crate::config::{ServiceConfig, TaskConfig};
-use crate::manifest::RunLifecycle;
+use crate::model::RunLifecycle;
 
 use super::ServiceRecord;
 

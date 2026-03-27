@@ -10,7 +10,7 @@ use tokio::sync::mpsc;
 
 use crate::api::{LogsResponse, RunListResponse, RunStatusResponse};
 use crate::infra::ipc::UnixDaemonClient;
-use crate::manifest::RunLifecycle;
+use crate::model::RunLifecycle;
 
 use super::pty_proxy::format_message_for_pty;
 

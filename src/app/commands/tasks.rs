@@ -23,11 +23,11 @@ pub async fn run_init_tasks_blocking(
 ) -> Result<()> {
     let history_path = paths::task_history_path(&run_id)?;
     tokio::task::spawn_blocking(move || {
-        crate::tasks::run_init_tasks(
+        crate::services::tasks::run_init_tasks(
             &tasks_map,
             &init_tasks,
             &project_dir,
-            crate::tasks::TaskLogScope::Run(&run_id),
+            crate::services::tasks::TaskLogScope::Run(&run_id),
             &history_path,
             false,
         )
@@ -48,10 +48,10 @@ pub async fn run_post_init_tasks_blocking(
     };
     tokio::task::spawn_blocking(move || {
         let log_scope = match &run_id {
-            Some(run_id) => crate::tasks::TaskLogScope::Run(run_id),
-            None => crate::tasks::TaskLogScope::AdHoc,
+            Some(run_id) => crate::services::tasks::TaskLogScope::Run(run_id),
+            None => crate::services::tasks::TaskLogScope::AdHoc,
         };
-        crate::tasks::run_post_init_tasks(
+        crate::services::tasks::run_post_init_tasks(
             &tasks_map,
             &post_init_tasks,
             &project_dir,
@@ -142,11 +142,11 @@ pub async fn execute_detached_task(
                 let args = args.clone();
                 let task = task.clone();
                 move || {
-                    crate::tasks::run_task(
+                    crate::services::tasks::run_task(
                         &task_name,
                         &task,
                         &project_dir,
-                        crate::tasks::TaskLogScope::Run(&run_id),
+                        crate::services::tasks::TaskLogScope::Run(&run_id),
                         &history_path,
                         false,
                         &args,
@@ -165,11 +165,11 @@ pub async fn execute_detached_task(
                 let project_dir = detached_task.project_dir.clone();
                 let args = args.clone();
                 move || {
-                    crate::tasks::run_task(
+                    crate::services::tasks::run_task(
                         &task_name,
                         &task,
                         &project_dir,
-                        crate::tasks::TaskLogScope::AdHoc,
+                        crate::services::tasks::TaskLogScope::AdHoc,
                         &history_path,
                         false,
                         &args,

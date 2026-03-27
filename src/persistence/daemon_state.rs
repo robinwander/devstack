@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::app::launch::{build_base_env, prepare_service};
-use crate::manifest::RunLifecycle;
+use crate::model::RunLifecycle;
 use crate::model::{GlobalRecord, InstanceScope, RunRecord};
 use crate::paths;
 use crate::persistence::{PersistedGlobal, PersistedRun};

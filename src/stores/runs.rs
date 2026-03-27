@@ -3,8 +3,10 @@ use std::collections::BTreeMap;
 use anyhow::{Result, anyhow};
 use tokio::sync::Mutex;
 
-use crate::api::{DaemonEvent, DaemonRunEvent, DaemonRunEventKind, DaemonServiceEvent, DaemonServiceEventKind};
-use crate::manifest::{RunLifecycle, ServiceState};
+use crate::api::{
+    DaemonEvent, DaemonRunEvent, DaemonRunEventKind, DaemonServiceEvent, DaemonServiceEventKind,
+};
+use crate::model::{RunLifecycle, ServiceState};
 use crate::model::{RunRecord, ServiceRecord};
 
 pub struct RunStore {

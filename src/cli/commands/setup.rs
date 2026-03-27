@@ -205,7 +205,7 @@ fn watch_openapi(out: Option<PathBuf>) -> Result<()> {
     let out = resolve_openapi_output(out)?;
     let watch_paths = vec![
         root.join("src/api.rs"),
-        root.join("src/manifest.rs"),
+        root.join("src/model/lifecycle.rs"),
         root.join("src/daemon.rs"),
         root.join("src/openapi.rs"),
         root.join("Cargo.toml"),

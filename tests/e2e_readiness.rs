@@ -1,7 +1,7 @@
 mod support;
 
 use anyhow::Result;
-use devstack::manifest::RunLifecycle;
+use devstack::model::RunLifecycle;
 use support::fixtures;
 use support::workflows::{latest_run_for_project, start_fixture_run};
 use support::{ProjectHandle, RunHandle, TestHarness};

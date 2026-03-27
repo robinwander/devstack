@@ -7,8 +7,8 @@ use crate::api::{
     DaemonServiceEvent, DaemonServiceEventKind, DaemonTaskEvent, DaemonTaskEventKind, RunResponse,
     ServiceResponse, TaskExecutionState, TaskExecutionSummary, TaskStatusResponse,
 };
-use crate::manifest::{RunLifecycle, ServiceState};
 use crate::model::{GlobalRecord, RunRecord};
+use crate::model::{RunLifecycle, ServiceState};
 use crate::paths;
 use crate::persistence::{PersistedGlobal, PersistedRun, PersistedService};
 use crate::stores::DetachedTaskExecution;

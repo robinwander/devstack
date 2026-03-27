@@ -1,7 +1,7 @@
 mod support;
 
 use anyhow::Result;
-use devstack::manifest::RunLifecycle;
+use devstack::model::RunLifecycle;
 use serde_json::Value;
 use support::fixtures;
 use support::workflows::start_fixture_run;

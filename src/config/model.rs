@@ -5,7 +5,7 @@ use anyhow::{Result, anyhow};
 use serde::de::{self, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 
-use crate::readiness::ReadinessKind;
+use crate::model::ReadinessKind;
 
 #[derive(Clone, Debug)]
 pub struct UniqueMap<K, V>(pub BTreeMap<K, V>);
@@ -263,7 +263,7 @@ impl ServiceConfig {
         }
     }
 
-    pub fn readiness_spec(&self, has_port: bool) -> Result<crate::readiness::ReadinessSpec> {
+    pub fn readiness_spec(&self, has_port: bool) -> Result<crate::model::ReadinessSpec> {
         let kind = self.readiness_kind(has_port)?;
         let timeout = self
             .readiness
@@ -271,7 +271,7 @@ impl ServiceConfig {
             .and_then(|r| r.timeout_ms)
             .map(std::time::Duration::from_millis)
             .unwrap_or_else(|| std::time::Duration::from_secs(30));
-        Ok(crate::readiness::ReadinessSpec { kind, timeout })
+        Ok(crate::model::ReadinessSpec { kind, timeout })
     }
 }
 

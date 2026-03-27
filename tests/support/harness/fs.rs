@@ -95,11 +95,7 @@ impl FsHandle {
         }
     }
 
-    pub async fn wait_for_file_contains(
-        &self,
-        rel: impl AsRef<Path>,
-        needle: &str,
-    ) -> Result<()> {
+    pub async fn wait_for_file_contains(&self, rel: impl AsRef<Path>, needle: &str) -> Result<()> {
         let path = self.path(rel);
         let needle = needle.to_string();
         match self

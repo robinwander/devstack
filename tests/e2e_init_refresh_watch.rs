@@ -3,7 +3,7 @@ mod support;
 use std::time::Duration;
 
 use anyhow::Result;
-use devstack::manifest::ServiceState;
+use devstack::model::ServiceState;
 use support::fixtures;
 use support::workflows::{latest_run_for_project, start_fixture_run};
 use support::{TestHarness, UpOptions};

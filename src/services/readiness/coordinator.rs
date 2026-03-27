@@ -1,9 +1,13 @@
 use anyhow::{Result, anyhow};
-use tokio::time::{Instant, sleep};
 use std::time::Duration;
+use tokio::time::{Instant, sleep};
 
-use super::model::{ReadinessSpec, ReadinessContext, ReadinessKind};
-use super::probes::{wait_for_delay, wait_for_exit_success, wait_for_log_regex, tcp_ready, http_ready, cmd_ready};
+use crate::model::{ReadinessKind, ReadinessSpec};
+
+use super::model::ReadinessContext;
+use super::probes::{
+    cmd_ready, http_ready, tcp_ready, wait_for_delay, wait_for_exit_success, wait_for_log_regex,
+};
 
 pub async fn wait_for_ready(spec: &ReadinessSpec, ctx: &ReadinessContext) -> Result<()> {
     if let ReadinessKind::Delay { duration } = &spec.kind {

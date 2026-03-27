@@ -8,7 +8,7 @@ use crate::api::{HealthStatus, RunStatusResponse, ServiceStatus};
 use crate::ids::{RunId, ServiceName};
 use crate::paths;
 use crate::persistence::PersistedRun;
-use crate::readiness::PortBindingInfo;
+use crate::services::readiness::PortBindingInfo;
 use crate::util::{now_rfc3339, sanitize_env_key, strip_ansi_if_needed};
 
 #[derive(Debug, Serialize)]
@@ -23,7 +23,7 @@ pub struct DiagnoseResponse {
 #[derive(Debug, Serialize)]
 pub struct DiagnoseService {
     pub name: String,
-    pub daemon_state: crate::manifest::ServiceState,
+    pub daemon_state: crate::model::ServiceState,
     pub systemd: Option<crate::api::SystemdStatus>,
     pub health: Option<HealthStatus>,
     pub expected_port: Option<u16>,
@@ -72,7 +72,7 @@ pub async fn diagnose_run(
         let unit_name = unit_name_for_run(run_id, &name);
 
         let binding_info = if let Some(port) = expected_port {
-            Some(crate::readiness::port_binding_info(port, Some(&unit_name)).await?)
+            Some(crate::services::readiness::port_binding_info(port, Some(&unit_name)).await?)
         } else {
             None
         };
@@ -213,10 +213,10 @@ fn detect_issues(
         }
     }
 
-    if matches!(svc.state, crate::manifest::ServiceState::Degraded) {
+    if matches!(svc.state, crate::model::ServiceState::Degraded) {
         issues.push("degraded".to_string());
     }
-    if matches!(svc.state, crate::manifest::ServiceState::Failed) {
+    if matches!(svc.state, crate::model::ServiceState::Failed) {
         issues.push("failed".to_string());
     }
 
@@ -252,7 +252,7 @@ fn detect_issues(
 mod tests {
     use super::*;
     use crate::api::ServiceStatus;
-    use crate::manifest::ServiceState;
+    use crate::model::ServiceState;
 
     fn ready_service() -> ServiceStatus {
         ServiceStatus {
