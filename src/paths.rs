@@ -4,7 +4,41 @@ use anyhow::{Context, Result};
 use directories::BaseDirs;
 
 use crate::ids::{RunId, ServiceName};
-use crate::util::{project_hash, validate_name_for_path_component};
+use crate::util::expand_home;
+
+pub fn absolutize_path(base: &Path, path: impl AsRef<Path>) -> PathBuf {
+    let expanded = expand_home(path.as_ref());
+    if expanded.is_absolute() {
+        expanded
+    } else {
+        base.join(expanded)
+    }
+}
+
+pub fn validate_name_for_path_component(kind: &str, value: &str) -> Result<()> {
+    if value.is_empty() {
+        return Err(anyhow::anyhow!("{kind} name cannot be empty"));
+    }
+    if value == "." || value == ".." {
+        return Err(anyhow::anyhow!("invalid {kind} name '{value}'"));
+    }
+    let valid = value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'));
+    if !valid {
+        return Err(anyhow::anyhow!(
+            "invalid {kind} name '{value}' (allowed: A-Z, a-z, 0-9, '.', '_', '-')"
+        ));
+    }
+    Ok(())
+}
+
+pub fn project_hash(path: &Path) -> String {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(path.to_string_lossy().as_bytes());
+    let hash = hasher.finalize();
+    hash.to_hex()[..12].to_string()
+}
 
 pub fn base_dir() -> Result<PathBuf> {
     if let Some(base) = BaseDirs::new() {
@@ -178,5 +212,14 @@ mod tests {
         assert!(global_dir(project_dir, "bad/../../global").is_err());
         assert!(global_manifest_path(project_dir, "../global").is_err());
         assert!(global_log_path(project_dir, "nested/path").is_err());
+    }
+
+    #[test]
+    fn validate_name_for_path_component_rejects_invalid_values() {
+        assert!(validate_name_for_path_component("service", "api").is_ok());
+        assert!(validate_name_for_path_component("service", "api-v2").is_ok());
+        assert!(validate_name_for_path_component("service", "../escape").is_err());
+        assert!(validate_name_for_path_component("service", "nested/path").is_err());
+        assert!(validate_name_for_path_component("service", "").is_err());
     }
 }

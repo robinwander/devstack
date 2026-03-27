@@ -15,6 +15,35 @@ static PREFIX_LEVEL_RE: LazyLock<Regex> = LazyLock::new(|| {
     .unwrap()
 });
 
+static ANSI_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(concat!(
+        r"\x1b",
+        r"(?:",
+        r"\[[0-9;?]*[A-Za-z]",
+        r"|\][^\x07\x1b]*(?:\x07|\x1b\\)",
+        r"|\([A-B]",
+        r"|[=>NOMDEHcZ78]",
+        r")",
+    ))
+    .unwrap()
+});
+
+pub(crate) fn strip_ansi(input: &str) -> String {
+    ANSI_RE.replace_all(input, "").into_owned()
+}
+
+pub(crate) fn contains_ansi(input: &str) -> bool {
+    memchr::memchr(0x1b, input.as_bytes()).is_some()
+}
+
+pub(crate) fn strip_ansi_if_needed(input: &str) -> String {
+    if contains_ansi(input) {
+        strip_ansi(input)
+    } else {
+        input.to_string()
+    }
+}
+
 pub(crate) fn detect_log_level(content: &str) -> &'static str {
     let fast_level = detect_log_level_fast(content);
     if fast_level != "info" {
@@ -497,5 +526,28 @@ mod tests {
         for (line, expected) in cases {
             assert_eq!(detect_log_level(line), expected, "line: {line}");
         }
+    }
+
+    #[test]
+    fn strip_ansi_removes_escape_sequences() {
+        assert_eq!(
+            strip_ansi("\x1b[31mERROR\x1b[0m: something failed"),
+            "ERROR: something failed"
+        );
+        assert_eq!(strip_ansi("\x1b[38;5;196mred\x1b[0m"), "red");
+        assert_eq!(strip_ansi("\x1b]0;window title\x07text"), "text");
+        assert_eq!(strip_ansi("\x1b[A\x1b[2Kprogress: 100%"), "progress: 100%");
+    }
+
+    #[test]
+    fn contains_ansi_detects_escapes() {
+        assert!(!contains_ansi("plain text"));
+        assert!(contains_ansi("\x1b[31mred\x1b[0m"));
+    }
+
+    #[test]
+    fn strip_ansi_if_needed_skips_clean_text() {
+        let plain = "no escapes here";
+        assert_eq!(strip_ansi_if_needed(plain), plain);
     }
 }

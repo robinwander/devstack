@@ -121,19 +121,19 @@ impl ApiHandle {
         query: &LogsQuery,
     ) -> Result<LogsResponse> {
         let mut params = Vec::new();
-        if let Some(last) = query.last {
+        if let Some(last) = query.filter.last {
             params.push(format!("last={last}"));
         }
-        if let Some(since) = query.since.as_deref() {
+        if let Some(since) = query.filter.since.as_deref() {
             params.push(format!("since={}", urlencoding::encode(since)));
         }
-        if let Some(search) = query.search.as_deref() {
+        if let Some(search) = query.filter.search.as_deref() {
             params.push(format!("search={}", urlencoding::encode(search)));
         }
-        if let Some(level) = query.level.as_deref() {
+        if let Some(level) = query.filter.level.as_deref() {
             params.push(format!("level={}", urlencoding::encode(level)));
         }
-        if let Some(stream) = query.stream.as_deref() {
+        if let Some(stream) = query.filter.stream.as_deref() {
             params.push(format!("stream={}", urlencoding::encode(stream)));
         }
         if let Some(after) = query.after {
@@ -150,19 +150,19 @@ impl ApiHandle {
 
     pub async fn logs_view(&self, run_id: &str, query: &LogViewQuery) -> Result<LogViewResponse> {
         let mut params = Vec::new();
-        if let Some(last) = query.last {
+        if let Some(last) = query.filter.last {
             params.push(format!("last={last}"));
         }
-        if let Some(since) = query.since.as_deref() {
+        if let Some(since) = query.filter.since.as_deref() {
             params.push(format!("since={}", urlencoding::encode(since)));
         }
-        if let Some(search) = query.search.as_deref() {
+        if let Some(search) = query.filter.search.as_deref() {
             params.push(format!("search={}", urlencoding::encode(search)));
         }
-        if let Some(level) = query.level.as_deref() {
+        if let Some(level) = query.filter.level.as_deref() {
             params.push(format!("level={}", urlencoding::encode(level)));
         }
-        if let Some(stream) = query.stream.as_deref() {
+        if let Some(stream) = query.filter.stream.as_deref() {
             params.push(format!("stream={}", urlencoding::encode(stream)));
         }
         if let Some(service) = query.service.as_deref() {
@@ -280,19 +280,19 @@ impl ApiHandle {
 
     pub async fn source_logs(&self, name: &str, query: &LogViewQuery) -> Result<LogViewResponse> {
         let mut params = Vec::new();
-        if let Some(last) = query.last {
+        if let Some(last) = query.filter.last {
             params.push(format!("last={last}"));
         }
-        if let Some(since) = query.since.as_deref() {
+        if let Some(since) = query.filter.since.as_deref() {
             params.push(format!("since={}", urlencoding::encode(since)));
         }
-        if let Some(search) = query.search.as_deref() {
+        if let Some(search) = query.filter.search.as_deref() {
             params.push(format!("search={}", urlencoding::encode(search)));
         }
-        if let Some(level) = query.level.as_deref() {
+        if let Some(level) = query.filter.level.as_deref() {
             params.push(format!("level={}", urlencoding::encode(level)));
         }
-        if let Some(stream) = query.stream.as_deref() {
+        if let Some(stream) = query.filter.stream.as_deref() {
             params.push(format!("stream={}", urlencoding::encode(stream)));
         }
         if let Some(service) = query.service.as_deref() {

@@ -28,10 +28,14 @@ impl LogIndex {
             path: log_path.to_path_buf(),
         }])?;
 
-        let tail = query.last.unwrap_or(500);
-        let level_filter = query.level.as_deref().unwrap_or("all");
-        let stream_filter = query.stream.as_deref();
-        let since_nanos = query.since.as_deref().and_then(parse_timestamp_nanos);
+        let tail = query.filter.last.unwrap_or(500);
+        let level_filter = query.filter.level.as_deref().unwrap_or("all");
+        let stream_filter = query.filter.stream.as_deref();
+        let since_nanos = query
+            .filter
+            .since
+            .as_deref()
+            .and_then(parse_timestamp_nanos);
         let after = query.after;
         let fields = self.fields.clone();
 
@@ -61,7 +65,7 @@ impl LogIndex {
                 &index,
                 fields.message,
                 result_query,
-                query.search.as_deref(),
+                query.filter.search.as_deref(),
             )?;
         }
 
@@ -149,11 +153,15 @@ impl LogIndex {
     }
 
     pub(crate) fn query_view(&self, run_id: &str, query: LogViewQuery) -> Result<LogViewResponse> {
-        let tail = query.last.unwrap_or(500);
-        let level_filter = query.level.as_deref().unwrap_or("all");
-        let stream_filter = query.stream.as_deref();
+        let tail = query.filter.last.unwrap_or(500);
+        let level_filter = query.filter.level.as_deref().unwrap_or("all");
+        let stream_filter = query.filter.stream.as_deref();
         let service_filter = query.service.as_deref();
-        let since_nanos = query.since.as_deref().and_then(parse_timestamp_nanos);
+        let since_nanos = query
+            .filter
+            .since
+            .as_deref()
+            .and_then(parse_timestamp_nanos);
         let fields = self.fields.clone();
 
         let mut view_query = Self::build_scope_query(
@@ -169,8 +177,12 @@ impl LogIndex {
 
         let (all_dynamic_fields, facet_fields) = {
             let index = self.index.read().unwrap();
-            view_query =
-                Self::add_text_query(&index, fields.message, view_query, query.search.as_deref())?;
+            view_query = Self::add_text_query(
+                &index,
+                fields.message,
+                view_query,
+                query.filter.search.as_deref(),
+            )?;
             let all_dynamic_fields = if query.include_entries || query.include_facets {
                 Self::dynamic_attribute_fields(&index.schema())
             } else {

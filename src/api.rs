@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::manifest::{RunLifecycle, ServiceState};
+use crate::model::{RunLifecycle, ServiceState};
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct UpRequest {
@@ -492,8 +492,8 @@ pub struct ErrorResponse {
     pub error: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
-pub struct LogsQuery {
+#[derive(Clone, Debug, Default, Serialize, Deserialize, ToSchema)]
+pub struct LogFilterQuery {
     #[serde(default, alias = "tail")]
     pub last: Option<usize>,
     #[serde(default)]
@@ -506,9 +506,74 @@ pub struct LogsQuery {
     /// Filter by stream: stdout, stderr
     #[serde(default)]
     pub stream: Option<String>,
-    /// Cursor: return log lines with seq > after
-    #[serde(default)]
+}
+
+#[derive(Clone, Debug, Default, ToSchema)]
+pub struct LogsQuery {
+    pub filter: LogFilterQuery,
     pub after: Option<u64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct LogsQueryWire {
+    #[serde(default, alias = "tail")]
+    last: Option<usize>,
+    #[serde(default)]
+    since: Option<String>,
+    #[serde(default, alias = "q")]
+    search: Option<String>,
+    #[serde(default)]
+    level: Option<String>,
+    #[serde(default)]
+    stream: Option<String>,
+    #[serde(default)]
+    after: Option<u64>,
+}
+
+impl From<LogsQueryWire> for LogsQuery {
+    fn from(value: LogsQueryWire) -> Self {
+        Self {
+            filter: LogFilterQuery {
+                last: value.last,
+                since: value.since,
+                search: value.search,
+                level: value.level,
+                stream: value.stream,
+            },
+            after: value.after,
+        }
+    }
+}
+
+impl From<&LogsQuery> for LogsQueryWire {
+    fn from(value: &LogsQuery) -> Self {
+        Self {
+            last: value.filter.last,
+            since: value.filter.since.clone(),
+            search: value.filter.search.clone(),
+            level: value.filter.level.clone(),
+            stream: value.filter.stream.clone(),
+            after: value.after,
+        }
+    }
+}
+
+impl Serialize for LogsQuery {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        LogsQueryWire::from(self).serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for LogsQuery {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        LogsQueryWire::deserialize(deserializer).map(Into::into)
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
@@ -536,25 +601,82 @@ pub struct LogEntry {
     pub attributes: std::collections::BTreeMap<String, String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Debug, Default, ToSchema)]
 pub struct LogViewQuery {
-    #[serde(default, alias = "tail")]
-    pub last: Option<usize>,
-    #[serde(default)]
-    pub since: Option<String>,
-    /// Tantivy query string (supports boolean ops, phrases, etc.)
-    #[serde(default, alias = "q")]
-    pub search: Option<String>,
-    #[serde(default)]
-    pub level: Option<String>,
-    #[serde(default)]
-    pub stream: Option<String>,
-    #[serde(default)]
+    pub filter: LogFilterQuery,
     pub service: Option<String>,
-    #[serde(default = "default_true")]
     pub include_entries: bool,
-    #[serde(default)]
     pub include_facets: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct LogViewQueryWire {
+    #[serde(default, alias = "tail")]
+    last: Option<usize>,
+    #[serde(default)]
+    since: Option<String>,
+    #[serde(default, alias = "q")]
+    search: Option<String>,
+    #[serde(default)]
+    level: Option<String>,
+    #[serde(default)]
+    stream: Option<String>,
+    #[serde(default)]
+    service: Option<String>,
+    #[serde(default = "default_true")]
+    include_entries: bool,
+    #[serde(default)]
+    include_facets: bool,
+}
+
+impl From<LogViewQueryWire> for LogViewQuery {
+    fn from(value: LogViewQueryWire) -> Self {
+        Self {
+            filter: LogFilterQuery {
+                last: value.last,
+                since: value.since,
+                search: value.search,
+                level: value.level,
+                stream: value.stream,
+            },
+            service: value.service,
+            include_entries: value.include_entries,
+            include_facets: value.include_facets,
+        }
+    }
+}
+
+impl From<&LogViewQuery> for LogViewQueryWire {
+    fn from(value: &LogViewQuery) -> Self {
+        Self {
+            last: value.filter.last,
+            since: value.filter.since.clone(),
+            search: value.filter.search.clone(),
+            level: value.filter.level.clone(),
+            stream: value.filter.stream.clone(),
+            service: value.service.clone(),
+            include_entries: value.include_entries,
+            include_facets: value.include_facets,
+        }
+    }
+}
+
+impl Serialize for LogViewQuery {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        LogViewQueryWire::from(self).serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for LogViewQuery {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        LogViewQueryWire::deserialize(deserializer).map(Into::into)
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
@@ -644,16 +766,16 @@ mod tests {
             "search": "timeout"
         }))
         .unwrap();
-        assert_eq!(modern.last, Some(25));
-        assert_eq!(modern.search.as_deref(), Some("timeout"));
+        assert_eq!(modern.filter.last, Some(25));
+        assert_eq!(modern.filter.search.as_deref(), Some("timeout"));
 
         let legacy: LogsQuery = serde_json::from_value(serde_json::json!({
             "tail": 10,
             "q": "error"
         }))
         .unwrap();
-        assert_eq!(legacy.last, Some(10));
-        assert_eq!(legacy.search.as_deref(), Some("error"));
+        assert_eq!(legacy.filter.last, Some(10));
+        assert_eq!(legacy.filter.search.as_deref(), Some("error"));
     }
 
     #[test]
@@ -665,8 +787,8 @@ mod tests {
             "include_facets": true
         }))
         .unwrap();
-        assert_eq!(modern.last, Some(50));
-        assert_eq!(modern.search.as_deref(), Some("worker"));
+        assert_eq!(modern.filter.last, Some(50));
+        assert_eq!(modern.filter.search.as_deref(), Some("worker"));
         assert_eq!(modern.service.as_deref(), Some("api"));
         assert!(modern.include_entries);
         assert!(modern.include_facets);
@@ -676,8 +798,8 @@ mod tests {
             "q": "panic"
         }))
         .unwrap();
-        assert_eq!(legacy.last, Some(5));
-        assert_eq!(legacy.search.as_deref(), Some("panic"));
+        assert_eq!(legacy.filter.last, Some(5));
+        assert_eq!(legacy.filter.search.as_deref(), Some("panic"));
         assert!(legacy.include_entries);
         assert!(!legacy.include_facets);
     }

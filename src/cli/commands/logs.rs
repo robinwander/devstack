@@ -2,11 +2,13 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow};
+use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
 
-use crate::api::{LogViewQuery, LogViewResponse, LogsResponse};
+use crate::api::{LogFilterQuery, LogViewQuery, LogViewResponse, LogsQuery, LogsResponse};
 use crate::cli::context::{
-    CliContext, DAEMON_LONG_TIMEOUT, normalize_since_arg, resolve_active_run_id,
-    resolve_follow_for, resolve_latest_run_id, resolve_project_dir_from_cwd, resolve_run_id,
+    CliContext, DAEMON_LONG_TIMEOUT, resolve_active_run_id, resolve_follow_for,
+    resolve_latest_run_id, resolve_project_dir_from_cwd, resolve_run_id,
 };
 use crate::cli::output::{emit_entry, emit_line, emit_lines, emit_log_facets};
 use crate::infra::logs::index::{LogIndex, LogSource};
@@ -14,6 +16,26 @@ use crate::logs::stream_logs;
 use crate::paths;
 use crate::sources::{SourcesLedger, source_run_id};
 use crate::util::expand_home;
+
+pub(crate) fn normalize_since_arg(since: Option<String>) -> Result<Option<String>> {
+    let Some(since) = since else {
+        return Ok(None);
+    };
+    let since = since.trim().to_string();
+    if since.is_empty() {
+        return Ok(None);
+    }
+    if OffsetDateTime::parse(&since, &Rfc3339).is_ok() {
+        return Ok(Some(since));
+    }
+    if let Ok(duration) = humantime::parse_duration(&since) {
+        let timestamp = (OffsetDateTime::now_utc() - duration).format(&Rfc3339)?;
+        return Ok(Some(timestamp));
+    }
+    Err(anyhow!(
+        "invalid --since value {since:?}; use RFC3339 (e.g. 2025-01-01T00:00:00Z) or a duration (e.g. 5m, 1h)"
+    ))
+}
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run(
@@ -45,11 +67,13 @@ pub(crate) async fn run(
     };
     let view_query =
         |tail: Option<usize>, include_entries: bool, include_facets: bool| LogViewQuery {
-            last: tail,
-            since: since.clone(),
-            search: q.clone(),
-            level: level.clone(),
-            stream: stream.clone(),
+            filter: LogFilterQuery {
+                last: tail,
+                since: since.clone(),
+                search: q.clone(),
+                level: level.clone(),
+                stream: stream.clone(),
+            },
             service: service.clone(),
             include_entries,
             include_facets,
@@ -84,13 +108,20 @@ pub(crate) async fn run(
     }
 
     if let Some(task_name) = task {
-        if all || service.is_some() || q.is_some() || level.is_some() || stream.is_some() || since.is_some() {
+        if all
+            || service.is_some()
+            || q.is_some()
+            || level.is_some()
+            || stream.is_some()
+            || since.is_some()
+        {
             return Err(anyhow!(
                 "--task cannot be combined with --all, --service, --search, --level, --stream, or --since"
             ));
         }
 
-        let candidates = task_log_path_candidates(&project_dir, context, &task_name, run_id.as_deref()).await?;
+        let candidates =
+            task_log_path_candidates(&project_dir, context, &task_name, run_id.as_deref()).await?;
         let log_path = candidates.iter().find(|path| path.exists()).cloned();
 
         let Some(log_path) = log_path else {
@@ -104,17 +135,23 @@ pub(crate) async fn run(
             ));
         };
 
-        return stream_logs(&log_path, &task_name, tail, follow, follow_for, json, no_health).await;
+        return stream_logs(
+            &log_path, &task_name, tail, follow, follow_for, json, no_health,
+        )
+        .await;
     }
 
     let run_id = resolve_run_id(context, &project_dir, run_id).await?;
 
     if all {
         if follow {
-            return Err(anyhow!("--follow requires --service (cannot be used with --all)"));
+            return Err(anyhow!(
+                "--follow requires --service (cannot be used with --all)"
+            ));
         }
         let tail = tail.unwrap_or(500);
-        let response = fetch_run_log_view(context, &run_id, view_query(Some(tail), true, false)).await?;
+        let response =
+            fetch_run_log_view(context, &run_id, view_query(Some(tail), true, false)).await?;
         for entry in &response.entries {
             emit_entry(entry, json, no_health)?;
         }
@@ -122,7 +159,9 @@ pub(crate) async fn run(
     }
 
     let Some(service) = service else {
-        return Err(anyhow!("--service is required unless --all or --task is set"));
+        return Err(anyhow!(
+            "--service is required unless --all or --task is set"
+        ));
     };
 
     let api_only = q.is_some() || level.is_some() || stream.is_some() || since.is_some();
@@ -167,7 +206,10 @@ pub(crate) async fn run(
                 &crate::ids::RunId::new(run_id),
                 &crate::ids::ServiceName::new(&service),
             )?;
-            stream_logs(&log_path, &service, tail, follow, follow_for, json, no_health).await
+            stream_logs(
+                &log_path, &service, tail, follow, follow_for, json, no_health,
+            )
+            .await
         }
         Err(err) => Err(err),
     }
@@ -191,6 +233,70 @@ fn build_query_string(params: Vec<(&str, String)>) -> String {
     out
 }
 
+fn push_log_filter_query_params(params: &mut Vec<(&str, String)>, filter: &LogFilterQuery) {
+    if let Some(last) = filter.last {
+        params.push(("last", last.to_string()));
+    }
+    if let Some(search) = filter.search.as_deref() {
+        params.push(("search", search.to_string()));
+    }
+    if let Some(level) = filter.level.as_deref()
+        && level != "all"
+    {
+        params.push(("level", level.to_string()));
+    }
+    if let Some(stream) = filter.stream.as_deref() {
+        params.push(("stream", stream.to_string()));
+    }
+    if let Some(since) = filter.since.as_deref() {
+        params.push(("since", since.to_string()));
+    }
+}
+
+fn build_logs_query(
+    tail: usize,
+    after: Option<u64>,
+    query: Option<&str>,
+    level: Option<&str>,
+    stream: Option<&str>,
+    since: Option<&str>,
+) -> LogsQuery {
+    LogsQuery {
+        filter: LogFilterQuery {
+            last: Some(tail),
+            since: since.map(str::to_string),
+            search: query.map(str::to_string),
+            level: level.map(str::to_string),
+            stream: stream.map(str::to_string),
+        },
+        after,
+    }
+}
+
+fn build_log_view_query_string(query: &LogViewQuery) -> String {
+    let mut params = Vec::new();
+    push_log_filter_query_params(&mut params, &query.filter);
+    if let Some(service) = query.service.as_deref() {
+        params.push(("service", service.to_string()));
+    }
+    if !query.include_entries {
+        params.push(("include_entries", "false".to_string()));
+    }
+    if query.include_facets {
+        params.push(("include_facets", "true".to_string()));
+    }
+    build_query_string(params)
+}
+
+fn build_logs_query_string(query: &LogsQuery) -> String {
+    let mut params = Vec::new();
+    push_log_filter_query_params(&mut params, &query.filter);
+    if let Some(after) = query.after {
+        params.push(("after", after.to_string()));
+    }
+    build_query_string(params)
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn fetch_service_logs_api(
     context: &CliContext,
@@ -203,26 +309,8 @@ async fn fetch_service_logs_api(
     stream: Option<&str>,
     since: Option<&str>,
 ) -> Result<LogsResponse> {
-    let mut params = Vec::new();
-    params.push(("last", tail.to_string()));
-    if let Some(after) = after {
-        params.push(("after", after.to_string()));
-    }
-    if let Some(q) = q {
-        params.push(("search", q.to_string()));
-    }
-    if let Some(level) = level
-        && level != "all"
-    {
-        params.push(("level", level.to_string()));
-    }
-    if let Some(stream) = stream {
-        params.push(("stream", stream.to_string()));
-    }
-    if let Some(since) = since {
-        params.push(("since", since.to_string()));
-    }
-    let query = build_query_string(params);
+    let query = build_logs_query(tail, after, q, level, stream, since);
+    let query = build_logs_query_string(&query);
     let path = format!("/v1/runs/{run_id}/logs/{service}{query}");
     context
         .daemon_request_json::<(), LogsResponse>("GET", &path, None, Some(DAEMON_LONG_TIMEOUT))
@@ -234,34 +322,7 @@ async fn fetch_run_log_view(
     run_id: &str,
     query: LogViewQuery,
 ) -> Result<LogViewResponse> {
-    let mut params = Vec::new();
-    if let Some(last) = query.last {
-        params.push(("last", last.to_string()));
-    }
-    if let Some(q) = query.search.as_deref() {
-        params.push(("search", q.to_string()));
-    }
-    if let Some(level) = query.level.as_deref()
-        && level != "all"
-    {
-        params.push(("level", level.to_string()));
-    }
-    if let Some(stream) = query.stream.as_deref() {
-        params.push(("stream", stream.to_string()));
-    }
-    if let Some(service) = query.service.as_deref() {
-        params.push(("service", service.to_string()));
-    }
-    if let Some(since) = query.since.as_deref() {
-        params.push(("since", since.to_string()));
-    }
-    if !query.include_entries {
-        params.push(("include_entries", "false".to_string()));
-    }
-    if query.include_facets {
-        params.push(("include_facets", "true".to_string()));
-    }
-    let query = build_query_string(params);
+    let query = build_log_view_query_string(&query);
     let path = format!("/v1/runs/{run_id}/logs{query}");
     context
         .daemon_request_json::<(), LogViewResponse>("GET", &path, None, Some(DAEMON_LONG_TIMEOUT))
@@ -308,37 +369,15 @@ async fn query_source_log_view(
     query: LogViewQuery,
 ) -> Result<LogViewResponse> {
     if context.daemon_is_running() {
-        let mut params = Vec::new();
-        if let Some(last) = query.last {
-            params.push(("last", last.to_string()));
-        }
-        if let Some(q) = query.search.as_deref() {
-            params.push(("search", q.to_string()));
-        }
-        if let Some(level) = query.level.as_deref()
-            && level != "all"
-        {
-            params.push(("level", level.to_string()));
-        }
-        if let Some(stream) = query.stream.as_deref() {
-            params.push(("stream", stream.to_string()));
-        }
-        if let Some(service) = query.service.as_deref() {
-            params.push(("service", service.to_string()));
-        }
-        if let Some(since) = query.since.as_deref() {
-            params.push(("since", since.to_string()));
-        }
-        if !query.include_entries {
-            params.push(("include_entries", "false".to_string()));
-        }
-        if query.include_facets {
-            params.push(("include_facets", "true".to_string()));
-        }
-        let query_str = build_query_string(params);
+        let query_str = build_log_view_query_string(&query);
         let path = format!("/v1/sources/{source_name}/logs{query_str}");
         return context
-            .daemon_request_json::<(), LogViewResponse>("GET", &path, None, Some(DAEMON_LONG_TIMEOUT))
+            .daemon_request_json::<(), LogViewResponse>(
+                "GET",
+                &path,
+                None,
+                Some(DAEMON_LONG_TIMEOUT),
+            )
             .await;
     }
 
@@ -561,11 +600,13 @@ mod tests {
             &ledger,
             "ext",
             LogViewQuery {
-                last: Some(10),
-                since: None,
-                search: None,
-                level: None,
-                stream: None,
+                filter: LogFilterQuery {
+                    last: Some(10),
+                    since: None,
+                    search: None,
+                    level: None,
+                    stream: None,
+                },
                 service: None,
                 include_entries: true,
                 include_facets: false,
@@ -608,11 +649,13 @@ mod tests {
             &ledger,
             "ext",
             LogViewQuery {
-                last: Some(10),
-                since: None,
-                search: None,
-                level: None,
-                stream: None,
+                filter: LogFilterQuery {
+                    last: Some(10),
+                    since: None,
+                    search: None,
+                    level: None,
+                    stream: None,
+                },
                 service: None,
                 include_entries: true,
                 include_facets: false,
@@ -625,11 +668,13 @@ mod tests {
             .query_view(
                 &run_id,
                 LogViewQuery {
-                    last: Some(10),
-                    since: None,
-                    search: None,
-                    level: None,
-                    stream: None,
+                    filter: LogFilterQuery {
+                        last: Some(10),
+                        since: None,
+                        search: None,
+                        level: None,
+                        stream: None,
+                    },
                     service: None,
                     include_entries: true,
                     include_facets: false,
@@ -645,11 +690,13 @@ mod tests {
             .query_view(
                 &run_id,
                 LogViewQuery {
-                    last: Some(10),
-                    since: None,
-                    search: None,
-                    level: None,
-                    stream: None,
+                    filter: LogFilterQuery {
+                        last: Some(10),
+                        since: None,
+                        search: None,
+                        level: None,
+                        stream: None,
+                    },
                     service: None,
                     include_entries: true,
                     include_facets: false,

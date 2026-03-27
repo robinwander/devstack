@@ -3,7 +3,7 @@ mod support;
 use std::time::Duration;
 
 use anyhow::Result;
-use devstack::api::{LogViewQuery, LogsQuery, TaskExecutionState};
+use devstack::api::{LogFilterQuery, LogViewQuery, LogsQuery, TaskExecutionState};
 use support::fixtures;
 use support::workflows::start_fixture_run;
 use support::{TaskStartOptions, TestHarness, UpOptions};
@@ -22,11 +22,13 @@ async fn service_logs_are_queryable_by_service() -> Result<()> {
             run.id(),
             "api",
             &LogsQuery {
-                last: Some(50),
-                since: None,
-                search: None,
-                level: None,
-                stream: None,
+                filter: LogFilterQuery {
+                    last: Some(50),
+                    since: None,
+                    search: None,
+                    level: None,
+                    stream: None,
+                },
                 after: None,
             },
         )
@@ -56,11 +58,13 @@ async fn combined_logs_view_can_filter_by_service_level_stream() -> Result<()> {
         .logs_view(
             run.id(),
             &LogViewQuery {
-                last: Some(50),
-                since: None,
-                search: Some("worker-stderr".to_string()),
-                level: None,
-                stream: Some("stderr".to_string()),
+                filter: LogFilterQuery {
+                    last: Some(50),
+                    since: None,
+                    search: Some("worker-stderr".to_string()),
+                    level: None,
+                    stream: Some("stderr".to_string()),
+                },
                 service: Some("worker".to_string()),
                 include_entries: true,
                 include_facets: false,
@@ -79,11 +83,13 @@ async fn combined_logs_view_can_filter_by_service_level_stream() -> Result<()> {
         .logs_view(
             run.id(),
             &LogViewQuery {
-                last: Some(50),
-                since: None,
-                search: Some("worker-stderr".to_string()),
-                level: Some(level.clone()),
-                stream: Some("stderr".to_string()),
+                filter: LogFilterQuery {
+                    last: Some(50),
+                    since: None,
+                    search: Some("worker-stderr".to_string()),
+                    level: Some(level.clone()),
+                    stream: Some("stderr".to_string()),
+                },
                 service: Some("worker".to_string()),
                 include_entries: true,
                 include_facets: false,
@@ -124,11 +130,13 @@ async fn logs_since_filters_older_entries() -> Result<()> {
             run.id(),
             "api",
             &LogsQuery {
-                last: Some(50),
-                since: Some(cutoff),
-                search: None,
-                level: None,
-                stream: None,
+                filter: LogFilterQuery {
+                    last: Some(50),
+                    since: Some(cutoff),
+                    search: None,
+                    level: None,
+                    stream: None,
+                },
                 after: None,
             },
         )
@@ -160,11 +168,13 @@ async fn logs_search_returns_matching_entries() -> Result<()> {
             run.id(),
             "api",
             &LogsQuery {
-                last: Some(50),
-                since: None,
-                search: Some("http-access".to_string()),
-                level: None,
-                stream: None,
+                filter: LogFilterQuery {
+                    last: Some(50),
+                    since: None,
+                    search: Some("http-access".to_string()),
+                    level: None,
+                    stream: None,
+                },
                 after: None,
             },
         )
@@ -190,11 +200,13 @@ async fn logs_follow_returns_incremental_updates() -> Result<()> {
             run.id(),
             "api",
             &LogsQuery {
-                last: Some(50),
-                since: None,
-                search: None,
-                level: None,
-                stream: None,
+                filter: LogFilterQuery {
+                    last: Some(50),
+                    since: None,
+                    search: None,
+                    level: None,
+                    stream: None,
+                },
                 after: None,
             },
         )
@@ -208,11 +220,13 @@ async fn logs_follow_returns_incremental_updates() -> Result<()> {
             run.id(),
             "api",
             &LogsQuery {
-                last: Some(50),
-                since: None,
-                search: None,
-                level: None,
-                stream: None,
+                filter: LogFilterQuery {
+                    last: Some(50),
+                    since: None,
+                    search: None,
+                    level: None,
+                    stream: None,
+                },
                 after: Some(cursor),
             },
         )
@@ -248,11 +262,13 @@ async fn logs_facets_returns_filter_metadata() -> Result<()> {
         .logs_view(
             run.id(),
             &LogViewQuery {
-                last: Some(50),
-                since: None,
-                search: Some("worker-stderr".to_string()),
-                level: None,
-                stream: None,
+                filter: LogFilterQuery {
+                    last: Some(50),
+                    since: None,
+                    search: Some("worker-stderr".to_string()),
+                    level: None,
+                    stream: None,
+                },
                 service: None,
                 include_entries: true,
                 include_facets: false,
@@ -264,11 +280,13 @@ async fn logs_facets_returns_filter_metadata() -> Result<()> {
         .logs_view(
             run.id(),
             &LogViewQuery {
-                last: Some(50),
-                since: None,
-                search: None,
-                level: None,
-                stream: None,
+                filter: LogFilterQuery {
+                    last: Some(50),
+                    since: None,
+                    search: None,
+                    level: None,
+                    stream: None,
+                },
                 service: None,
                 include_entries: false,
                 include_facets: true,

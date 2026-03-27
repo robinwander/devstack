@@ -10,7 +10,8 @@ use tantivy::query::{BooleanQuery, Occur, RangeQuery, TermQuery};
 use crate::logfmt::{
     classify_line_level, extract_log_content, extract_timestamp_str, parse_timestamp_nanos,
 };
-use crate::util::{atomic_write, contains_ansi, strip_ansi};
+use crate::logfmt::{contains_ansi, strip_ansi};
+use crate::util::atomic_write;
 
 use super::{IngestCursor, LogIndex, LogSource};
 

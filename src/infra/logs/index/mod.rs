@@ -71,16 +71,18 @@ pub(crate) struct LogIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::{LogViewQuery, LogViewResponse, LogsQuery};
+    use crate::api::{LogFilterQuery, LogViewQuery, LogViewResponse, LogsQuery};
     use std::io::Write;
 
     fn logs_query(last: usize, after: Option<u64>, search: Option<&str>) -> LogsQuery {
         LogsQuery {
-            last: Some(last),
-            since: None,
-            search: search.map(|s| s.to_string()),
-            level: None,
-            stream: None,
+            filter: LogFilterQuery {
+                last: Some(last),
+                since: None,
+                search: search.map(str::to_string),
+                level: None,
+                stream: None,
+            },
             after,
         }
     }
@@ -95,11 +97,13 @@ mod tests {
         include_facets: bool,
     ) -> LogViewQuery {
         LogViewQuery {
-            last,
-            since: None,
-            search: search.map(str::to_string),
-            level: level.map(str::to_string),
-            stream: stream.map(str::to_string),
+            filter: LogFilterQuery {
+                last,
+                since: None,
+                search: search.map(str::to_string),
+                level: level.map(str::to_string),
+                stream: stream.map(str::to_string),
+            },
             service: service.map(str::to_string),
             include_entries,
             include_facets,

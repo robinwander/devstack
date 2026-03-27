@@ -1,8 +1,8 @@
 use anyhow::{Result, anyhow};
 
-use crate::util::validate_name_for_path_component;
-use super::model::{ConfigFile, ServiceConfig, TaskConfig, UniqueMap, PortConfig};
+use super::model::{ConfigFile, PortConfig, ServiceConfig, TaskConfig, UniqueMap};
 use super::plan::topo_sort;
+use crate::paths::validate_name_for_path_component;
 
 impl ConfigFile {
     pub(crate) fn validate(&self) -> Result<()> {
@@ -65,10 +65,14 @@ fn validate_service_port(stack: &str, service: &str, svc: &ServiceConfig) -> Res
     if let Some(port) = &svc.port {
         match port {
             PortConfig::Fixed(port_num) if !(1024..=65535).contains(port_num) => {
-                return Err(anyhow!("service {service} in stack {stack}: port must be in range 1024-65535, got {port_num}"));
+                return Err(anyhow!(
+                    "service {service} in stack {stack}: port must be in range 1024-65535, got {port_num}"
+                ));
             }
             PortConfig::None(value) if value != "none" => {
-                return Err(anyhow!("service {service} in stack {stack}: invalid port value \"{value}\", must be a number or \"none\""));
+                return Err(anyhow!(
+                    "service {service} in stack {stack}: invalid port value \"{value}\", must be a number or \"none\""
+                ));
             }
             _ => {}
         }
@@ -78,9 +82,8 @@ fn validate_service_port(stack: &str, service: &str, svc: &ServiceConfig) -> Res
 
 fn validate_service_readiness(stack: &str, service: &str, svc: &ServiceConfig) -> Result<()> {
     let has_port = svc.port.as_ref().map(|p| !p.is_none()).unwrap_or(true);
-    svc.readiness_kind(has_port).map_err(|err| {
-        anyhow!("service {service} in stack {stack}: readiness error: {err}")
-    })?;
+    svc.readiness_kind(has_port)
+        .map_err(|err| anyhow!("service {service} in stack {stack}: readiness error: {err}"))?;
     Ok(())
 }
 

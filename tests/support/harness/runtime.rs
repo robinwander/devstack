@@ -5,8 +5,8 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use devstack::api::{
-    LogsQuery, RunResponse, RunStatusResponse, RunWatchResponse, TaskExecutionState,
-    TaskStatusResponse,
+    LogFilterQuery, LogsQuery, RunResponse, RunStatusResponse, RunWatchResponse,
+    TaskExecutionState, TaskStatusResponse,
 };
 use devstack::model::{RunLifecycle, ServiceState};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -227,11 +227,13 @@ impl ServiceHandle {
                     &self.run.run_id,
                     &self.name,
                     &LogsQuery {
-                        last: Some(200),
-                        since: None,
-                        search: None,
-                        level: None,
-                        stream: None,
+                        filter: LogFilterQuery {
+                            last: Some(200),
+                            since: None,
+                            search: None,
+                            level: None,
+                            stream: None,
+                        },
                         after: None,
                     },
                 )
@@ -281,11 +283,13 @@ impl ServiceHandle {
                                 &run_id,
                                 &service,
                                 &LogsQuery {
-                                    last: Some(200),
-                                    since: None,
-                                    search: None,
-                                    level: None,
-                                    stream: None,
+                                    filter: LogFilterQuery {
+                                        last: Some(200),
+                                        since: None,
+                                        search: None,
+                                        level: None,
+                                        stream: None,
+                                    },
                                     after: None,
                                 },
                             )

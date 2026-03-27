@@ -103,7 +103,9 @@ async fn tail_run_logs_in_dir(state: DaemonState, run_id: String, logs_dir: Path
                             cursors.remove(&path);
                             continue;
                         }
-                        let cursor = cursors.entry(path.clone()).or_insert(LogTailCursor { offset: 0 });
+                        let cursor = cursors
+                            .entry(path.clone())
+                            .or_insert(LogTailCursor { offset: 0 });
                         if let Ok(events) = read_new_log_events(&run_id, &path, cursor) {
                             for event in events {
                                 state.app.emit_event(DaemonEvent::Log(event));
@@ -137,7 +139,9 @@ fn initial_log_tail_cursors(logs_dir: &Path) -> Result<HashMap<PathBuf, LogTailC
         if !is_tailed_log_path(&path) {
             continue;
         }
-        let offset = std::fs::metadata(&path).map(|metadata| metadata.len()).unwrap_or(0);
+        let offset = std::fs::metadata(&path)
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
         cursors.insert(path, LogTailCursor { offset });
     }
 
@@ -153,7 +157,9 @@ fn read_new_log_events(
     path: &Path,
     cursor: &mut LogTailCursor,
 ) -> Result<Vec<DaemonLogEvent>> {
-    let file_len = std::fs::metadata(path).map(|metadata| metadata.len()).unwrap_or(0);
+    let file_len = std::fs::metadata(path)
+        .map(|metadata| metadata.len())
+        .unwrap_or(0);
     if file_len < cursor.offset {
         cursor.offset = 0;
     }
@@ -191,7 +197,7 @@ fn read_new_log_events(
 }
 
 fn parse_log_tail_event(run_id: &str, service: &str, raw_line: &str) -> Option<DaemonLogEvent> {
-    let raw = crate::util::strip_ansi_if_needed(raw_line.trim_end_matches(['\r', '\n']));
+    let raw = crate::logfmt::strip_ansi_if_needed(raw_line.trim_end_matches(['\r', '\n']));
     if raw.is_empty() {
         return None;
     }

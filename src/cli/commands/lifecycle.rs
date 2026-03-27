@@ -10,8 +10,9 @@ use crate::api::{
     WatchControlRequest,
 };
 use crate::cli::args::WatchAction;
+use crate::cli::commands::logs::normalize_since_arg;
 use crate::cli::context::{
-    CliContext, DAEMON_LONG_TIMEOUT, DAEMON_TIMEOUT, fetch_runs_with_fallback, normalize_since_arg,
+    CliContext, DAEMON_LONG_TIMEOUT, DAEMON_TIMEOUT, fetch_runs_with_fallback,
     resolve_project_dir_from_cwd, resolve_run_id, resolve_stack_name, resolve_up_context,
     status_from_manifest,
 };

@@ -9,11 +9,11 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use std::collections::BTreeMap;
 
 use crate::api::LogEntry;
+use crate::logfmt::strip_ansi_if_needed;
 use crate::logfmt::{
     classify_line_level, detect_log_level, extract_log_content, extract_timestamp_str,
     is_health_check_line, is_health_check_message,
 };
-use crate::util::strip_ansi_if_needed;
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct StructuredLogLine {

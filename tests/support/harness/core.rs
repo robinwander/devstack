@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use assert_cmd::Command;
-use devstack::api::LogsQuery;
+use devstack::api::{LogFilterQuery, LogsQuery};
 use tokio::time::{Instant, sleep};
 
 use super::{
@@ -201,7 +201,7 @@ impl TestHarness {
     pub fn adhoc_task_logs_dir(&self, project: &ProjectHandle) -> PathBuf {
         self.base_dir().join("task-logs").join(format!(
             "adhoc-{}",
-            devstack::util::project_hash(project.path())
+            devstack::paths::project_hash(project.path())
         ))
     }
 
@@ -272,11 +272,13 @@ impl TestHarness {
 
             if let Some(service) = service {
                 let query = LogsQuery {
-                    last: Some(20),
-                    since: None,
-                    search: None,
-                    level: None,
-                    stream: None,
+                    filter: LogFilterQuery {
+                        last: Some(20),
+                        since: None,
+                        search: None,
+                        level: None,
+                        stream: None,
+                    },
                     after: None,
                 };
                 if let Ok(logs) = self.api().logs(run_id, service, &query).await {

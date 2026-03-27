@@ -15,7 +15,6 @@ use crate::infra::ipc::UnixDaemonClient;
 use crate::model::RunLifecycle;
 use crate::paths;
 use crate::persistence::PersistedRun;
-use crate::util::expand_home;
 
 pub(crate) const DAEMON_TIMEOUT: Duration = Duration::from_secs(2);
 pub(crate) const DAEMON_LONG_TIMEOUT: Duration = Duration::from_secs(30);
@@ -104,26 +103,6 @@ pub(crate) fn resolve_follow_for(
     }
 }
 
-pub(crate) fn normalize_since_arg(since: Option<String>) -> Result<Option<String>> {
-    let Some(since) = since else {
-        return Ok(None);
-    };
-    let since = since.trim().to_string();
-    if since.is_empty() {
-        return Ok(None);
-    }
-    if OffsetDateTime::parse(&since, &Rfc3339).is_ok() {
-        return Ok(Some(since));
-    }
-    if let Ok(dur) = humantime::parse_duration(&since) {
-        let dt = OffsetDateTime::now_utc() - dur;
-        return Ok(Some(dt.format(&Rfc3339)?));
-    }
-    Err(anyhow!(
-        "invalid --since value {since:?}; use RFC3339 (e.g. 2025-01-01T00:00:00Z) or a duration (e.g. 5m, 1h)"
-    ))
-}
-
 pub(crate) fn resolve_project_dir_from_cwd() -> Result<PathBuf> {
     Ok(resolve_project_context(None, None)?.project_dir)
 }
@@ -142,9 +121,9 @@ pub(crate) fn resolve_project_context_with_cwd(
     file: Option<PathBuf>,
 ) -> Result<ProjectContext> {
     if let Some(file) = file {
-        let file_path = absolutize_path(cwd, file);
+        let file_path = paths::absolutize_path(cwd, file);
         let project_dir = if let Some(project) = project {
-            absolutize_path(cwd, project)
+            paths::absolutize_path(cwd, project)
         } else {
             file_path.parent().unwrap_or(cwd).to_path_buf()
         };
@@ -155,7 +134,7 @@ pub(crate) fn resolve_project_context_with_cwd(
     }
 
     if let Some(project) = project {
-        let project_dir = absolutize_path(cwd, project);
+        let project_dir = paths::absolutize_path(cwd, project);
         let config_path = ConfigFile::default_path(&project_dir);
         return Ok(ProjectContext {
             project_dir,
@@ -177,15 +156,6 @@ pub(crate) fn resolve_project_context_with_cwd(
     })
 }
 
-pub(crate) fn absolutize_path(base: &Path, path: PathBuf) -> PathBuf {
-    let expanded = expand_home(&path);
-    if expanded.is_absolute() {
-        expanded
-    } else {
-        base.join(expanded)
-    }
-}
-
 fn looks_like_config_path(value: &str) -> bool {
     let lower = value.to_ascii_lowercase();
     lower.ends_with(".toml") || lower.ends_with(".yaml") || lower.ends_with(".yml")
@@ -204,7 +174,7 @@ pub(crate) fn resolve_up_context(
         && let Some(candidate) = stack.as_ref()
         && looks_like_config_path(candidate)
     {
-        let path = absolutize_path(&cwd, PathBuf::from(candidate));
+        let path = paths::absolutize_path(&cwd, PathBuf::from(candidate));
         if path.is_file() {
             file = Some(path);
             stack = None;

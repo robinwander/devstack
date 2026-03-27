@@ -9,13 +9,14 @@ use std::time::Instant;
 
 use anyhow::{Context, Result, anyhow};
 
-use crate::config::TaskConfig;
-use crate::util::{now_rfc3339, strip_ansi_if_needed};
-use super::model::{TaskLogScope, TaskResult};
 use super::history::{append_task_execution, format_task_duration, task_log_path};
+use super::model::{TaskLogScope, TaskResult};
 use super::orchestration::{
     compute_watch_hash, load_stored_hash, store_hash, task_cmd_parts, task_cwd, task_watch,
 };
+use crate::config::TaskConfig;
+use crate::logfmt::strip_ansi_if_needed;
+use crate::util::now_rfc3339;
 
 pub fn run_task(
     task_name: &str,

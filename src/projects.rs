@@ -7,7 +7,8 @@ use serde::{Deserialize, Serialize};
 use crate::api::ProjectSummary;
 use crate::config::ConfigFile;
 use crate::paths;
-use crate::util::{atomic_write, now_rfc3339, project_hash};
+use crate::paths::project_hash;
+use crate::util::{atomic_write, now_rfc3339};
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ProjectsLedger {

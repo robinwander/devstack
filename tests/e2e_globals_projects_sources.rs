@@ -1,6 +1,7 @@
 mod support;
 
 use anyhow::Result;
+use devstack::api::LogFilterQuery;
 use devstack::model::RunLifecycle;
 use serde_json::Value;
 use support::fixtures;
@@ -294,11 +295,13 @@ async fn source_logs_can_be_queried() -> Result<()> {
         .source_logs(
             "ext",
             &devstack::api::LogViewQuery {
-                last: Some(50),
-                since: None,
-                search: Some("source-boom".to_string()),
-                level: Some("error".to_string()),
-                stream: Some("stderr".to_string()),
+                filter: LogFilterQuery {
+                    last: Some(50),
+                    since: None,
+                    search: Some("source-boom".to_string()),
+                    level: Some("error".to_string()),
+                    stream: Some("stderr".to_string()),
+                },
                 service: None,
                 include_entries: true,
                 include_facets: false,
@@ -335,11 +338,13 @@ async fn removing_source_makes_it_unqueryable() -> Result<()> {
         .source_logs(
             "ext",
             &devstack::api::LogViewQuery {
-                last: Some(50),
-                since: None,
-                search: Some("source-live".to_string()),
-                level: None,
-                stream: None,
+                filter: LogFilterQuery {
+                    last: Some(50),
+                    since: None,
+                    search: Some("source-live".to_string()),
+                    level: None,
+                    stream: None,
+                },
                 service: None,
                 include_entries: true,
                 include_facets: false,
@@ -354,11 +359,13 @@ async fn removing_source_makes_it_unqueryable() -> Result<()> {
         .source_logs(
             "ext",
             &devstack::api::LogViewQuery {
-                last: Some(50),
-                since: None,
-                search: None,
-                level: None,
-                stream: None,
+                filter: LogFilterQuery {
+                    last: Some(50),
+                    since: None,
+                    search: None,
+                    level: None,
+                    stream: None,
+                },
                 service: None,
                 include_entries: true,
                 include_facets: false,
@@ -395,11 +402,13 @@ async fn readding_source_refreshes_searchable_entries() -> Result<()> {
         .source_logs(
             "ext",
             &devstack::api::LogViewQuery {
-                last: Some(50),
-                since: None,
-                search: Some("source-old".to_string()),
-                level: None,
-                stream: None,
+                filter: LogFilterQuery {
+                    last: Some(50),
+                    since: None,
+                    search: Some("source-old".to_string()),
+                    level: None,
+                    stream: None,
+                },
                 service: None,
                 include_entries: true,
                 include_facets: false,
@@ -422,11 +431,13 @@ async fn readding_source_refreshes_searchable_entries() -> Result<()> {
         .source_logs(
             "ext",
             &devstack::api::LogViewQuery {
-                last: Some(50),
-                since: None,
-                search: Some("source-new".to_string()),
-                level: None,
-                stream: None,
+                filter: LogFilterQuery {
+                    last: Some(50),
+                    since: None,
+                    search: Some("source-new".to_string()),
+                    level: None,
+                    stream: None,
+                },
                 service: None,
                 include_entries: true,
                 include_facets: false,
@@ -441,11 +452,13 @@ async fn readding_source_refreshes_searchable_entries() -> Result<()> {
         .source_logs(
             "ext",
             &devstack::api::LogViewQuery {
-                last: Some(50),
-                since: None,
-                search: Some("source-old".to_string()),
-                level: None,
-                stream: None,
+                filter: LogFilterQuery {
+                    last: Some(50),
+                    since: None,
+                    search: Some("source-old".to_string()),
+                    level: None,
+                    stream: None,
+                },
                 service: None,
                 include_entries: true,
                 include_facets: false,

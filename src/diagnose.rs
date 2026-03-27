@@ -6,10 +6,11 @@ use serde::Serialize;
 
 use crate::api::{HealthStatus, RunStatusResponse, ServiceStatus};
 use crate::ids::{RunId, ServiceName};
+use crate::logfmt::strip_ansi_if_needed;
 use crate::paths;
 use crate::persistence::PersistedRun;
 use crate::services::readiness::PortBindingInfo;
-use crate::util::{now_rfc3339, sanitize_env_key, strip_ansi_if_needed};
+use crate::util::{now_rfc3339, sanitize_env_key};
 
 #[derive(Debug, Serialize)]
 pub struct DiagnoseResponse {

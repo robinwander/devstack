@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 
 use crate::config::TaskConfig;
 use crate::paths;
-use crate::util::validate_name_for_path_component;
+use crate::paths::validate_name_for_path_component;
 
 pub fn compute_watch_hash(cwd: &Path, watch: &[String]) -> Result<String> {
     crate::watch::compute_watch_hash(cwd, Some(watch), &[], &[], b"task-watch-v1")
