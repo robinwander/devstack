@@ -2,7 +2,7 @@ mod support;
 
 use anyhow::Result;
 use devstack::api::LogFilterQuery;
-use devstack::model::RunLifecycle;
+use devstack::model::{RunLifecycle, ServiceState};
 use serde_json::Value;
 use support::fixtures;
 use support::workflows::start_fixture_run;
@@ -148,6 +148,84 @@ async fn globals_auto_restart_is_restored_after_daemon_restart() -> Result<()> {
         .await?;
 
     run.down().await?;
+    daemon.stop().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn daemon_restart_restores_legacy_global_manifest() -> Result<()> {
+    let t = TestHarness::new().await?;
+    let (daemon, project, run) = start_fixture_run(&t, fixtures::globals_fixture()).await?;
+
+    run.assert_ready().await?;
+
+    let manifest_path = t.global_manifest_path(&project, "cache")?;
+    let manifest: Value = serde_json::from_str(&std::fs::read_to_string(&manifest_path)?)?;
+    let legacy_manifest = serde_json::json!({
+        "run_id": format!("global-{}", manifest["key"].as_str().expect("global key")),
+        "project_dir": manifest["project_dir"].clone(),
+        "stack": "globals",
+        "manifest_path": manifest["manifest_path"].clone(),
+        "services": {
+            manifest["name"].as_str().expect("global name"): manifest["service"].clone()
+        },
+        "env": manifest["env"].clone(),
+        "state": manifest["state"].clone(),
+        "created_at": manifest["created_at"].clone(),
+        "stopped_at": manifest["stopped_at"].clone(),
+    });
+    std::fs::write(&manifest_path, serde_json::to_vec_pretty(&legacy_manifest)?)?;
+
+    let daemon = daemon.restart().await?;
+    daemon.assert_ping().await?;
+
+    let globals = t.api().list_globals().await?;
+    let cache = globals
+        .globals
+        .iter()
+        .find(|global| {
+            global.project_dir == project.path().to_string_lossy() && global.name == "cache"
+        })
+        .expect("cache global listed after restart");
+    assert_eq!(cache.state, RunLifecycle::Running);
+
+    run.down().await?;
+    daemon.stop().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn daemon_restart_skips_stale_global_missing_from_config() -> Result<()> {
+    let t = TestHarness::new().await?;
+    let (daemon, project, run) = start_fixture_run(&t, fixtures::globals_fixture()).await?;
+
+    run.assert_ready().await?;
+
+    std::fs::write(
+        project.path().join("devstack.toml"),
+        r#"version = 1
+default_stack = "dev"
+
+[stacks.dev.services.api]
+cmd = "python3 bin/service_http.py"
+
+[stacks.dev.services.api.env]
+FIXTURE_SERVICE_NAME = "api"
+FIXTURE_STARTS_FILE = "state/api-starts.log"
+
+[stacks.dev.services.api.readiness.http]
+path = "/"
+expect_status = [200, 299]
+"#,
+    )?;
+
+    let daemon = daemon.restart().await?;
+    daemon.assert_ping().await?;
+
+    let status = run.status().await?;
+    assert_eq!(status.state, RunLifecycle::Running);
+    assert_eq!(status.services["api"].state, ServiceState::Ready);
+
     daemon.stop().await?;
     Ok(())
 }

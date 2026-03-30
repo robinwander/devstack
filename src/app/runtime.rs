@@ -336,7 +336,17 @@ pub async fn sync_port_reservations_from_disk(app: &AppContext) -> Result<()> {
             if !manifest_path.exists() {
                 continue;
             }
-            let manifest = PersistedRun::load_from_path(&manifest_path)?;
+            let manifest = match PersistedRun::load_from_path(&manifest_path) {
+                Ok(manifest) => manifest,
+                Err(err) => {
+                    eprintln!(
+                        "devstack: ignoring invalid run manifest {}: {}",
+                        manifest_path.display(),
+                        err
+                    );
+                    continue;
+                }
+            };
             if manifest.state == RunLifecycle::Stopped || manifest.stopped_at.is_some() {
                 continue;
             }
@@ -356,7 +366,17 @@ pub async fn sync_port_reservations_from_disk(app: &AppContext) -> Result<()> {
             if !manifest_path.exists() {
                 continue;
             }
-            let manifest = PersistedGlobal::load_from_path(&manifest_path)?;
+            let manifest = match PersistedGlobal::load_from_path(&manifest_path) {
+                Ok(manifest) => manifest,
+                Err(err) => {
+                    eprintln!(
+                        "devstack: ignoring invalid global manifest {}: {}",
+                        manifest_path.display(),
+                        err
+                    );
+                    continue;
+                }
+            };
             if manifest.state == RunLifecycle::Stopped || manifest.stopped_at.is_some() {
                 continue;
             }

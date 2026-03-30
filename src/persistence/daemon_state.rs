@@ -43,9 +43,29 @@ pub fn load_state_from_disk() -> Result<BTreeMap<String, RunRecord>> {
         if !snapshot_path.exists() {
             continue;
         }
-        let config = crate::config::ConfigFile::load_from_path(&snapshot_path)
-            .with_context(|| format!("load run snapshot {}", snapshot_path.display()))?;
-        let record = convert_manifest_to_run_record(manifest, &config)?;
+        let config = match crate::config::ConfigFile::load_from_path(&snapshot_path)
+            .with_context(|| format!("load run snapshot {}", snapshot_path.display()))
+        {
+            Ok(config) => config,
+            Err(err) => {
+                eprintln!(
+                    "devstack: ignoring persisted run {} because snapshot could not be loaded: {}",
+                    manifest.run_id, err
+                );
+                continue;
+            }
+        };
+        let record = match convert_manifest_to_run_record(manifest, &config) {
+            Ok(record) => record,
+            Err(err) => {
+                eprintln!(
+                    "devstack: ignoring persisted run manifest {}: {}",
+                    manifest_path.display(),
+                    err
+                );
+                continue;
+            }
+        };
         runs.insert(record.run_id.as_str().to_string(), record);
     }
 
@@ -78,9 +98,29 @@ pub fn load_globals_from_disk() -> Result<BTreeMap<String, GlobalRecord>> {
         if !config_path.exists() {
             continue;
         }
-        let config = crate::config::ConfigFile::load_from_path(&config_path)
-            .with_context(|| format!("load global config {}", config_path.display()))?;
-        let record = convert_manifest_to_global_record(manifest, &config)?;
+        let config = match crate::config::ConfigFile::load_from_path(&config_path)
+            .with_context(|| format!("load global config {}", config_path.display()))
+        {
+            Ok(config) => config,
+            Err(err) => {
+                eprintln!(
+                    "devstack: ignoring persisted global {} because config could not be loaded: {}",
+                    manifest.key, err
+                );
+                continue;
+            }
+        };
+        let record = match convert_manifest_to_global_record(manifest, &config) {
+            Ok(record) => record,
+            Err(err) => {
+                eprintln!(
+                    "devstack: ignoring persisted global manifest {}: {}",
+                    manifest_path.display(),
+                    err
+                );
+                continue;
+            }
+        };
         globals.insert(record.key.clone(), record);
     }
 

@@ -3,6 +3,7 @@ mod support;
 use anyhow::Result;
 use devstack::model::{RunLifecycle, ServiceState};
 use devstack::persistence::PersistedRun;
+use serde_json::Value;
 use support::fixtures;
 use support::workflows::start_fixture_run;
 use support::{TestHarness, UpOptions};
@@ -147,6 +148,34 @@ async fn daemon_restart_preserves_visible_run_state() -> Result<()> {
     let (daemon, _project, run) = start_fixture_run(&t, fixtures::simple_http()).await?;
 
     run.assert_ready().await?;
+
+    let daemon = daemon.restart().await?;
+    daemon.assert_ping().await?;
+    run.assert_service_ready("api").await?;
+
+    let status = run.status().await?;
+    assert_eq!(status.state, RunLifecycle::Running);
+    assert_eq!(status.services["api"].state, ServiceState::Ready);
+
+    run.down().await?;
+    daemon.stop().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn daemon_restart_restores_legacy_run_manifest_without_config_dir() -> Result<()> {
+    let t = TestHarness::new().await?;
+    let (daemon, _project, run) = start_fixture_run(&t, fixtures::simple_http()).await?;
+
+    run.assert_ready().await?;
+
+    let manifest_path = run.manifest_path().to_path_buf();
+    let mut manifest: Value = serde_json::from_str(&std::fs::read_to_string(&manifest_path)?)?;
+    manifest
+        .as_object_mut()
+        .expect("run manifest object")
+        .remove("config_dir");
+    std::fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest)?)?;
 
     let daemon = daemon.restart().await?;
     daemon.assert_ping().await?;

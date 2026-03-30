@@ -136,7 +136,7 @@ async fn restore_active_globals(app: &crate::app::context::AppContext) -> Result
             .unwrap_or_default();
         let mut single_global = std::collections::BTreeMap::new();
         single_global.insert(manifest.name.clone(), service);
-        ensure_globals(
+        if let Err(err) = ensure_globals(
             app,
             &single_global,
             &tasks_map,
@@ -146,8 +146,20 @@ async fn restore_active_globals(app: &crate::app::context::AppContext) -> Result
                 .parent()
                 .unwrap_or(std::path::Path::new(&manifest.project_dir)),
         )
-        .await?;
-        sync_global_auto_restart_watcher(app, &manifest.key).await?;
+        .await
+        {
+            eprintln!(
+                "devstack: failed to restore global {}.{}: {}",
+                manifest.key, manifest.name, err
+            );
+            continue;
+        }
+        if let Err(err) = sync_global_auto_restart_watcher(app, &manifest.key).await {
+            eprintln!(
+                "devstack: failed to restore watcher for global {}.{}: {}",
+                manifest.key, manifest.name, err
+            );
+        }
     }
 
     Ok(())
