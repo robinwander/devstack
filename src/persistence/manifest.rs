@@ -91,6 +91,12 @@ impl PersistedRun {
     }
 }
 
+pub fn run_manifest_is_restorable(manifest: &PersistedRun) -> bool {
+    manifest.state != RunLifecycle::Stopped
+        && manifest.stopped_at.is_none()
+        && Path::new(&manifest.project_dir).exists()
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct PersistedGlobal {
     pub key: String,
@@ -177,9 +183,9 @@ impl<'de> Deserialize<'de> for PersistedGlobal {
                         crate::paths::global_key(std::path::Path::new(&project_dir), &name)
                             .unwrap_or_else(|_| format!("legacy__{name}"))
                     });
-                let config_path = crate::config::ConfigFile::find_nearest_path(std::path::Path::new(
-                    &project_dir,
-                ))
+                let config_path = crate::config::ConfigFile::find_nearest_path(
+                    std::path::Path::new(&project_dir),
+                )
                 .unwrap_or_else(|| {
                     crate::config::ConfigFile::default_path(std::path::Path::new(&project_dir))
                 });
@@ -214,8 +220,17 @@ impl PersistedGlobal {
     }
 }
 
+pub fn global_manifest_is_restorable(manifest: &PersistedGlobal) -> bool {
+    manifest.state != RunLifecycle::Stopped
+        && manifest.stopped_at.is_none()
+        && Path::new(&manifest.project_dir).exists()
+        && Path::new(&manifest.config_path).exists()
+}
+
 #[cfg(test)]
 mod tests {
+    use tempfile::tempdir;
+
     use super::*;
 
     #[test]
@@ -270,5 +285,67 @@ mod tests {
         assert_eq!(parsed.key, "abc123__cache");
         assert_eq!(parsed.name, "cache");
         assert_eq!(parsed.config_path, "/tmp/project/devstack.toml");
+    }
+
+    #[test]
+    fn run_manifest_is_restorable_requires_project_dir_to_exist() {
+        let temp = tempdir().expect("tempdir");
+        let manifest = PersistedRun {
+            run_id: "dev-1234".to_string(),
+            project_dir: temp.path().join("project").to_string_lossy().to_string(),
+            config_dir: temp.path().join("project").to_string_lossy().to_string(),
+            manifest_path: temp
+                .path()
+                .join("manifest.json")
+                .to_string_lossy()
+                .to_string(),
+            stack: "dev".to_string(),
+            services: BTreeMap::new(),
+            env: BTreeMap::new(),
+            state: RunLifecycle::Running,
+            created_at: "2026-03-01T00:00:00Z".to_string(),
+            stopped_at: None,
+        };
+
+        assert!(!run_manifest_is_restorable(&manifest));
+        std::fs::create_dir_all(&manifest.project_dir).expect("create project dir");
+        assert!(run_manifest_is_restorable(&manifest));
+    }
+
+    #[test]
+    fn global_manifest_is_restorable_requires_project_dir_and_config_path() {
+        let temp = tempdir().expect("tempdir");
+        let project_dir = temp.path().join("project");
+        let config_path = project_dir.join("devstack.toml");
+        let manifest = PersistedGlobal {
+            key: "abc123__cache".to_string(),
+            name: "cache".to_string(),
+            project_dir: project_dir.to_string_lossy().to_string(),
+            config_path: config_path.to_string_lossy().to_string(),
+            manifest_path: temp
+                .path()
+                .join("manifest.json")
+                .to_string_lossy()
+                .to_string(),
+            service: PersistedService {
+                port: Some(6379),
+                url: Some("redis://localhost:6379".to_string()),
+                state: ServiceState::Ready,
+                watch_hash: None,
+                last_failure: None,
+                last_started_at: None,
+                watch_paused: false,
+            },
+            env: BTreeMap::new(),
+            state: RunLifecycle::Running,
+            created_at: "2026-03-01T00:00:00Z".to_string(),
+            stopped_at: None,
+        };
+
+        assert!(!global_manifest_is_restorable(&manifest));
+        std::fs::create_dir_all(&project_dir).expect("create project dir");
+        assert!(!global_manifest_is_restorable(&manifest));
+        std::fs::write(&config_path, "version = 1\n").expect("write config");
+        assert!(global_manifest_is_restorable(&manifest));
     }
 }

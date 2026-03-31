@@ -18,6 +18,7 @@ use crate::app::runtime::sync_port_reservations_from_disk;
 use crate::infra::logs::index::LogIndex;
 use crate::paths;
 use crate::persistence::daemon_state::{load_globals_from_disk, load_state_from_disk};
+use crate::persistence::global_manifest_is_restorable;
 use crate::projects::ProjectsLedger;
 use crate::stores::{AgentSessionStore, GlobalStore, NavigationStore, RunStore, TaskStore};
 use crate::systemd::SystemdManager;
@@ -113,14 +114,11 @@ async fn restore_active_globals(app: &crate::app::context::AppContext) -> Result
             Ok(manifest) => manifest,
             Err(_) => continue,
         };
-        if manifest.state == crate::model::RunLifecycle::Stopped || manifest.stopped_at.is_some() {
+        if !global_manifest_is_restorable(&manifest) {
             continue;
         }
 
         let config_path = std::path::PathBuf::from(&manifest.config_path);
-        if !config_path.exists() {
-            continue;
-        }
         let config = match crate::config::ConfigFile::load_from_path(&config_path) {
             Ok(config) => config,
             Err(_) => continue,

@@ -201,7 +201,7 @@ pub(crate) async fn run(
 
     match api_result {
         Ok(()) => Ok(()),
-        Err(err) if !api_only => {
+        Err(_) if !api_only => {
             let log_path = paths::run_log_path(
                 &crate::ids::RunId::new(run_id),
                 &crate::ids::ServiceName::new(&service),

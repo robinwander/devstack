@@ -10,7 +10,10 @@ use crate::api::{
 use crate::model::{GlobalRecord, RunRecord};
 use crate::model::{RunLifecycle, ServiceState};
 use crate::paths;
-use crate::persistence::{PersistedGlobal, PersistedRun, PersistedService};
+use crate::persistence::{
+    PersistedGlobal, PersistedRun, PersistedService, global_manifest_is_restorable,
+    run_manifest_is_restorable,
+};
 use crate::stores::DetachedTaskExecution;
 use crate::util::{atomic_write, now_rfc3339};
 
@@ -347,7 +350,7 @@ pub async fn sync_port_reservations_from_disk(app: &AppContext) -> Result<()> {
                     continue;
                 }
             };
-            if manifest.state == RunLifecycle::Stopped || manifest.stopped_at.is_some() {
+            if !run_manifest_is_restorable(&manifest) {
                 continue;
             }
             for (service, record) in manifest.services {
@@ -377,7 +380,7 @@ pub async fn sync_port_reservations_from_disk(app: &AppContext) -> Result<()> {
                     continue;
                 }
             };
-            if manifest.state == RunLifecycle::Stopped || manifest.stopped_at.is_some() {
+            if !global_manifest_is_restorable(&manifest) {
                 continue;
             }
             if let Some(port) = manifest.service.port {

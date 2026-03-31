@@ -5,10 +5,11 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::app::launch::{build_base_env, prepare_service};
-use crate::model::RunLifecycle;
 use crate::model::{GlobalRecord, InstanceScope, RunRecord};
 use crate::paths;
-use crate::persistence::{PersistedGlobal, PersistedRun};
+use crate::persistence::{
+    PersistedGlobal, PersistedRun, global_manifest_is_restorable, run_manifest_is_restorable,
+};
 use crate::util::atomic_write;
 
 #[derive(Serialize, Deserialize)]
@@ -35,7 +36,7 @@ pub fn load_state_from_disk() -> Result<BTreeMap<String, RunRecord>> {
             Ok(manifest) => manifest,
             Err(_) => continue,
         };
-        if manifest.state == RunLifecycle::Stopped || manifest.stopped_at.is_some() {
+        if !run_manifest_is_restorable(&manifest) {
             continue;
         }
 
@@ -90,14 +91,11 @@ pub fn load_globals_from_disk() -> Result<BTreeMap<String, GlobalRecord>> {
             Ok(manifest) => manifest,
             Err(_) => continue,
         };
-        if manifest.state == RunLifecycle::Stopped || manifest.stopped_at.is_some() {
+        if !global_manifest_is_restorable(&manifest) {
             continue;
         }
 
         let config_path = PathBuf::from(&manifest.config_path);
-        if !config_path.exists() {
-            continue;
-        }
         let config = match crate::config::ConfigFile::load_from_path(&config_path)
             .with_context(|| format!("load global config {}", config_path.display()))
         {
