@@ -1,6 +1,6 @@
 [package]
 name = "devstack"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2024"
 repository = "https://github.com/robinwander/devstack"
 description = "Local development orchestration with automatic port allocation, structured logs, and file watching"
