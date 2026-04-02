@@ -31,6 +31,7 @@ pub async fn wait_for_prepared_service(
             post_init.post_init_tasks,
             post_init.project_dir,
             post_init.run_id,
+            post_init.base_env,
         )
         .await
         .map_err(|err| anyhow!("{service_name} post_init task failed: {err}"))?;

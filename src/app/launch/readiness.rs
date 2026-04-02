@@ -27,6 +27,7 @@ pub struct PostInitContext {
     pub post_init_tasks: Vec<String>,
     pub project_dir: PathBuf,
     pub run_id: Option<RunId>,
+    pub base_env: BTreeMap<String, String>,
 }
 
 pub fn build_post_init_context(
@@ -34,6 +35,7 @@ pub fn build_post_init_context(
     tasks_map: &BTreeMap<String, TaskConfig>,
     project_dir: &Path,
     run_id: Option<RunId>,
+    base_env: BTreeMap<String, String>,
 ) -> Option<PostInitContext> {
     let post_init = service.post_init.as_ref()?;
     if post_init.is_empty() {
@@ -44,6 +46,7 @@ pub fn build_post_init_context(
         post_init_tasks: post_init.clone(),
         project_dir: project_dir.to_path_buf(),
         run_id,
+        base_env,
     })
 }
 
@@ -52,6 +55,7 @@ pub fn load_post_init_context_for_run_service(
     stack: &str,
     project_dir: &Path,
     service: &str,
+    service_env: BTreeMap<String, String>,
 ) -> Result<Option<PostInitContext>> {
     let snapshot_path = paths::run_snapshot_path(&RunId::new(run_id))?;
     if !snapshot_path.exists() {
@@ -71,11 +75,16 @@ pub fn load_post_init_context_for_run_service(
     };
 
     Ok(service_config.and_then(|service_config| {
+        let mut resolved_tasks = tasks_map;
+        if let Some(svc_tasks) = &service_config.tasks {
+            resolved_tasks.extend(svc_tasks.as_map().clone());
+        }
         build_post_init_context(
             &service_config,
-            &tasks_map,
+            &resolved_tasks,
             project_dir,
             Some(RunId::new(run_id)),
+            service_env,
         )
     }))
 }

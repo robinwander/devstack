@@ -21,6 +21,7 @@ impl ConfigFile {
                 })?;
                 validate_service_port(stack_name, svc_name, svc)?;
                 validate_service_readiness(stack_name, svc_name, svc)?;
+                validate_service_tasks(stack_name, svc_name, svc)?;
                 validate_service_init_tasks(stack_name, svc_name, svc, self.tasks.as_ref())?;
                 validate_service_post_init_tasks(stack_name, svc_name, svc, self.tasks.as_ref())?;
                 validate_service_auto_restart(stack_name, svc_name, svc)?;
@@ -49,6 +50,7 @@ impl ConfigFile {
                     .map_err(|err| anyhow!("invalid global service name: {err}"))?;
                 validate_service_port("globals", svc_name, svc)?;
                 validate_service_readiness("globals", svc_name, svc)?;
+                validate_service_tasks("globals", svc_name, svc)?;
                 validate_service_init_tasks("globals", svc_name, svc, self.tasks.as_ref())?;
                 validate_service_post_init_tasks("globals", svc_name, svc, self.tasks.as_ref())?;
                 validate_service_auto_restart("globals", svc_name, svc)?;
@@ -87,21 +89,43 @@ fn validate_service_readiness(stack: &str, service: &str, svc: &ServiceConfig) -
     Ok(())
 }
 
+fn validate_service_tasks(stack: &str, service: &str, svc: &ServiceConfig) -> Result<()> {
+    if let Some(tasks) = &svc.tasks {
+        for task_name in tasks.as_map().keys() {
+            validate_name_for_path_component("task", task_name)
+                .map_err(|err| anyhow!("invalid task name on service {service} in stack {stack}: {err}"))?;
+        }
+    }
+    Ok(())
+}
+
+fn has_task(
+    name: &str,
+    service: &ServiceConfig,
+    global_tasks: Option<&UniqueMap<String, TaskConfig>>,
+) -> bool {
+    if let Some(svc_tasks) = &service.tasks {
+        if svc_tasks.as_map().contains_key(name) {
+            return true;
+        }
+    }
+    if let Some(global) = global_tasks {
+        if global.as_map().contains_key(name) {
+            return true;
+        }
+    }
+    false
+}
+
 fn validate_service_init_tasks(
     stack: &str,
     service: &str,
     svc: &ServiceConfig,
-    tasks: Option<&UniqueMap<String, TaskConfig>>,
+    global_tasks: Option<&UniqueMap<String, TaskConfig>>,
 ) -> Result<()> {
     if let Some(init_tasks) = &svc.init {
-        if tasks.is_none() {
-            return Err(anyhow!(
-                "service {service} in stack {stack}: references init tasks but no [tasks] are defined"
-            ));
-        }
-        let available_tasks = tasks.unwrap().as_map();
         for init_task in init_tasks {
-            if !available_tasks.contains_key(init_task) {
+            if !has_task(init_task, svc, global_tasks) {
                 return Err(anyhow!(
                     "service {service} in stack {stack}: unknown init task '{init_task}'"
                 ));
@@ -115,17 +139,11 @@ fn validate_service_post_init_tasks(
     stack: &str,
     service: &str,
     svc: &ServiceConfig,
-    tasks: Option<&UniqueMap<String, TaskConfig>>,
+    global_tasks: Option<&UniqueMap<String, TaskConfig>>,
 ) -> Result<()> {
     if let Some(post_init_tasks) = &svc.post_init {
-        if tasks.is_none() {
-            return Err(anyhow!(
-                "service {service} in stack {stack}: references post_init tasks but no [tasks] are defined"
-            ));
-        }
-        let available_tasks = tasks.unwrap().as_map();
         for post_init_task in post_init_tasks {
-            if !available_tasks.contains_key(post_init_task) {
+            if !has_task(post_init_task, svc, global_tasks) {
                 return Err(anyhow!(
                     "service {service} in stack {stack}: unknown post_init task '{post_init_task}'"
                 ));

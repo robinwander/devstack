@@ -185,6 +185,13 @@ fn convert_manifest_to_run_record(
             continue;
         };
 
+        let global_env_file_path = config.env_file.as_ref().map(|p| {
+            if p.is_absolute() {
+                p.clone()
+            } else {
+                config_dir.join(p)
+            }
+        });
         let mut prepared = prepare_service(
             &scope,
             &project_dir,
@@ -194,6 +201,8 @@ fn convert_manifest_to_run_record(
             &port_map,
             &service_schemes,
             &env,
+            &config.env,
+            global_env_file_path.as_deref(),
         )?;
         if let Some(watch_hash) = &saved_service.watch_hash {
             prepared.watch_hash = watch_hash.clone();
@@ -242,15 +251,25 @@ fn convert_manifest_to_global_record(
     let port_map = BTreeMap::from([(name.clone(), service.port)]);
     let service_schemes = BTreeMap::from([(name.clone(), service_config.scheme())]);
     let base_env = build_base_env(&scope, &project_dir, &port_map, &service_schemes)?;
+    let config_dir = config_path.parent().unwrap_or(&project_dir);
+    let global_env_file_path = config.env_file.as_ref().map(|p| {
+        if p.is_absolute() {
+            p.clone()
+        } else {
+            config_dir.join(p)
+        }
+    });
     let mut prepared = prepare_service(
         &scope,
         &project_dir,
-        config_path.parent().unwrap_or(&project_dir),
+        config_dir,
         &name,
         &service_config,
         &port_map,
         &service_schemes,
         &base_env,
+        &config.env,
+        global_env_file_path.as_deref(),
     )?;
     if let Some(watch_hash) = &service.watch_hash {
         prepared.watch_hash = watch_hash.clone();

@@ -33,6 +33,8 @@ struct LaunchResources {
     port_map: BTreeMap<String, Option<u16>>,
     service_schemes: BTreeMap<String, String>,
     base_env: BTreeMap<String, String>,
+    global_env: BTreeMap<String, String>,
+    global_env_file_path: Option<PathBuf>,
 }
 
 struct RefreshLaunchInputs<'a> {
@@ -85,6 +87,27 @@ fn build_service_schemes(
         service_schemes.insert(name.clone(), service.scheme());
     }
     service_schemes
+}
+
+fn resolve_global_env_file_path(config: &ConfigFile, config_dir: &Path) -> Option<PathBuf> {
+    config.env_file.as_ref().map(|p| {
+        if p.is_absolute() {
+            p.clone()
+        } else {
+            config_dir.join(p)
+        }
+    })
+}
+
+fn resolve_service_tasks(
+    service: &crate::config::ServiceConfig,
+    global_tasks: &BTreeMap<String, TaskConfig>,
+) -> BTreeMap<String, TaskConfig> {
+    let mut tasks = global_tasks.clone();
+    if let Some(service_tasks) = &service.tasks {
+        tasks.extend(service_tasks.as_map().clone());
+    }
+    tasks
 }
 
 async fn initialize_new_run_layout(
@@ -151,6 +174,8 @@ async fn build_new_launch_resources(
         port_map,
         service_schemes,
         base_env,
+        global_env: config.env.clone(),
+        global_env_file_path: resolve_global_env_file_path(config, config_dir),
     })
 }
 
@@ -196,6 +221,8 @@ async fn build_refresh_launch_resources(
         port_map,
         service_schemes,
         base_env,
+        global_env: inputs.config.env.clone(),
+        global_env_file_path: resolve_global_env_file_path(inputs.config, config_dir),
     })
 }
 
@@ -370,11 +397,7 @@ pub async fn up(app: &AppContext, request: UpRequest) -> AppResult<crate::api::R
         &run_id,
         &stack_plan,
         &project_dir,
-        &resources.config_dir,
-        &resources.tasks_map,
-        &resources.port_map,
-        &resources.service_schemes,
-        &resources.base_env,
+        &resources,
         request.no_wait,
         false,
         &BTreeMap::new(),
@@ -444,11 +467,7 @@ pub async fn refresh_run(
         &run_id,
         stack_plan,
         project_dir,
-        &resources.config_dir,
-        &resources.tasks_map,
-        &resources.port_map,
-        &resources.service_schemes,
-        &resources.base_env,
+        &resources,
         no_wait,
         force,
         &existing,
@@ -693,11 +712,7 @@ async fn launch_service(
     run_id: &RunId,
     stack_plan: &StackPlan,
     project_dir: &Path,
-    config_dir: &Path,
-    tasks_map: &BTreeMap<String, TaskConfig>,
-    port_map: &BTreeMap<String, Option<u16>>,
-    service_schemes: &BTreeMap<String, String>,
-    base_env: &BTreeMap<String, String>,
+    resources: &LaunchResources,
     service_name: &str,
     no_wait: bool,
     force: bool,
@@ -710,12 +725,14 @@ async fn launch_service(
     let prepared = prepare_service(
         scope,
         project_dir,
-        config_dir,
+        &resources.config_dir,
         service_name,
         service,
-        port_map,
-        service_schemes,
-        base_env,
+        &resources.port_map,
+        &resources.service_schemes,
+        &resources.base_env,
+        &resources.global_env,
+        resources.global_env_file_path.as_deref(),
     )
     .map_err(AppError::from)?;
 
@@ -723,13 +740,16 @@ async fn launch_service(
         return sync_unchanged_service(app, run_id, service_name, &prepared).await;
     }
 
+    let resolved_tasks = resolve_service_tasks(service, &resources.tasks_map);
+
     if let Some(init_tasks) = &service.init
         && !init_tasks.is_empty()
         && let Err(err) = run_init_tasks_blocking(
-            tasks_map.clone(),
+            resolved_tasks.clone(),
             init_tasks.clone(),
             project_dir.to_path_buf(),
             run_id.clone(),
+            prepared.env.clone(),
         )
         .await
     {
@@ -755,7 +775,13 @@ async fn launch_service(
             run_id.as_str(),
             &prepared,
             no_wait,
-            build_post_init_context(service, tasks_map, project_dir, Some(run_id.clone())),
+            build_post_init_context(
+                service,
+                &resolved_tasks,
+                project_dir,
+                Some(run_id.clone()),
+                prepared.env.clone(),
+            ),
         )
         .await
     {
@@ -772,11 +798,7 @@ async fn launch_services(
     run_id: &RunId,
     stack_plan: &StackPlan,
     project_dir: &Path,
-    config_dir: &Path,
-    tasks_map: &BTreeMap<String, crate::config::TaskConfig>,
-    port_map: &BTreeMap<String, Option<u16>>,
-    service_schemes: &BTreeMap<String, String>,
-    base_env: &BTreeMap<String, String>,
+    resources: &LaunchResources,
     no_wait: bool,
     force: bool,
     existing: &BTreeMap<String, ExistingServiceSnapshot>,
@@ -790,11 +812,7 @@ async fn launch_services(
             run_id,
             stack_plan,
             project_dir,
-            config_dir,
-            tasks_map,
-            port_map,
-            service_schemes,
-            base_env,
+            resources,
             service_name,
             no_wait,
             force,

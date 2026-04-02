@@ -26,6 +26,7 @@ pub fn run_task(
     history_path: &Path,
     verbose: bool,
     trailing_args: &[String],
+    base_env: &BTreeMap<String, String>,
 ) -> Result<TaskResult> {
     let (mut cmd, cwd, env, env_file) = task_cmd_parts(task);
     if !trailing_args.is_empty() {
@@ -55,6 +56,10 @@ pub fn run_task(
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+    }
+
+    for (k, v) in base_env {
+        command.env(k, v);
     }
 
     if let Some(env_file) = env_file {
@@ -151,6 +156,7 @@ fn run_service_tasks(
     verbose: bool,
     skip_if_unchanged: bool,
     phase: &str,
+    base_env: &BTreeMap<String, String>,
 ) -> Result<()> {
     for name in task_names {
         let task = tasks
@@ -175,6 +181,7 @@ fn run_service_tasks(
                 history_path,
                 verbose,
                 &[],
+                base_env,
             )?;
             if !result.success() {
                 emit_task_failure_summary(name, &result);
@@ -197,6 +204,7 @@ fn run_service_tasks(
             history_path,
             verbose,
             &[],
+            base_env,
         )?;
         if !result.success() {
             emit_task_failure_summary(name, &result);
@@ -218,6 +226,7 @@ pub fn run_init_tasks(
     log_scope: TaskLogScope<'_>,
     history_path: &Path,
     verbose: bool,
+    base_env: &BTreeMap<String, String>,
 ) -> Result<()> {
     run_service_tasks(
         tasks,
@@ -228,6 +237,7 @@ pub fn run_init_tasks(
         verbose,
         true,
         "init",
+        base_env,
     )
 }
 
@@ -238,6 +248,7 @@ pub fn run_post_init_tasks(
     log_scope: TaskLogScope<'_>,
     history_path: &Path,
     verbose: bool,
+    base_env: &BTreeMap<String, String>,
 ) -> Result<()> {
     run_service_tasks(
         tasks,
@@ -248,6 +259,7 @@ pub fn run_post_init_tasks(
         verbose,
         false,
         "post_init",
+        base_env,
     )
 }
 

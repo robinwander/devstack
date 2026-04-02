@@ -20,6 +20,7 @@ pub async fn run_init_tasks_blocking(
     init_tasks: Vec<String>,
     project_dir: PathBuf,
     run_id: RunId,
+    base_env: BTreeMap<String, String>,
 ) -> Result<()> {
     let history_path = paths::task_history_path(&run_id)?;
     tokio::task::spawn_blocking(move || {
@@ -30,6 +31,7 @@ pub async fn run_init_tasks_blocking(
             crate::services::tasks::TaskLogScope::Run(&run_id),
             &history_path,
             false,
+            &base_env,
         )
     })
     .await
@@ -41,6 +43,7 @@ pub async fn run_post_init_tasks_blocking(
     post_init_tasks: Vec<String>,
     project_dir: PathBuf,
     run_id: Option<RunId>,
+    base_env: BTreeMap<String, String>,
 ) -> Result<()> {
     let history_path = match &run_id {
         Some(run_id) => paths::task_history_path(run_id)?,
@@ -58,6 +61,7 @@ pub async fn run_post_init_tasks_blocking(
             log_scope,
             &history_path,
             false,
+            &base_env,
         )
     })
     .await
@@ -150,6 +154,7 @@ pub async fn execute_detached_task(
                         &history_path,
                         false,
                         &args,
+                        &std::collections::BTreeMap::new(),
                     )
                 }
             })
@@ -173,6 +178,7 @@ pub async fn execute_detached_task(
                         &history_path,
                         false,
                         &args,
+                        &std::collections::BTreeMap::new(),
                     )
                 }
             })

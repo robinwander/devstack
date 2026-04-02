@@ -135,6 +135,7 @@ pub(crate) async fn run(
                     task_target.scope(),
                     &history_path,
                     verbose,
+                    &std::collections::BTreeMap::new(),
                 )?;
                 ran_any = true;
             }
@@ -208,6 +209,7 @@ pub(crate) async fn run(
         &history_path,
         verbose,
         &trailing_args,
+        &std::collections::BTreeMap::new(),
     )?;
 
     if json {

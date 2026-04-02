@@ -86,6 +86,8 @@ pub fn prepare_service(
     port_map: &BTreeMap<String, Option<u16>>,
     service_schemes: &BTreeMap<String, String>,
     base_env: &BTreeMap<String, String>,
+    global_env: &BTreeMap<String, String>,
+    global_env_file: Option<&Path>,
 ) -> Result<PreparedService> {
     let port = *port_map.get(svc_name).unwrap_or(&None);
     let scheme = svc.scheme();
@@ -100,6 +102,14 @@ pub fn prepare_service(
     let env_file_path = resolve_env_file_path(svc, &rendered_cwd, &template_context)?;
 
     let mut env = base_env.clone();
+
+    if let Some(global_env_file_path) = global_env_file {
+        let global_file_env = load_env_file(global_env_file_path)?;
+        merge_env_file(&mut env, global_file_env);
+    }
+    let rendered_global_env = render_env(global_env, &template_context)?;
+    env.extend(rendered_global_env);
+
     let file_env = load_env_file(&env_file_path)?;
     merge_env_file(&mut env, file_env);
     inject_dep_env(&mut env, svc, port_map, service_schemes);

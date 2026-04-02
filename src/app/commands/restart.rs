@@ -78,8 +78,9 @@ async fn restart_service_inner(
         .map_err(|_| AppError::not_found(format!("run {run_id} not found")))??;
     app.emit_events(events);
 
-    let post_init = load_post_init_context_for_run_service(run_id, &stack, &project_dir, service)
-        .map_err(AppError::from)?;
+    let post_init =
+        load_post_init_context_for_run_service(run_id, &stack, &project_dir, service, env.clone())
+            .map_err(AppError::from)?;
 
     app.systemd
         .restart_unit(&unit_name)
@@ -132,6 +133,7 @@ async fn restart_service_inner(
                     post_init.post_init_tasks,
                     post_init.project_dir,
                     post_init.run_id,
+                    post_init.base_env,
                 )
                 .await
             {

@@ -75,6 +75,10 @@ pub struct ConfigFile {
     pub globals: Option<UniqueMap<String, ServiceConfig>>,
     #[serde(default)]
     pub tasks: Option<UniqueMap<String, TaskConfig>>,
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+    #[serde(default)]
+    pub env_file: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -105,6 +109,8 @@ pub struct ServiceConfig {
     pub init: Option<Vec<String>>,
     #[serde(default)]
     pub post_init: Option<Vec<String>>,
+    #[serde(default)]
+    pub tasks: Option<UniqueMap<String, TaskConfig>>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
