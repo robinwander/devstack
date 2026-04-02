@@ -142,6 +142,11 @@ impl TestHarness {
             ),
             ("DEVSTACK_PROCESS_MANAGER", "local".to_string()),
             ("DEVSTACK_DISABLE_DASHBOARD", "1".to_string()),
+            (
+                "DEVSTACK_LOG_INDEX_MAINTENANCE_INTERVAL_SECS",
+                "2".to_string(),
+            ),
+            ("DEVSTACK_LOG_INDEX_MAX_AGE_SECS", "3600".to_string()),
             ("NO_COLOR", "1".to_string()),
         ]
     }

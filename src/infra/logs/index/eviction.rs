@@ -165,7 +165,7 @@ fn age_cutoff_nanos(max_age: Duration) -> i64 {
     cutoff.as_nanos() as i64
 }
 
-pub(crate) fn dir_size_bytes(path: &std::path::Path) -> u64 {
+fn dir_size_bytes(path: &std::path::Path) -> u64 {
     let mut total = 0u64;
     if let Ok(entries) = std::fs::read_dir(path) {
         for entry in entries.flatten() {

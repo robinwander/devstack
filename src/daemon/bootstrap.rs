@@ -288,19 +288,46 @@ async fn build_process_manager() -> Result<Arc<dyn SystemdManager>> {
 }
 
 const DASHBOARD_PORT: u16 = 47832;
-const LOG_INDEX_MAINTENANCE_INTERVAL: Duration = Duration::from_secs(10 * 60);
-const LOG_INDEX_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
-const LOG_INDEX_MAX_BYTES: u64 = 1024 * 1024 * 1024;
+const DEFAULT_MAINTENANCE_INTERVAL: Duration = Duration::from_secs(10 * 60);
+const DEFAULT_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+const DEFAULT_MAX_BYTES: u64 = 1024 * 1024 * 1024;
+
+fn log_index_maintenance_interval() -> Duration {
+    std::env::var("DEVSTACK_LOG_INDEX_MAINTENANCE_INTERVAL_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(Duration::from_secs)
+        .unwrap_or(DEFAULT_MAINTENANCE_INTERVAL)
+}
+
+fn log_index_max_age() -> Duration {
+    std::env::var("DEVSTACK_LOG_INDEX_MAX_AGE_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(Duration::from_secs)
+        .unwrap_or(DEFAULT_MAX_AGE)
+}
+
+fn log_index_max_bytes() -> u64 {
+    std::env::var("DEVSTACK_LOG_INDEX_MAX_BYTES")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_MAX_BYTES)
+}
 
 fn spawn_log_index_maintenance_task(log_index: Arc<LogIndex>) {
+    let interval_duration = log_index_maintenance_interval();
+    let max_age = log_index_max_age();
+    let max_bytes = log_index_max_bytes();
+
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(LOG_INDEX_MAINTENANCE_INTERVAL);
+        let mut interval = tokio::time::interval(interval_duration);
         interval.tick().await;
         loop {
             interval.tick().await;
             let index = log_index.clone();
             let _ = tokio::task::spawn_blocking(move || {
-                match index.evict(LOG_INDEX_MAX_AGE, LOG_INDEX_MAX_BYTES) {
+                match index.evict(max_age, max_bytes) {
                     Ok(stats) if stats.age_deleted > 0 || stats.size_deleted > 0 => {
                         eprintln!(
                             "[log-index] evicted {} docs by age, {} docs by size",
