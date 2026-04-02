@@ -1,4 +1,5 @@
 mod compaction;
+mod eviction;
 mod facets;
 mod ingest;
 mod query;

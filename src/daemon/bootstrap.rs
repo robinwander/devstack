@@ -67,7 +67,7 @@ pub async fn run_daemon() -> Result<()> {
     sync_port_reservations_from_disk(&app).await?;
     restore_active_globals(&app).await?;
     restore_auto_restart_watchers(&app).await;
-    spawn_log_index_compaction_task(app.log_index.clone());
+    spawn_log_index_maintenance_task(app.log_index.clone());
 
     if let Ok(runs_dir) = paths::runs_dir()
         && let Ok(mut ledger) = ProjectsLedger::load()
@@ -288,16 +288,33 @@ async fn build_process_manager() -> Result<Arc<dyn SystemdManager>> {
 }
 
 const DASHBOARD_PORT: u16 = 47832;
-const LOG_INDEX_COMPACTION_INTERVAL: Duration = Duration::from_secs(10 * 60);
+const LOG_INDEX_MAINTENANCE_INTERVAL: Duration = Duration::from_secs(10 * 60);
+const LOG_INDEX_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+const LOG_INDEX_MAX_BYTES: u64 = 1024 * 1024 * 1024;
 
-fn spawn_log_index_compaction_task(log_index: Arc<LogIndex>) {
+fn spawn_log_index_maintenance_task(log_index: Arc<LogIndex>) {
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(LOG_INDEX_COMPACTION_INTERVAL);
+        let mut interval = tokio::time::interval(LOG_INDEX_MAINTENANCE_INTERVAL);
         interval.tick().await;
         loop {
             interval.tick().await;
             let index = log_index.clone();
-            let _ = tokio::task::spawn_blocking(move || index.force_compact()).await;
+            let _ = tokio::task::spawn_blocking(move || {
+                match index.evict(LOG_INDEX_MAX_AGE, LOG_INDEX_MAX_BYTES) {
+                    Ok(stats) if stats.age_deleted > 0 || stats.size_deleted > 0 => {
+                        eprintln!(
+                            "[log-index] evicted {} docs by age, {} docs by size",
+                            stats.age_deleted, stats.size_deleted,
+                        );
+                    }
+                    Err(err) => {
+                        eprintln!("[log-index] eviction failed: {err}");
+                    }
+                    _ => {}
+                }
+                let _ = index.force_compact();
+            })
+            .await;
         }
     });
 }

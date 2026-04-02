@@ -54,7 +54,7 @@ impl LogIndex {
         Ok(())
     }
 
-    fn schedule_compaction(index: &std::sync::RwLock<Index>, writer: &mut IndexWriter) {
+    pub(super) fn schedule_compaction(index: &std::sync::RwLock<Index>, writer: &mut IndexWriter) {
         for batch in Self::compaction_batches(index) {
             std::mem::drop(writer.merge(&batch));
         }
