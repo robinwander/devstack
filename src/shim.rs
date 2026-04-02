@@ -180,28 +180,8 @@ async fn wait_for_process_group_exit(pgid: i32, deadline: Instant) -> bool {
     !process_group_exists(pgid)
 }
 
-fn encode_log_line(label: &str, line: &str, timestamp: &str) -> String {
-    let content = line.trim_end_matches(['\r', '\n']);
-    let mut payload = match serde_json::from_str::<Value>(content) {
-        Ok(Value::Object(map)) if content.trim_start().starts_with('{') => map,
-        _ => {
-            let mut map = serde_json::Map::new();
-            map.insert("msg".to_string(), Value::String(content.to_string()));
-            map
-        }
-    };
-
-    payload.insert("time".to_string(), Value::String(timestamp.to_string()));
-    payload.insert("stream".to_string(), Value::String(label.to_string()));
-
-    serde_json::to_string(&Value::Object(payload)).unwrap_or_else(|_| {
-        format!(
-            "{{\"time\":\"{}\",\"stream\":\"{}\",\"msg\":\"{}\"}}",
-            timestamp,
-            label,
-            content.replace('"', "\\\"")
-        )
-    })
+fn encode_log_line(stream: &str, content: &str, timestamp: &str) -> String {
+    crate::logfmt::encode_log_line(stream, content, timestamp)
 }
 
 async fn pump_lines<R>(reader: R, label: &str, log_file: Arc<tokio::sync::Mutex<tokio::fs::File>>)

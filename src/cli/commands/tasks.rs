@@ -211,6 +211,7 @@ pub(crate) async fn run(
         verbose,
         &trailing_args,
         &std::collections::BTreeMap::new(),
+        None,
     )?;
 
     if json {

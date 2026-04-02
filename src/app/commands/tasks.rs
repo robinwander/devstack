@@ -159,6 +159,7 @@ pub async fn execute_detached_task(
                         false,
                         &args,
                         &std::collections::BTreeMap::new(),
+                        None,
                     )
                 }
             })
@@ -183,6 +184,7 @@ pub async fn execute_detached_task(
                         false,
                         &args,
                         &std::collections::BTreeMap::new(),
+                        None,
                     )
                 }
             })

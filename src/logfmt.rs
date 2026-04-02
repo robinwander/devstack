@@ -1,6 +1,30 @@
 use regex::Regex;
 use serde_json::Value;
 use std::sync::LazyLock;
+
+pub(crate) fn encode_log_line(stream: &str, content: &str, timestamp: &str) -> String {
+    let content = content.trim_end_matches(['\r', '\n']);
+    let mut payload = match serde_json::from_str::<Value>(content) {
+        Ok(Value::Object(map)) if content.trim_start().starts_with('{') => map,
+        _ => {
+            let mut map = serde_json::Map::new();
+            map.insert("msg".to_string(), Value::String(content.to_string()));
+            map
+        }
+    };
+
+    payload.insert("time".to_string(), Value::String(timestamp.to_string()));
+    payload.insert("stream".to_string(), Value::String(stream.to_string()));
+
+    serde_json::to_string(&Value::Object(payload)).unwrap_or_else(|_| {
+        format!(
+            "{{\"time\":\"{}\",\"stream\":\"{}\",\"msg\":\"{}\"}}",
+            timestamp,
+            stream,
+            content.replace('"', "\\\"")
+        )
+    })
+}
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 

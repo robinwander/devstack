@@ -8,7 +8,6 @@ use std::thread;
 use std::time::Instant;
 
 use anyhow::{Context, Result, anyhow};
-use serde_json::Value;
 
 use super::history::{append_task_execution, format_task_duration, task_log_path};
 use super::model::{TaskLogScope, TaskResult};
@@ -19,37 +18,19 @@ use crate::config::TaskConfig;
 use crate::logfmt::strip_ansi_if_needed;
 use crate::util::now_rfc3339;
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct ServiceLogSink {
     pub path: PathBuf,
     pub stream_prefix: String,
 }
 
-pub fn run_task(
-    task_name: &str,
-    task: &TaskConfig,
-    project_dir: &Path,
-    log_scope: TaskLogScope<'_>,
-    history_path: &Path,
-    verbose: bool,
-    trailing_args: &[String],
-    base_env: &BTreeMap<String, String>,
-) -> Result<TaskResult> {
-    run_task_with_service_log(
-        task_name,
-        task,
-        project_dir,
-        log_scope,
-        history_path,
-        verbose,
-        trailing_args,
-        base_env,
-        None,
-    )
+struct ServiceLogWriter {
+    file: Arc<Mutex<File>>,
+    stream: String,
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run_task_with_service_log(
+pub fn run_task(
     task_name: &str,
     task: &TaskConfig,
     project_dir: &Path,
@@ -148,7 +129,7 @@ fn run_task_with_service_log(
         .with_context(|| format!("create task log {}", log_path.display()))?;
     let log_file = Arc::new(Mutex::new(log_file));
 
-    let service_log_file = if let Some(sink) = service_log {
+    let service_writer = if let Some(sink) = service_log {
         if let Some(parent) = sink.path.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("create service log dir {}", parent.display()))?;
@@ -158,13 +139,13 @@ fn run_task_with_service_log(
             .append(true)
             .open(&sink.path)
             .with_context(|| format!("open service log {}", sink.path.display()))?;
-        Some(Arc::new(Mutex::new(file)))
+        Some(ServiceLogWriter {
+            file: Arc::new(Mutex::new(file)),
+            stream: format!("{}:{task_name}", sink.stream_prefix),
+        })
     } else {
         None
     };
-    let service_stream = service_log.map(|sink| {
-        format!("{}:{}", sink.stream_prefix, task_name)
-    });
 
     let stdout = child.stdout.take().context("capture task stdout")?;
     let stderr = child.stderr.take().context("capture task stderr")?;
@@ -173,19 +154,15 @@ fn run_task_with_service_log(
 
     let stdout_handle = spawn_log_pump(
         stdout,
-        "stdout",
         log_file.clone(),
         None,
-        service_log_file.clone(),
-        service_stream.clone(),
+        service_writer.as_ref().map(|w| (w.file.clone(), w.stream.clone())),
     );
     let stderr_handle = spawn_log_pump(
         stderr,
-        "stderr",
         log_file,
         Some(stderr_last_line.clone()),
-        service_log_file,
-        service_stream,
+        service_writer.as_ref().map(|w| (w.file.clone(), w.stream.clone())),
     );
 
     let status = child.wait().context("wait for task")?;
@@ -238,7 +215,7 @@ fn run_service_tasks(
                 continue;
             }
 
-            let result = run_task_with_service_log(
+            let result = run_task(
                 name,
                 task,
                 project_dir,
@@ -262,7 +239,7 @@ fn run_service_tasks(
             continue;
         }
 
-        let result = run_task_with_service_log(
+        let result = run_task(
             name,
             task,
             project_dir,
@@ -352,12 +329,13 @@ fn emit_task_failure_summary(name: &str, result: &TaskResult) {
 
 fn spawn_log_pump<R: Read + Send + 'static>(
     reader: R,
-    label: &'static str,
-    log_file: Arc<Mutex<File>>,
+    task_log: Arc<Mutex<File>>,
     last_stderr_line: Option<Arc<Mutex<Option<String>>>>,
-    service_log_file: Option<Arc<Mutex<File>>>,
-    service_stream: Option<String>,
+    service_log: Option<(Arc<Mutex<File>>, String)>,
 ) -> thread::JoinHandle<()> {
+    let is_stderr = last_stderr_line.is_some();
+    let label = if is_stderr { "stderr" } else { "stdout" };
+
     thread::spawn(move || {
         let mut reader = BufReader::new(reader);
         let mut line = String::new();
@@ -373,25 +351,21 @@ fn spawn_log_pump<R: Read + Send + 'static>(
 
             let clean = strip_ansi_if_needed(line.trim_end_matches(['\n', '\r']));
             let timestamp = now_rfc3339();
-            let entry = format!("[{timestamp}] [{label}] {clean}\n");
 
-            if let Ok(mut file) = log_file.lock() {
-                let _ = file.write_all(entry.as_bytes());
+            if let Ok(mut file) = task_log.lock() {
+                let _ = writeln!(file, "[{timestamp}] [{label}] {clean}");
                 let _ = file.flush();
             }
 
-            if let Some(ref svc_file) = service_log_file
-                && let Some(ref stream) = service_stream
-            {
-                let json_line = encode_service_log_line(stream, &clean, &timestamp);
+            if let Some((ref svc_file, ref stream)) = service_log {
+                let json_line = crate::logfmt::encode_log_line(stream, &clean, &timestamp);
                 if let Ok(mut file) = svc_file.lock() {
-                    let _ = file.write_all(json_line.as_bytes());
-                    let _ = file.write_all(b"\n");
+                    let _ = writeln!(file, "{json_line}");
                     let _ = file.flush();
                 }
             }
 
-            if label == "stderr"
+            if is_stderr
                 && let Some(last) = &last_stderr_line
                 && !clean.trim().is_empty()
                 && let Ok(mut guard) = last.lock()
@@ -399,28 +373,5 @@ fn spawn_log_pump<R: Read + Send + 'static>(
                 *guard = Some(clean);
             }
         }
-    })
-}
-
-fn encode_service_log_line(stream: &str, content: &str, timestamp: &str) -> String {
-    let mut payload = match serde_json::from_str::<Value>(content) {
-        Ok(Value::Object(map)) if content.trim_start().starts_with('{') => map,
-        _ => {
-            let mut map = serde_json::Map::new();
-            map.insert("msg".to_string(), Value::String(content.to_string()));
-            map
-        }
-    };
-
-    payload.insert("time".to_string(), Value::String(timestamp.to_string()));
-    payload.insert("stream".to_string(), Value::String(stream.to_string()));
-
-    serde_json::to_string(&Value::Object(payload)).unwrap_or_else(|_| {
-        format!(
-            "{{\"time\":\"{}\",\"stream\":\"{}\",\"msg\":\"{}\"}}",
-            timestamp,
-            stream,
-            content.replace('"', "\\\"")
-        )
     })
 }
