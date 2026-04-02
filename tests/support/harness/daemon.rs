@@ -13,6 +13,10 @@ pub struct DaemonController {
 
 impl DaemonController {
     pub async fn start(&self) -> Result<DaemonHandle> {
+        self.start_with_env(&[]).await
+    }
+
+    pub async fn start_with_env(&self, extra_env: &[(&str, &str)]) -> Result<DaemonHandle> {
         let log_path = self.harness.inner.workspace.join(format!(
             "daemon-{}.log",
             NEXT_ID.fetch_add(1, Ordering::SeqCst)
@@ -23,6 +27,9 @@ impl DaemonController {
         let mut cmd = tokio::process::Command::new(&self.harness.inner.bin);
         cmd.current_dir(&self.harness.inner.workspace);
         self.harness.apply_child_env_tokio(&mut cmd);
+        for (key, value) in extra_env {
+            cmd.env(key, value);
+        }
         cmd.arg("daemon");
         cmd.stdin(Stdio::null());
         cmd.stdout(Stdio::from(stdout));

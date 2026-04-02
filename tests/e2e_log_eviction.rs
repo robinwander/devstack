@@ -33,11 +33,16 @@ fn ts_rfc3339(dt: time::OffsetDateTime) -> String {
         .unwrap()
 }
 
+const EVICTION_ENV: &[(&str, &str)] = &[
+    ("DEVSTACK_LOG_INDEX_MAINTENANCE_INTERVAL_SECS", "2"),
+    ("DEVSTACK_LOG_INDEX_MAX_AGE_SECS", "3600"),
+];
+
 #[tokio::test]
 async fn daemon_evicts_old_source_logs_by_age() -> Result<()> {
     let t = TestHarness::new().await?;
     let project = t.fixture(fixtures::simple_http()).create().await?;
-    let daemon = t.daemon().start().await?;
+    let daemon = t.daemon().start_with_env(EVICTION_ENV).await?;
 
     let now = time::OffsetDateTime::now_utc();
     let old_ts = ts_rfc3339(now - time::Duration::days(30));
@@ -99,7 +104,7 @@ async fn daemon_evicts_old_source_logs_by_age() -> Result<()> {
 async fn daemon_preserves_recent_logs_across_eviction_cycles() -> Result<()> {
     let t = TestHarness::new().await?;
     let project = t.fixture(fixtures::simple_http()).create().await?;
-    let daemon = t.daemon().start().await?;
+    let daemon = t.daemon().start_with_env(EVICTION_ENV).await?;
 
     let now = time::OffsetDateTime::now_utc();
     let source_path = project.path().join("state/evict-preserve.jsonl");
@@ -153,7 +158,7 @@ async fn daemon_preserves_recent_logs_across_eviction_cycles() -> Result<()> {
 async fn eviction_does_not_break_subsequent_source_ingestion() -> Result<()> {
     let t = TestHarness::new().await?;
     let project = t.fixture(fixtures::simple_http()).create().await?;
-    let daemon = t.daemon().start().await?;
+    let daemon = t.daemon().start_with_env(EVICTION_ENV).await?;
 
     let now = time::OffsetDateTime::now_utc();
     let old_path = project.path().join("state/evict-old.jsonl");

@@ -25,20 +25,22 @@ impl LogIndex {
 
     fn evict_older_than(&self, max_age: Duration) -> Result<usize> {
         let cutoff_nanos = age_cutoff_nanos(max_age);
-        let _gate = self.ingest_gate.lock().unwrap();
 
         let query = Box::new(RangeQuery::new(
             Bound::Unbounded,
             Bound::Excluded(Term::from_field_i64(self.fields.ts_nanos, cutoff_nanos)),
         ));
 
-        let searcher = self.reader.read().unwrap().searcher();
-        let count = searcher.search(query.as_ref(), &Count)?;
+        let count = {
+            let searcher = self.reader.read().unwrap().searcher();
+            searcher.search(query.as_ref(), &Count)?
+        };
         if count == 0 {
             return Ok(0);
         }
 
         {
+            let _gate = self.ingest_gate.lock().unwrap();
             let mut writer_state = self.writer_state.lock().unwrap();
             let writer = writer_state
                 .writer
@@ -60,9 +62,10 @@ impl LogIndex {
             return Ok(0);
         }
 
-        let _gate = self.ingest_gate.lock().unwrap();
-        let searcher = self.reader.read().unwrap().searcher();
-        let total_docs = searcher.search(&AllQuery, &Count)?;
+        let total_docs = {
+            let searcher = self.reader.read().unwrap().searcher();
+            searcher.search(&AllQuery, &Count)?
+        };
         if total_docs == 0 {
             return Ok(0);
         }
@@ -74,30 +77,26 @@ impl LogIndex {
             return Ok(0);
         }
 
-        let top_docs = searcher.search(
-            &AllQuery,
-            &TopDocs::with_limit(docs_to_remove)
-                .order_by_fast_field::<i64>("ts_nanos", tantivy::Order::Asc),
-        )?;
-
-        if top_docs.is_empty() {
-            return Ok(0);
-        }
-
-        let newest_ts = top_docs
-            .iter()
-            .map(|(ts, _)| *ts)
-            .max()
-            .unwrap_or(i64::MIN);
+        let cutoff_ts = {
+            let searcher = self.reader.read().unwrap().searcher();
+            let top_docs = searcher.search(
+                &AllQuery,
+                &TopDocs::with_limit(docs_to_remove)
+                    .order_by_fast_field::<i64>("ts_nanos", tantivy::Order::Asc),
+            )?;
+            match top_docs.iter().map(|(ts, _)| *ts).max() {
+                Some(ts) => ts,
+                None => return Ok(0),
+            }
+        };
 
         let delete_query = Box::new(RangeQuery::new(
             Bound::Unbounded,
-            Bound::Included(Term::from_field_i64(self.fields.ts_nanos, newest_ts)),
+            Bound::Included(Term::from_field_i64(self.fields.ts_nanos, cutoff_ts)),
         ));
 
-        let count = top_docs.len();
-
         {
+            let _gate = self.ingest_gate.lock().unwrap();
             let mut writer_state = self.writer_state.lock().unwrap();
             let writer = writer_state
                 .writer
@@ -111,7 +110,7 @@ impl LogIndex {
         self.reader.read().unwrap().reload().ok();
         self.prune_dead_ingest_cursors()?;
 
-        Ok(count)
+        Ok(docs_to_remove)
     }
 
     fn prune_dead_ingest_cursors(&self) -> Result<()> {
