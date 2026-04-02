@@ -29,6 +29,7 @@ mod config_tests {
                 auto_restart: false,
                 init: None,
                 post_init: None,
+                tasks: None,
             },
         );
         services.insert(
@@ -48,6 +49,7 @@ mod config_tests {
                 auto_restart: false,
                 init: None,
                 post_init: None,
+                tasks: None,
             },
         );
         let order = plan::topo_sort(&services).unwrap();
@@ -71,6 +73,7 @@ mod config_tests {
             auto_restart: false,
             init: None,
             post_init: None,
+                tasks: None,
         };
         let kind = svc.readiness_kind(true).unwrap();
         assert!(matches!(kind, ReadinessKind::Tcp));
@@ -93,6 +96,7 @@ mod config_tests {
             auto_restart: false,
             init: None,
             post_init: None,
+                tasks: None,
         };
         let kind = svc.readiness_kind(false).unwrap();
         assert!(matches!(kind, ReadinessKind::None));
@@ -126,6 +130,7 @@ mod config_tests {
             auto_restart: false,
             init: None,
             post_init: None,
+                tasks: None,
         };
         let kind = svc.readiness_kind(true).unwrap();
         match kind {
@@ -167,6 +172,7 @@ mod config_tests {
             auto_restart: false,
             init: None,
             post_init: None,
+                tasks: None,
         };
         let kind = svc.readiness_kind(false).unwrap();
         match kind {
@@ -202,6 +208,7 @@ mod config_tests {
             auto_restart: false,
             init: None,
             post_init: None,
+                tasks: None,
         };
         let kind = svc.readiness_kind(false).unwrap();
         assert!(matches!(kind, ReadinessKind::Exit));
@@ -492,7 +499,7 @@ post_init = ["setup"]
 "#;
         let config: ConfigFile = toml::from_str(toml_str).unwrap();
         let err = config.validate().unwrap_err();
-        assert!(err.to_string().contains("post_init tasks but no [tasks]"));
+        assert!(err.to_string().contains("unknown post_init task"));
     }
 
     #[test]

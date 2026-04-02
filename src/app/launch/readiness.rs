@@ -28,6 +28,7 @@ pub struct PostInitContext {
     pub project_dir: PathBuf,
     pub run_id: Option<RunId>,
     pub base_env: BTreeMap<String, String>,
+    pub service_log: Option<crate::services::tasks::ServiceLogSink>,
 }
 
 pub fn build_post_init_context(
@@ -36,6 +37,7 @@ pub fn build_post_init_context(
     project_dir: &Path,
     run_id: Option<RunId>,
     base_env: BTreeMap<String, String>,
+    service_log: Option<crate::services::tasks::ServiceLogSink>,
 ) -> Option<PostInitContext> {
     let post_init = service.post_init.as_ref()?;
     if post_init.is_empty() {
@@ -47,6 +49,7 @@ pub fn build_post_init_context(
         project_dir: project_dir.to_path_buf(),
         run_id,
         base_env,
+        service_log,
     })
 }
 
@@ -56,6 +59,7 @@ pub fn load_post_init_context_for_run_service(
     project_dir: &Path,
     service: &str,
     service_env: BTreeMap<String, String>,
+    service_log: Option<crate::services::tasks::ServiceLogSink>,
 ) -> Result<Option<PostInitContext>> {
     let snapshot_path = paths::run_snapshot_path(&RunId::new(run_id))?;
     if !snapshot_path.exists() {
@@ -85,6 +89,7 @@ pub fn load_post_init_context_for_run_service(
             project_dir,
             Some(RunId::new(run_id)),
             service_env,
+            service_log,
         )
     }))
 }

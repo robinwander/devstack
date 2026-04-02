@@ -110,7 +110,7 @@ pub async fn ensure_globals(
                     app,
                     name,
                     &prepared,
-                    build_post_init_context(service_config, tasks_map, project_dir, None, prepared.env.clone()),
+                    build_post_init_context(service_config, tasks_map, project_dir, None, prepared.env.clone(), None),
                 )
                 .await
                 {
@@ -205,7 +205,7 @@ pub async fn restart_global_no_wait(app: &AppContext, key: &str) -> Result<()> {
             &app,
             &service_name,
             &prepared,
-            build_post_init_context(&service_config, &tasks_map, &project_dir, None, prepared.env.clone()),
+            build_post_init_context(&service_config, &tasks_map, &project_dir, None, prepared.env.clone(), None),
         )
         .await;
 

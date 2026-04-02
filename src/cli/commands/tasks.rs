@@ -136,6 +136,7 @@ pub(crate) async fn run(
                     &history_path,
                     verbose,
                     &std::collections::BTreeMap::new(),
+                    None,
                 )?;
                 ran_any = true;
             }

@@ -742,6 +742,11 @@ async fn launch_service(
 
     let resolved_tasks = resolve_service_tasks(service, &resources.tasks_map);
 
+    let service_log_sink = crate::services::tasks::ServiceLogSink {
+        path: prepared.log_path.clone(),
+        stream_prefix: String::new(),
+    };
+
     if let Some(init_tasks) = &service.init
         && !init_tasks.is_empty()
         && let Err(err) = run_init_tasks_blocking(
@@ -750,6 +755,10 @@ async fn launch_service(
             project_dir.to_path_buf(),
             run_id.clone(),
             prepared.env.clone(),
+            Some(crate::services::tasks::ServiceLogSink {
+                stream_prefix: "init".to_string(),
+                ..service_log_sink.clone()
+            }),
         )
         .await
     {
@@ -781,6 +790,10 @@ async fn launch_service(
                 project_dir,
                 Some(run_id.clone()),
                 prepared.env.clone(),
+                Some(crate::services::tasks::ServiceLogSink {
+                    stream_prefix: "post_init".to_string(),
+                    ..service_log_sink.clone()
+                }),
             ),
         )
         .await

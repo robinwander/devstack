@@ -189,6 +189,8 @@ pub struct ServiceResponse {
     pub port: Option<u16>,
     pub url: Option<String>,
     pub state: ServiceState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_failure: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]

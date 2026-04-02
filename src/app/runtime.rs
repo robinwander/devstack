@@ -241,6 +241,7 @@ pub fn run_response_from_record(run: &RunRecord) -> RunResponse {
                     port: service.launch.port,
                     url: service.launch.url.clone(),
                     state: service.runtime.state.clone(),
+                    last_failure: service.runtime.last_failure.clone(),
                 },
             )
         })

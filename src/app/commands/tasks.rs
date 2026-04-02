@@ -21,6 +21,7 @@ pub async fn run_init_tasks_blocking(
     project_dir: PathBuf,
     run_id: RunId,
     base_env: BTreeMap<String, String>,
+    service_log: Option<crate::services::tasks::ServiceLogSink>,
 ) -> Result<()> {
     let history_path = paths::task_history_path(&run_id)?;
     tokio::task::spawn_blocking(move || {
@@ -32,6 +33,7 @@ pub async fn run_init_tasks_blocking(
             &history_path,
             false,
             &base_env,
+            service_log.as_ref(),
         )
     })
     .await
@@ -44,6 +46,7 @@ pub async fn run_post_init_tasks_blocking(
     project_dir: PathBuf,
     run_id: Option<RunId>,
     base_env: BTreeMap<String, String>,
+    service_log: Option<crate::services::tasks::ServiceLogSink>,
 ) -> Result<()> {
     let history_path = match &run_id {
         Some(run_id) => paths::task_history_path(run_id)?,
@@ -62,6 +65,7 @@ pub async fn run_post_init_tasks_blocking(
             &history_path,
             false,
             &base_env,
+            service_log.as_ref(),
         )
     })
     .await

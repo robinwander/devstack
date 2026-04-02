@@ -132,7 +132,7 @@ async fn lint_fails_for_invalid_config() -> Result<()> {
     })?;
 
     let cmd = t.cli().run_in(&project, &["lint"]).await?.failure()?;
-    cmd.assert_stderr_contains("references init tasks but no [tasks] are defined")?;
+    cmd.assert_stderr_contains("unknown init task 'missing-task'")?;
     Ok(())
 }
 

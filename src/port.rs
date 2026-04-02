@@ -247,6 +247,7 @@ mod tests {
             auto_restart: false,
             init: None,
             post_init: None,
+            tasks: None,
         }
     }
 

@@ -112,6 +112,49 @@ pub(crate) fn print_status_human(status: &crate::api::RunStatusResponse) {
     }
 }
 
+pub(crate) fn print_up_summary(run: &crate::api::RunResponse) {
+    let is_tty = std::io::stdout().is_terminal();
+
+    let max_name_len = run
+        .services
+        .keys()
+        .map(|name| name.len())
+        .max()
+        .unwrap_or(0);
+
+    for (name, svc) in &run.services {
+        let (icon, state_str) = match svc.state {
+            ServiceState::Ready => ("✓", "ready"),
+            ServiceState::Starting => ("●", "starting"),
+            ServiceState::Failed => ("✗", "failed"),
+            ServiceState::Degraded => ("!", "degraded"),
+            ServiceState::Stopped => ("○", "stopped"),
+        };
+
+        let colored = if is_tty {
+            match svc.state {
+                ServiceState::Ready => format!("\x1b[32m{icon} {state_str}\x1b[0m"),
+                ServiceState::Failed => format!("\x1b[31m{icon} {state_str}\x1b[0m"),
+                ServiceState::Degraded => format!("\x1b[33m{icon} {state_str}\x1b[0m"),
+                _ => format!("{icon} {state_str}"),
+            }
+        } else {
+            format!("{icon} {state_str}")
+        };
+
+        let url = svc.url.as_deref().unwrap_or("");
+        print!("  {:width$}  {colored}", name, width = max_name_len);
+        if !url.is_empty() {
+            print!("  {url}");
+        }
+        println!();
+
+        if let Some(failure) = &svc.last_failure {
+            println!("    {failure}");
+        }
+    }
+}
+
 pub(crate) fn emit_log_facets(label: &str, response: &LogViewResponse, json: bool) -> Result<()> {
     if json {
         println!("{}", serde_json::to_string(response)?);

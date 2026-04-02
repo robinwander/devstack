@@ -16,7 +16,7 @@ use crate::cli::context::{
     resolve_project_dir_from_cwd, resolve_run_id, resolve_stack_name, resolve_up_context,
     status_from_manifest,
 };
-use crate::cli::output::{print_json, print_status_human, print_watch_status_human};
+use crate::cli::output::{print_json, print_status_human, print_up_summary, print_watch_status_human};
 use crate::config::ConfigFile;
 use crate::paths;
 use crate::persistence::PersistedRun;
@@ -80,7 +80,12 @@ pub(crate) async fn up(
     let response = context
         .daemon_request("POST", "/v1/runs/up", Some(req), None)
         .await?;
-    print_json(response, context.pretty);
+    if context.interactive {
+        let run: crate::api::RunResponse = serde_json::from_value(response)?;
+        print_up_summary(&run);
+    } else {
+        print_json(response, context.pretty);
+    }
     Ok(())
 }
 
