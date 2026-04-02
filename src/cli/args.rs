@@ -9,9 +9,6 @@ use clap::{Parser, Subcommand};
     about = "Local development orchestration for multi-service stacks"
 )]
 pub struct Cli {
-    /// Pretty-print JSON output.
-    #[arg(long, global = true, help = "Pretty-print JSON output")]
-    pub pretty: bool,
     #[command(subcommand)]
     pub command: Commands,
 }
@@ -73,9 +70,6 @@ pub enum Commands {
         /// Target run id (alias: --run-id).
         #[arg(long = "run", alias = "run-id", help = "Target run id")]
         run_id: Option<String>,
-        /// Output machine-readable JSON.
-        #[arg(long, help = "Output machine-readable JSON")]
-        json: bool,
     },
     /// Manage auto-restart file watching.
     Watch {
@@ -156,9 +150,6 @@ pub enum Commands {
         /// Stop following after the specified duration.
         #[arg(long, value_name = "DURATION", requires = "follow", value_parser = humantime::parse_duration, help = "Stop following after the specified duration")]
         follow_for: Option<Duration>,
-        /// Output machine-readable JSON.
-        #[arg(long, help = "Output machine-readable JSON")]
-        json: bool,
     },
     /// Open the dashboard at a filtered log view.
     Show {
@@ -309,9 +300,6 @@ pub enum Commands {
         /// Stream task stdout/stderr directly to the terminal.
         #[arg(long, help = "Stream task stdout/stderr directly to the terminal")]
         verbose: bool,
-        /// Output machine-readable JSON.
-        #[arg(long, help = "Output machine-readable JSON")]
-        json: bool,
         /// Extra arguments passed to the task command (after --).
         #[arg(last = true, allow_hyphen_values = true)]
         args: Vec<String>,

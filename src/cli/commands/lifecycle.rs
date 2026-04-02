@@ -16,7 +16,7 @@ use crate::cli::context::{
     resolve_project_dir_from_cwd, resolve_run_id, resolve_stack_name, resolve_up_context,
     status_from_manifest,
 };
-use crate::cli::output::{print_json, print_status_human, print_up_summary, print_watch_status_human};
+use crate::cli::output::{print_toon, print_status_human, print_up_summary, print_watch_status_human};
 use crate::config::ConfigFile;
 use crate::paths;
 use crate::persistence::PersistedRun;
@@ -62,7 +62,7 @@ pub(crate) async fn up(
                 .await?;
             runs.push(response);
         }
-        print_json(serde_json::Value::Array(runs), context.pretty);
+        print_toon(&serde_json::Value::Array(runs));
         return Ok(());
     }
 
@@ -84,16 +84,15 @@ pub(crate) async fn up(
         let run: crate::api::RunResponse = serde_json::from_value(response)?;
         print_up_summary(&run);
     } else {
-        print_json(response, context.pretty);
+        print_toon(&response);
     }
     Ok(())
 }
 
-pub(crate) async fn status(context: &CliContext, run_id: Option<String>, json: bool) -> Result<()> {
+pub(crate) async fn status(context: &CliContext, run_id: Option<String>) -> Result<()> {
     let project_dir = resolve_project_dir_from_cwd()?;
     let run_id = resolve_run_id(context, &project_dir, run_id).await?;
     let path = format!("/v1/runs/{run_id}/status");
-    let output_json = json || !context.interactive;
 
     match context
         .daemon_request::<()>("GET", &path, None, Some(DAEMON_TIMEOUT))
@@ -101,10 +100,10 @@ pub(crate) async fn status(context: &CliContext, run_id: Option<String>, json: b
     {
         Ok(response) => {
             let status: crate::api::RunStatusResponse = serde_json::from_value(response)?;
-            if output_json {
-                print_json(serde_json::to_value(status)?, context.pretty);
-            } else {
+            if context.interactive {
                 print_status_human(&status);
+            } else {
+                print_toon(&status);
             }
         }
         Err(err) => {
@@ -113,10 +112,10 @@ pub(crate) async fn status(context: &CliContext, run_id: Option<String>, json: b
                     "warning: daemon unavailable ({}); using cached manifest",
                     err
                 );
-                if output_json {
-                    print_json(serde_json::to_value(fallback)?, context.pretty);
-                } else {
+                if context.interactive {
                     print_status_human(&fallback);
+                } else {
+                    print_toon(&fallback);
                 }
             } else {
                 return Err(err);
@@ -135,7 +134,7 @@ pub(crate) async fn watch(context: &CliContext, action: Option<WatchAction>) -> 
             if context.interactive {
                 print_watch_status_human(&status);
             } else {
-                print_json(serde_json::to_value(status)?, context.pretty);
+                print_toon(&status);
             }
         }
         Some(WatchAction::Pause { service }) => {
@@ -143,7 +142,7 @@ pub(crate) async fn watch(context: &CliContext, action: Option<WatchAction>) -> 
             if context.interactive {
                 print_watch_status_human(&status);
             } else {
-                print_json(serde_json::to_value(status)?, context.pretty);
+                print_toon(&status);
             }
         }
         Some(WatchAction::Resume { service }) => {
@@ -151,7 +150,7 @@ pub(crate) async fn watch(context: &CliContext, action: Option<WatchAction>) -> 
             if context.interactive {
                 print_watch_status_human(&status);
             } else {
-                print_json(serde_json::to_value(status)?, context.pretty);
+                print_toon(&status);
             }
         }
     }
@@ -176,7 +175,7 @@ pub(crate) async fn diagnose(
     let manifest = PersistedRun::load_from_path(&manifest_path)?;
 
     let diag = crate::diagnose::diagnose_run(&run_id, status, manifest, service.as_deref()).await?;
-    print_json(serde_json::to_value(diag)?, context.pretty);
+    print_toon(&diag);
     Ok(())
 }
 
@@ -190,7 +189,7 @@ pub(crate) async fn list_runs(context: &CliContext, all: bool) -> Result<()> {
     if fallback {
         eprintln!("warning: daemon unavailable; showing cached manifests");
     }
-    print_json(serde_json::to_value(runs)?, context.pretty);
+    print_toon(&runs);
     Ok(())
 }
 
@@ -265,7 +264,7 @@ pub(crate) async fn down(context: &CliContext, run_id: Option<String>, purge: bo
             Some(DAEMON_LONG_TIMEOUT),
         )
         .await?;
-    print_json(response, context.pretty);
+    print_toon(&response);
     Ok(())
 }
 
@@ -281,7 +280,7 @@ pub(crate) async fn kill(context: &CliContext, run_id: Option<String>) -> Result
             Some(DAEMON_LONG_TIMEOUT),
         )
         .await?;
-    print_json(response, context.pretty);
+    print_toon(&response);
     Ok(())
 }
 
@@ -300,7 +299,7 @@ pub(crate) async fn gc(context: &CliContext, older_than: Option<String>, all: bo
     let response = context
         .daemon_request("POST", "/v1/gc", Some(req), Some(DAEMON_LONG_TIMEOUT))
         .await?;
-    print_json(response, context.pretty);
+    print_toon(&response);
     Ok(())
 }
 

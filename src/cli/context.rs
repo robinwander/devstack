@@ -22,15 +22,13 @@ pub(crate) const DEFAULT_NONINTERACTIVE_FOLLOW_FOR: Duration = Duration::from_se
 
 pub(crate) struct CliContext {
     pub(crate) interactive: bool,
-    pub(crate) pretty: bool,
     daemon: UnixDaemonClient,
 }
 
 impl CliContext {
-    pub(crate) fn new(interactive: bool, pretty: bool) -> Self {
+    pub(crate) fn new(interactive: bool) -> Self {
         Self {
             interactive,
-            pretty,
             daemon: UnixDaemonClient::for_cli(),
         }
     }
@@ -79,10 +77,6 @@ pub(crate) struct ProjectContext {
 
 pub(crate) fn is_interactive() -> bool {
     std::io::stdout().is_terminal()
-}
-
-pub(crate) fn resolve_pretty(explicit: bool, interactive: bool) -> bool {
-    explicit || interactive
 }
 
 pub(crate) fn resolve_follow_for(
@@ -538,13 +532,6 @@ mod tests {
         sort_runs_for_project(&mut runs, Path::new("/tmp/project-a"));
         assert_eq!(runs[0].run_id, "run-c");
         assert_eq!(runs[1].run_id, "run-a");
-    }
-
-    #[test]
-    fn resolve_pretty_prefers_explicit_or_tty() {
-        assert!(resolve_pretty(true, false));
-        assert!(resolve_pretty(false, true));
-        assert!(!resolve_pretty(false, false));
     }
 
     #[test]

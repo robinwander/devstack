@@ -39,6 +39,7 @@ pty-process = { version = "0.5.3", features = ["async"] }
 toml = "0.8.23"
 utoipa = { version = "4.2.0", features = ["axum_extras"] }
 urlencoding = "2.1.3"
+toon-format = "0.4.5"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 sd-notify = "0.4.5"

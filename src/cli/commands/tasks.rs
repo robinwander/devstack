@@ -6,7 +6,7 @@ use crate::api::{StartTaskRequest, StartTaskResponse, TaskStatusResponse};
 use crate::cli::context::{
     CliContext, DAEMON_TIMEOUT, resolve_active_run_id, resolve_project_context, resolve_stack_name,
 };
-use crate::cli::output::print_json;
+use crate::cli::output::print_toon;
 use crate::config::ConfigFile;
 use crate::paths;
 
@@ -53,7 +53,6 @@ pub(crate) async fn run(
     detach: bool,
     status: Option<String>,
     verbose: bool,
-    json: bool,
     trailing_args: Vec<String>,
 ) -> Result<()> {
     if let Some(execution_id) = status {
@@ -61,9 +60,7 @@ pub(crate) async fn run(
         let status: TaskStatusResponse = context
             .daemon_request_json("GET", &path, None::<()>, Some(DAEMON_TIMEOUT))
             .await?;
-        if json {
-            print_json(serde_json::to_value(status)?, context.pretty);
-        } else {
+        if context.interactive {
             let duration = crate::services::tasks::format_task_duration(
                 std::time::Duration::from_millis(status.duration_ms),
             );
@@ -91,6 +88,8 @@ pub(crate) async fn run(
                     );
                 }
             }
+        } else {
+            print_toon(&status);
         }
         return Ok(());
     }
@@ -144,11 +143,8 @@ pub(crate) async fn run(
         if !ran_any {
             eprintln!("no init tasks defined for stack '{stack_name}'");
         }
-        if json {
-            print_json(
-                serde_json::json!({ "ok": true, "mode": "init", "stack": stack_name }),
-                context.pretty,
-            );
+        if !context.interactive {
+            print_toon(&serde_json::json!({ "ok": true, "mode": "init", "stack": stack_name }));
         }
         return Ok(());
     }
@@ -162,10 +158,7 @@ pub(crate) async fn run(
             eprintln!("no tasks defined in {}", config_path.to_string_lossy());
             return Ok(());
         }
-        if json {
-            let names: Vec<&String> = tasks_map.keys().collect();
-            print_json(serde_json::json!({ "tasks": names }), context.pretty);
-        } else {
+        if context.interactive {
             eprintln!("Available tasks:");
             for (name, task) in &tasks_map {
                 let cmd = match task {
@@ -174,6 +167,9 @@ pub(crate) async fn run(
                 };
                 eprintln!("  {name:<24} {cmd}");
             }
+        } else {
+            let names: Vec<&String> = tasks_map.keys().collect();
+            print_toon(&serde_json::json!({ "tasks": names }));
         }
         return Ok(());
     };
@@ -188,10 +184,10 @@ pub(crate) async fn run(
         let response: StartTaskResponse = context
             .daemon_request_json("POST", "/v1/tasks/run", Some(request), Some(DAEMON_TIMEOUT))
             .await?;
-        if json {
-            print_json(serde_json::to_value(response)?, context.pretty);
-        } else {
+        if context.interactive {
             println!("{}", response.execution_id);
+        } else {
+            print_toon(&response);
         }
         return Ok(());
     }
@@ -214,20 +210,17 @@ pub(crate) async fn run(
         None,
     )?;
 
-    if json {
+    if !context.interactive {
         let stderr_summary = result
             .last_stderr_line
             .as_deref()
             .map(|line| crate::services::tasks::summarize_stderr_line(line, 120));
-        print_json(
-            serde_json::json!({
-                "task": task_name,
-                "exit_code": result.exit_code,
-                "duration_ms": result.duration.as_millis(),
-                "last_stderr_line": stderr_summary,
-            }),
-            context.pretty,
-        );
+        print_toon(&serde_json::json!({
+            "task": task_name,
+            "exit_code": result.exit_code,
+            "duration_ms": result.duration.as_millis(),
+            "last_stderr_line": stderr_summary,
+        }));
     } else if result.success() {
         eprintln!(
             "✓ {} ({})",

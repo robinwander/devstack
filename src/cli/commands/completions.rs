@@ -165,9 +165,6 @@ pub(crate) fn print(shell: &str) -> Result<()> {
 
 fn find_subcommand(words: &[String]) -> Option<String> {
     for word in words.iter().skip(1) {
-        if word == "--pretty" {
-            continue;
-        }
         if word.starts_with('-') {
             continue;
         }
@@ -204,7 +201,7 @@ fn subcommands() -> Vec<String> {
 }
 
 fn global_options() -> Vec<String> {
-    vec!["--pretty".to_string()]
+    vec![]
 }
 
 fn options_for_subcommand(sub: &str) -> Vec<String> {
@@ -219,7 +216,7 @@ fn options_for_subcommand(sub: &str) -> Vec<String> {
             "--new".to_string(),
             "--force".to_string(),
         ],
-        "status" => vec!["--run".to_string(), "--json".to_string()],
+        "status" => vec!["--run".to_string()],
         "watch" => vec!["--service".to_string()],
         "diagnose" => vec!["--run".to_string(), "--service".to_string()],
         "ls" => vec!["--all".to_string()],
@@ -238,7 +235,6 @@ fn options_for_subcommand(sub: &str) -> Vec<String> {
             "--no-noise".to_string(),
             "--follow".to_string(),
             "--follow-for".to_string(),
-            "--json".to_string(),
         ],
         "show" => vec![
             "--run".to_string(),
@@ -263,7 +259,6 @@ fn options_for_subcommand(sub: &str) -> Vec<String> {
             "--detach".to_string(),
             "--status".to_string(),
             "--verbose".to_string(),
-            "--json".to_string(),
         ],
         "openapi" => vec!["--out".to_string(), "--watch".to_string()],
         _ => Vec::new(),

@@ -7,7 +7,7 @@ use anyhow::{Context, Result, anyhow};
 use notify::{EventKind, RecursiveMode, Watcher};
 
 use crate::cli::context::{CliContext, resolve_project_context};
-use crate::cli::output::print_json;
+use crate::cli::output::print_toon;
 use crate::config::ConfigFile;
 use crate::openapi;
 
@@ -141,7 +141,7 @@ env = { API_URL = "{{ services.api.url }}" }
 }
 
 pub(crate) fn lint(
-    context: &CliContext,
+    _context: &CliContext,
     project: Option<PathBuf>,
     file: Option<PathBuf>,
 ) -> Result<()> {
@@ -172,13 +172,13 @@ pub(crate) fn lint(
         "stacks": stacks,
         "globals": globals,
     });
-    print_json(response, context.pretty);
+    print_toon(&response);
     Ok(())
 }
 
-pub(crate) async fn doctor(context: &CliContext) -> Result<()> {
+pub(crate) async fn doctor(_context: &CliContext) -> Result<()> {
     let response = crate::daemon::doctor().await?;
-    print_json(serde_json::to_value(response)?, context.pretty);
+    print_toon(&response);
     Ok(())
 }
 

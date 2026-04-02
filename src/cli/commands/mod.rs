@@ -41,7 +41,7 @@ pub(crate) async fn run(command: Commands, context: &CliContext) -> Result<()> {
             )
             .await
         }
-        Commands::Status { run_id, json } => lifecycle::status(context, run_id, json).await,
+        Commands::Status { run_id } => lifecycle::status(context, run_id).await,
         Commands::Watch { action } => lifecycle::watch(context, action).await,
         Commands::Diagnose { run_id, service } => lifecycle::diagnose(context, run_id, service).await,
         Commands::Ls { all } => lifecycle::list_runs(context, all).await,
@@ -62,11 +62,10 @@ pub(crate) async fn run(command: Commands, context: &CliContext) -> Result<()> {
             no_health,
             follow,
             follow_for,
-            json,
         } => {
             logs::run(
                 context, run_id, source, facets, all, target, service, task, tail, q, level,
-                errors, stream, since, no_health, follow, follow_for, json,
+                errors, stream, since, no_health, follow, follow_for,
             )
             .await
         }
@@ -105,11 +104,10 @@ pub(crate) async fn run(command: Commands, context: &CliContext) -> Result<()> {
             detach,
             status,
             verbose,
-            json,
             args,
         } => {
             tasks::run(
-                context, name, init, stack, project, file, detach, status, verbose, json, args,
+                context, name, init, stack, project, file, detach, status, verbose, args,
             )
             .await
         }

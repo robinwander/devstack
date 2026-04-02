@@ -10,7 +10,7 @@ use crate::cli::context::{
     CliContext, DAEMON_LONG_TIMEOUT, resolve_active_run_id, resolve_follow_for,
     resolve_latest_run_id, resolve_project_dir_from_cwd, resolve_run_id,
 };
-use crate::cli::output::{emit_entry, emit_line, emit_lines, emit_log_facets};
+use crate::cli::output::{print_entry, print_line, print_lines, print_log_facets, print_toon};
 use crate::infra::logs::index::{LogIndex, LogSource};
 use crate::logs::stream_logs;
 use crate::paths;
@@ -103,7 +103,6 @@ pub(crate) async fn run(
     no_health: bool,
     follow: bool,
     follow_for: Option<Duration>,
-    json: bool,
 ) -> Result<()> {
     let project_dir = resolve_project_dir_from_cwd()?;
 
@@ -140,12 +139,16 @@ pub(crate) async fn run(
             view_query(tail.or(Some(500)), !facets, facets),
         )
         .await?;
-        if facets {
-            emit_log_facets(&format!("Source: {source_name}"), &response, json)?;
-        } else {
-            for entry in &response.entries {
-                emit_entry(entry, json, no_health)?;
+        if context.interactive {
+            if facets {
+                print_log_facets(&format!("Source: {source_name}"), &response);
+            } else {
+                for entry in &response.entries {
+                    print_entry(entry, no_health);
+                }
             }
+        } else {
+            print_toon(&response);
         }
         return Ok(());
     }
@@ -153,7 +156,11 @@ pub(crate) async fn run(
     if facets {
         let run_id = resolve_run_id(context, &project_dir, run_id).await?;
         let response = fetch_run_log_view(context, &run_id, view_query(None, false, true)).await?;
-        emit_log_facets(&format!("Run: {run_id}"), &response, json)?;
+        if context.interactive {
+            print_log_facets(&format!("Run: {run_id}"), &response);
+        } else {
+            print_toon(&response);
+        }
         return Ok(());
     }
 
@@ -185,10 +192,7 @@ pub(crate) async fn run(
             ));
         };
 
-        return stream_logs(
-            &log_path, &task_name, tail, follow, follow_for, json, no_health,
-        )
-        .await;
+        return stream_logs(&log_path, tail, follow, follow_for, no_health).await;
     }
 
     let run_id = resolve_run_id(context, &project_dir, run_id).await?;
@@ -202,8 +206,12 @@ pub(crate) async fn run(
         let tail = tail.unwrap_or(500);
         let response =
             fetch_run_log_view(context, &run_id, view_query(Some(tail), true, false)).await?;
-        for entry in &response.entries {
-            emit_entry(entry, json, no_health)?;
+        if context.interactive {
+            for entry in &response.entries {
+                print_entry(entry, no_health);
+            }
+        } else {
+            print_toon(&response);
         }
         return Ok(());
     }
@@ -227,7 +235,6 @@ pub(crate) async fn run(
             stream.as_deref(),
             since.as_deref(),
             follow_for,
-            json,
             no_health,
         )
         .await
@@ -245,7 +252,11 @@ pub(crate) async fn run(
             since.as_deref(),
         )
         .await?;
-        emit_lines(&response.lines, &service, json, no_health)?;
+        if context.interactive {
+            print_lines(&response.lines, no_health);
+        } else {
+            print_toon(&response);
+        }
         Ok(())
     };
 
@@ -256,10 +267,7 @@ pub(crate) async fn run(
                 &crate::ids::RunId::new(run_id),
                 &crate::ids::ServiceName::new(&service),
             )?;
-            stream_logs(
-                &log_path, &service, tail, follow, follow_for, json, no_health,
-            )
-            .await
+            stream_logs(&log_path, tail, follow, follow_for, no_health).await
         }
         Err(err) => Err(err),
     }
@@ -491,7 +499,6 @@ async fn stream_service_logs_api(
     stream: Option<&str>,
     since: Option<&str>,
     follow_for: Option<Duration>,
-    json: bool,
     no_health: bool,
 ) -> Result<()> {
     let start = Instant::now();
@@ -509,7 +516,7 @@ async fn stream_service_logs_api(
     )
     .await?;
     for line in &response.lines {
-        emit_line(line, service, json, no_health)?;
+        print_line(line, no_health);
     }
     let mut after = response.next_after;
 
@@ -526,7 +533,7 @@ async fn stream_service_logs_api(
         )
         .await?;
         for line in &response.lines {
-            emit_line(line, service, json, no_health)?;
+            print_line(line, no_health);
         }
         if let Some(next) = response.next_after {
             after = Some(after.map(|current| current.max(next)).unwrap_or(next));

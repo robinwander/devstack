@@ -280,7 +280,7 @@ cmd = "echo 'cannot connect to database' >&2; exit 1"
         .cli()
         .run_in(&project, &["up", "--project", &project.path_string()])
         .await?;
-    let response: RunResponse = serde_json::from_str(&result.stdout)?;
+    let response: RunResponse = result.stdout_json()?;
 
     let api = response.services.get("api").expect("api service in response");
     assert_eq!(api.state, ServiceState::Failed);
@@ -334,9 +334,7 @@ expect_status = [200, 299]
         .await?
         .success()?;
 
-    // In non-interactive (piped) mode, stdout should be valid JSON
-    let _: RunResponse = serde_json::from_str(&result.stdout)
-        .expect("non-interactive up should still output valid JSON");
+    let _: RunResponse = result.stdout_json().expect("non-interactive up should output valid TOON");
 
     daemon.stop().await?;
     Ok(())

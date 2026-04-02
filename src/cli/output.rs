@@ -1,22 +1,20 @@
-use anyhow::Result;
+use serde::Serialize;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
+use toon_format::{EncodeOptions, encode, types::KeyFoldingMode};
 
 use crate::api::{FacetValueCount, LogEntry, LogViewResponse, RunWatchResponse};
-use crate::logs::{
-    is_health_noise_line, is_health_noise_message, structured_log_from_entry,
-    structured_log_from_raw,
-};
+use crate::logs::{is_health_noise_line, is_health_noise_message};
 use crate::model::{RunLifecycle, ServiceState};
 
-pub(crate) fn print_json(value: serde_json::Value, pretty: bool) {
-    if pretty {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&value).unwrap_or_default()
-        );
-    } else {
-        println!("{}", serde_json::to_string(&value).unwrap_or_default());
+static TOON_OPTS: std::sync::LazyLock<EncodeOptions> = std::sync::LazyLock::new(|| {
+    EncodeOptions::new().with_key_folding(KeyFoldingMode::Safe)
+});
+
+pub(crate) fn print_toon(value: &impl Serialize) {
+    match encode(value, &TOON_OPTS) {
+        Ok(toon) => println!("{toon}"),
+        Err(_) => println!("{}", serde_json::to_string(value).unwrap_or_default()),
     }
 }
 
@@ -155,13 +153,8 @@ pub(crate) fn print_up_summary(run: &crate::api::RunResponse) {
     }
 }
 
-pub(crate) fn emit_log_facets(label: &str, response: &LogViewResponse, json: bool) -> Result<()> {
-    if json {
-        println!("{}", serde_json::to_string(response)?);
-    } else {
-        print!("{}", format_log_facets(label, response));
-    }
-    Ok(())
+pub(crate) fn print_log_facets(label: &str, response: &LogViewResponse) {
+    print!("{}", format_log_facets(label, response));
 }
 
 pub(crate) fn format_log_facets(label: &str, response: &LogViewResponse) -> String {
@@ -235,45 +228,24 @@ fn format_count_with_commas(value: usize) -> String {
     out
 }
 
-pub(crate) fn emit_entry(entry: &LogEntry, json: bool, no_health: bool) -> Result<()> {
+pub(crate) fn print_entry(entry: &LogEntry, no_health: bool) {
     if no_health && is_health_noise_message(&entry.message) {
-        return Ok(());
+        return;
     }
-
-    if json {
-        let payload = structured_log_from_entry(entry);
-        println!("{}", serde_json::to_string(&payload)?);
-    } else {
-        println!("[{}] {}", entry.service, entry.raw);
-    }
-
-    Ok(())
+    println!("[{}] {}", entry.service, entry.raw);
 }
 
-pub(crate) fn emit_line(line: &str, service: &str, json: bool, no_health: bool) -> Result<()> {
+pub(crate) fn print_line(line: &str, no_health: bool) {
     if no_health && is_health_noise_line(line) {
-        return Ok(());
+        return;
     }
-
-    if json {
-        let payload = structured_log_from_raw(service, line);
-        println!("{}", serde_json::to_string(&payload)?);
-    } else {
-        println!("{line}");
-    }
-    Ok(())
+    println!("{line}");
 }
 
-pub(crate) fn emit_lines(
-    lines: &[String],
-    service: &str,
-    json: bool,
-    no_health: bool,
-) -> Result<()> {
+pub(crate) fn print_lines(lines: &[String], no_health: bool) {
     for line in lines {
-        emit_line(line, service, json, no_health)?;
+        print_line(line, no_health);
     }
-    Ok(())
 }
 
 pub(crate) fn is_service_healthy(svc: &crate::api::ServiceStatus) -> bool {

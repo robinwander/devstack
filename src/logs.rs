@@ -8,6 +8,7 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
 use std::collections::BTreeMap;
 
+#[cfg(test)]
 use crate::api::LogEntry;
 use crate::logfmt::strip_ansi_if_needed;
 use crate::logfmt::{
@@ -42,6 +43,7 @@ pub(crate) fn structured_log_from_raw(service: &str, line: &str) -> StructuredLo
     }
 }
 
+#[cfg(test)]
 pub(crate) fn structured_log_from_entry(entry: &LogEntry) -> StructuredLogLine {
     let stream = if entry.stream.is_empty() {
         "stdout"
@@ -91,11 +93,9 @@ fn normalize_level(level: Option<&str>, message: &str) -> Option<String> {
 
 pub async fn stream_logs(
     path: &Path,
-    service: &str,
     tail: Option<usize>,
     follow: bool,
     follow_for: Option<Duration>,
-    json: bool,
     no_health: bool,
 ) -> Result<()> {
     if !path.exists() {
@@ -107,7 +107,7 @@ pub async fn stream_logs(
     let start = tail.map(|n| lines.len().saturating_sub(n)).unwrap_or(0);
 
     for line in &lines[start..] {
-        emit_line(line, service, json, no_health)?;
+        print_line(line, no_health);
     }
 
     if !follow {
@@ -140,10 +140,10 @@ pub async fn stream_logs(
         }
         tokio::select! {
             _ = rx.recv() => {
-                read_new_lines(&mut file, &mut offset, service, json, no_health).await?;
+                read_new_lines(&mut file, &mut offset, no_health).await?;
             }
             _ = tokio::time::sleep(Duration::from_millis(200)) => {
-                read_new_lines(&mut file, &mut offset, service, json, no_health).await?;
+                read_new_lines(&mut file, &mut offset, no_health).await?;
             }
         }
     }
@@ -152,8 +152,6 @@ pub async fn stream_logs(
 async fn read_new_lines(
     file: &mut tokio::fs::File,
     offset: &mut u64,
-    service: &str,
-    json: bool,
     no_health: bool,
 ) -> Result<()> {
     let metadata = file.metadata().await?;
@@ -172,40 +170,24 @@ async fn read_new_lines(
 
     let content = String::from_utf8_lossy(&buf);
     for line in content.lines() {
-        emit_line_async(line, service, json, no_health).await?;
+        write_line_async(line, no_health).await?;
     }
     Ok(())
 }
 
-fn emit_line(line: &str, service: &str, json: bool, no_health: bool) -> Result<()> {
+fn print_line(line: &str, no_health: bool) {
     if no_health && is_health_noise_line(line) {
-        return Ok(());
+        return;
     }
-
-    if json {
-        let payload = structured_log_from_raw(service, line);
-        let output = serde_json::to_string(&payload)?;
-        println!("{output}");
-    } else {
-        println!("{line}");
-    }
-    Ok(())
+    println!("{line}");
 }
 
-async fn emit_line_async(line: &str, service: &str, json: bool, no_health: bool) -> Result<()> {
+async fn write_line_async(line: &str, no_health: bool) -> Result<()> {
     if no_health && is_health_noise_line(line) {
         return Ok(());
     }
-
-    if json {
-        let payload = structured_log_from_raw(service, line);
-        let output = serde_json::to_string(&payload)?;
-        tokio::io::stdout().write_all(output.as_bytes()).await?;
-        tokio::io::stdout().write_all(b"\n").await?;
-    } else {
-        tokio::io::stdout().write_all(line.as_bytes()).await?;
-        tokio::io::stdout().write_all(b"\n").await?;
-    }
+    tokio::io::stdout().write_all(line.as_bytes()).await?;
+    tokio::io::stdout().write_all(b"\n").await?;
     Ok(())
 }
 

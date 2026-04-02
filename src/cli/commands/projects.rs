@@ -13,7 +13,7 @@ pub(crate) async fn run(context: &CliContext, action: Option<ProjectsAction>) ->
                 .daemon_request_json("GET", "/v1/projects", None::<()>, Some(DAEMON_TIMEOUT))
                 .await?;
 
-            if context.pretty {
+            if context.interactive {
                 if projects.projects.is_empty() {
                     println!("No projects registered.");
                     println!(
@@ -39,7 +39,7 @@ pub(crate) async fn run(context: &CliContext, action: Option<ProjectsAction>) ->
                     }
                 }
             } else {
-                println!("{}", serde_json::to_string(&projects)?);
+                crate::cli::output::print_toon(&projects);
             }
         }
         ProjectsAction::Add { path } => {
@@ -56,12 +56,12 @@ pub(crate) async fn run(context: &CliContext, action: Option<ProjectsAction>) ->
                 )
                 .await?;
 
-            if context.pretty {
+            if context.interactive {
                 println!("Registered project: {}", registered.project.name);
                 println!("  path: {}", registered.project.path);
                 println!("  id:   {}", registered.project.id);
             } else {
-                println!("{}", serde_json::to_string(&registered)?);
+                crate::cli::output::print_toon(&registered);
             }
         }
         ProjectsAction::Remove { project } => {
@@ -90,13 +90,10 @@ pub(crate) async fn run(context: &CliContext, action: Option<ProjectsAction>) ->
                 )
                 .await?;
 
-            if context.pretty {
+            if context.interactive {
                 println!("Removed project: {}", project);
             } else {
-                println!(
-                    "{}",
-                    serde_json::json!({ "ok": true, "removed": project_id })
-                );
+                crate::cli::output::print_toon(&serde_json::json!({ "ok": true, "removed": project_id }));
             }
         }
     }

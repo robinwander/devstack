@@ -77,7 +77,6 @@ impl CliHandle {
             "status".to_string(),
             "--run-id".to_string(),
             run_id.to_string(),
-            "--json".to_string(),
         ];
         let args_ref: Vec<&str> = args_owned.iter().map(String::as_str).collect();
         self.run_in(project, &args_ref)
@@ -101,7 +100,6 @@ impl CliHandle {
             service.to_string(),
             "--last".to_string(),
             last.to_string(),
-            "--json".to_string(),
         ];
         let args_ref: Vec<&str> = args_owned.iter().map(String::as_str).collect();
         self.run_in(project, &args_ref)
@@ -122,7 +120,6 @@ impl CliHandle {
             "--project".to_string(),
             project.path_string(),
             "--detach".to_string(),
-            "--json".to_string(),
         ];
         if !options.args.is_empty() {
             args.push("--".to_string());
@@ -149,7 +146,6 @@ impl CliHandle {
             "run".to_string(),
             "--status".to_string(),
             execution_id.to_string(),
-            "--json".to_string(),
         ];
         let args_ref: Vec<&str> = args_owned.iter().map(String::as_str).collect();
         self.run_in(project, &args_ref)
@@ -179,13 +175,10 @@ impl CliHandle {
     }
 
     pub async fn list_tasks_json(&self, project: &ProjectHandle) -> Result<serde_json::Value> {
-        self.run_in(
-            project,
-            &["run", "--project", &project.path_string(), "--json"],
-        )
-        .await?
-        .success()?
-        .stdout_json()
+        self.run_in(project, &["run", "--project", &project.path_string()])
+            .await?
+            .success()?
+            .stdout_json()
     }
 
     pub async fn run_task_json(
@@ -199,7 +192,6 @@ impl CliHandle {
             task_name.to_string(),
             "--project".to_string(),
             project.path_string(),
-            "--json".to_string(),
         ];
         if !args.is_empty() {
             owned.push("--".to_string());
@@ -241,13 +233,7 @@ impl CliHandle {
     pub async fn run_init_json(&self, project: &ProjectHandle) -> Result<serde_json::Value> {
         self.run_in(
             project,
-            &[
-                "run",
-                "--init",
-                "--project",
-                &project.path_string(),
-                "--json",
-            ],
+            &["run", "--init", "--project", &project.path_string()],
         )
         .await?
         .success()?
@@ -380,7 +366,11 @@ impl CmdResult {
     }
 
     pub fn stdout_json<T: DeserializeOwned>(&self) -> Result<T> {
-        serde_json::from_str(&self.stdout)
-            .with_context(|| format!("parse command stdout as json:\n{}", self.stdout))
+        let opts = toon_format::DecodeOptions::new()
+            .with_expand_paths(toon_format::types::PathExpansionMode::Safe);
+        let json_value: serde_json::Value = toon_format::decode(&self.stdout, &opts)
+            .with_context(|| format!("parse command stdout as toon:\n{}", self.stdout))?;
+        serde_json::from_value(json_value)
+            .with_context(|| format!("deserialize toon value:\n{}", self.stdout))
     }
 }

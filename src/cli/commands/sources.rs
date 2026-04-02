@@ -4,7 +4,7 @@ use crate::api::AddSourceRequest;
 use crate::cli::args::SourcesAction;
 use crate::cli::context::{CliContext, DAEMON_LONG_TIMEOUT};
 use crate::cli::commands::logs::{absolutize_source_patterns, refresh_source_index};
-use crate::cli::output::print_json;
+use crate::cli::output::print_toon;
 use crate::sources::SourcesLedger;
 
 pub(crate) async fn run(context: &CliContext, action: Option<SourcesAction>) -> Result<()> {
@@ -14,7 +14,7 @@ pub(crate) async fn run(context: &CliContext, action: Option<SourcesAction>) -> 
         SourcesAction::Ls => {
             let ledger = SourcesLedger::load()?;
             let sources = ledger.list();
-            if context.pretty {
+            if context.interactive {
                 if sources.is_empty() {
                     println!("No sources registered.");
                 } else {
@@ -27,7 +27,7 @@ pub(crate) async fn run(context: &CliContext, action: Option<SourcesAction>) -> 
                     }
                 }
             } else {
-                print_json(serde_json::json!({ "sources": sources }), false);
+                print_toon(&serde_json::json!({ "sources": sources }));
             }
         }
         SourcesAction::Add { name, paths } => {
@@ -50,10 +50,10 @@ pub(crate) async fn run(context: &CliContext, action: Option<SourcesAction>) -> 
                 ledger.add(&name, patterns)?;
                 refresh_source_index(&name).await?;
             }
-            if context.pretty {
+            if context.interactive {
                 println!("Added source: {name}");
             } else {
-                print_json(serde_json::json!({ "ok": true, "name": name }), false);
+                print_toon(&serde_json::json!({ "ok": true, "name": name }));
             }
         }
         SourcesAction::Rm { name } => {
@@ -74,10 +74,10 @@ pub(crate) async fn run(context: &CliContext, action: Option<SourcesAction>) -> 
                 }
                 refresh_source_index(&name).await?;
             }
-            if context.pretty {
+            if context.interactive {
                 println!("Removed source: {name}");
             } else {
-                print_json(serde_json::json!({ "ok": true, "name": name }), false);
+                print_toon(&serde_json::json!({ "ok": true, "name": name }));
             }
         }
     }

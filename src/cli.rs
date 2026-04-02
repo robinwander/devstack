@@ -11,7 +11,6 @@ pub use args::{Cli, Commands, ProjectsAction, SourcesAction, WatchAction};
 pub async fn run() -> Result<()> {
     let cli = Cli::parse();
     let interactive = context::is_interactive();
-    let pretty = context::resolve_pretty(cli.pretty, interactive);
-    let context = context::CliContext::new(interactive, pretty);
+    let context = context::CliContext::new(interactive);
     commands::run(cli.command, &context).await
 }
