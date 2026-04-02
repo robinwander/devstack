@@ -60,7 +60,7 @@ fn load_requested_stack(
     let config = ConfigFile::load_from_path(&config_path)
         .map_err(|err| AppError::bad_request(err.to_string()))?;
     let stack_plan = config
-        .stack_plan(&request.stack)
+        .stack_plan_filtered(&request.stack, &request.services)
         .map_err(|err| AppError::bad_request(err.to_string()))?;
     let config_dir = config_path.parent().unwrap_or(project_dir).to_path_buf();
     Ok((config_path, config, stack_plan, config_dir))

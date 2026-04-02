@@ -88,7 +88,12 @@ pub fn build_template_context(
             entry.insert("port".to_string(), serde_json::Value::Null);
             entry.insert("url".to_string(), serde_json::Value::Null);
         }
-        services.insert(service.clone(), serde_json::Value::Object(entry));
+        let entry_value = serde_json::Value::Object(entry);
+        let underscore_key = service.replace('-', "_");
+        if underscore_key != *service {
+            services.insert(underscore_key, entry_value.clone());
+        }
+        services.insert(service.clone(), entry_value);
     }
 
     let (run_id, stack_name, global) = match scope {

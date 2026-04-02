@@ -16,6 +16,8 @@ pub struct UpRequest {
     pub new_run: bool,
     #[serde(default)]
     pub force: bool,
+    #[serde(default)]
+    pub services: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]

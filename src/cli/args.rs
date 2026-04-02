@@ -33,16 +33,15 @@ pub enum Commands {
     Daemon,
     /// Start or refresh a stack.
     Up {
-        /// Stack name (positional).
+        /// Stack name or service names (positional).
         #[arg(
-            value_name = "STACK",
-            index = 1,
+            value_name = "TARGET",
             conflicts_with = "all",
-            help = "Stack name (positional)"
+            help = "Stack name followed by optional service names to start"
         )]
-        stack: Option<String>,
+        targets: Vec<String>,
         /// Stack name (flag form).
-        #[arg(long = "stack", value_name = "STACK", conflicts_with_all = ["stack", "all"], help = "Stack name (flag form)")]
+        #[arg(long = "stack", value_name = "STACK", conflicts_with_all = ["targets", "all"], help = "Stack name (flag form)")]
         stack_flag: Option<String>,
         /// Always create a new run instead of refreshing an existing one.
         #[arg(
@@ -54,7 +53,7 @@ pub enum Commands {
         #[arg(long, help = "Skip confirmation prompts")]
         force: bool,
         /// Start all stacks in the project config.
-        #[arg(long, conflicts_with_all = ["stack", "stack_flag", "run_id"], help = "Start all stacks in the project config")]
+        #[arg(long, conflicts_with_all = ["targets", "stack_flag", "run_id"], help = "Start all stacks in the project config")]
         all: bool,
         /// Project directory to resolve config and run context.
         #[arg(long, help = "Project directory to resolve config and run context")]
@@ -100,6 +99,9 @@ pub enum Commands {
     },
     /// Query and stream service logs.
     Logs {
+        /// Service, source, or task name (positional).
+        #[arg(value_name = "TARGET", help = "Service or source name")]
+        target: Option<String>,
         /// Target run id (alias: --run-id).
         #[arg(long = "run", alias = "run-id", help = "Target run id")]
         run_id: Option<String>,
@@ -113,7 +115,7 @@ pub enum Commands {
         #[arg(long, conflicts_with_all = ["service", "task", "source"], help = "Search all services in the run (cannot be combined with --follow)")]
         all: bool,
         /// Filter to a specific service.
-        #[arg(long, required_unless_present_any = ["all", "task", "source", "facets"], conflicts_with_all = ["all", "task"], help = "Filter to a specific service")]
+        #[arg(long, conflicts_with_all = ["all", "task"], help = "Filter to a specific service")]
         service: Option<String>,
         /// Show logs for a named task.
         #[arg(long, conflicts_with_all = ["all", "service", "source"], help = "Show logs for a named task")]

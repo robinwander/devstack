@@ -17,6 +17,52 @@ use crate::paths;
 use crate::sources::{SourcesLedger, source_run_id};
 use crate::util::expand_home;
 
+async fn resolve_log_target(
+    context: &CliContext,
+    project_dir: &Path,
+    target: Option<String>,
+    source_flag: Option<String>,
+    service_flag: Option<String>,
+    run_id: &Option<String>,
+) -> Result<(Option<String>, Option<String>)> {
+    if source_flag.is_some() || service_flag.is_some() {
+        return Ok((source_flag, service_flag));
+    }
+    let Some(target) = target else {
+        return Ok((None, None));
+    };
+
+    let run_id = if let Some(rid) = run_id {
+        Some(rid.clone())
+    } else {
+        resolve_latest_run_id(context, project_dir).await.ok().flatten()
+    };
+
+    if let Some(rid) = &run_id {
+        if let Ok(status) = context
+            .daemon_request_json::<(), crate::api::RunStatusResponse>(
+                "GET",
+                &format!("/v1/runs/{rid}/status"),
+                None,
+                Some(std::time::Duration::from_secs(5)),
+            )
+            .await
+        {
+            if status.services.contains_key(&target) {
+                return Ok((None, Some(target)));
+            }
+        }
+    }
+
+    if let Ok(ledger) = SourcesLedger::load() {
+        if ledger.sources.contains_key(&target) {
+            return Ok((Some(target), None));
+        }
+    }
+
+    Ok((None, Some(target)))
+}
+
 pub(crate) fn normalize_since_arg(since: Option<String>) -> Result<Option<String>> {
     let Some(since) = since else {
         return Ok(None);
@@ -38,12 +84,14 @@ pub(crate) fn normalize_since_arg(since: Option<String>) -> Result<Option<String
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn run(
     context: &CliContext,
     run_id: Option<String>,
     source: Option<String>,
     facets: bool,
     all: bool,
+    target: Option<String>,
     service: Option<String>,
     task: Option<String>,
     tail: Option<usize>,
@@ -58,6 +106,8 @@ pub(crate) async fn run(
     json: bool,
 ) -> Result<()> {
     let project_dir = resolve_project_dir_from_cwd()?;
+
+    let (source, service) = resolve_log_target(context, &project_dir, target, source, service, &run_id).await?;
     let follow_for = resolve_follow_for(follow, follow_for, context.interactive);
     let since = normalize_since_arg(since)?;
     let level = if errors {

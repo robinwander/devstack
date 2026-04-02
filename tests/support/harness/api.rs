@@ -43,6 +43,7 @@ impl ApiHandle {
                     no_wait: options.no_wait,
                     new_run: options.new_run,
                     force: options.force,
+                    services: vec![],
                 },
             )
             .await?;

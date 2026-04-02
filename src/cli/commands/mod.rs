@@ -17,7 +17,7 @@ pub(crate) async fn run(command: Commands, context: &CliContext) -> Result<()> {
         Commands::Init { project, file } => setup::init(project, file).await,
         Commands::Daemon => crate::daemon::run_daemon().await,
         Commands::Up {
-            stack,
+            targets,
             stack_flag,
             new,
             force,
@@ -29,7 +29,7 @@ pub(crate) async fn run(command: Commands, context: &CliContext) -> Result<()> {
         } => {
             lifecycle::up(
                 context,
-                stack,
+                targets,
                 stack_flag,
                 new,
                 force,
@@ -46,6 +46,7 @@ pub(crate) async fn run(command: Commands, context: &CliContext) -> Result<()> {
         Commands::Diagnose { run_id, service } => lifecycle::diagnose(context, run_id, service).await,
         Commands::Ls { all } => lifecycle::list_runs(context, all).await,
         Commands::Logs {
+            target,
             run_id,
             source,
             facets,
@@ -64,8 +65,8 @@ pub(crate) async fn run(command: Commands, context: &CliContext) -> Result<()> {
             json,
         } => {
             logs::run(
-                context, run_id, source, facets, all, service, task, tail, q, level, errors,
-                stream, since, no_health, follow, follow_for, json,
+                context, run_id, source, facets, all, target, service, task, tail, q, level,
+                errors, stream, since, no_health, follow, follow_for, json,
             )
             .await
         }

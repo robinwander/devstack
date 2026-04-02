@@ -20,11 +20,53 @@ impl ConfigFile {
         })
     }
 
+    pub fn stack_plan_filtered(&self, name: &str, only: &[String]) -> Result<StackPlan> {
+        let plan = self.stack_plan(name)?;
+        if only.is_empty() {
+            return Ok(plan);
+        }
+        plan.filter_to(only)
+    }
+
     pub fn globals_map(&self) -> BTreeMap<String, ServiceConfig> {
         self.globals
             .as_ref()
             .map(|map| map.as_map().clone())
             .unwrap_or_default()
+    }
+}
+
+impl StackPlan {
+    pub fn filter_to(&self, targets: &[String]) -> Result<Self> {
+        let mut needed = std::collections::BTreeSet::new();
+        let mut queue: VecDeque<String> = targets.iter().cloned().collect();
+        while let Some(name) = queue.pop_front() {
+            if !self.services.contains_key(&name) {
+                return Err(anyhow!("unknown service '{name}' in stack '{}'", self.name));
+            }
+            if needed.insert(name.clone()) {
+                for dep in &self.services[&name].deps {
+                    queue.push_back(dep.clone());
+                }
+            }
+        }
+        let services: BTreeMap<String, ServiceConfig> = self
+            .services
+            .iter()
+            .filter(|(name, _)| needed.contains(*name))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        let order: Vec<String> = self
+            .order
+            .iter()
+            .filter(|name| needed.contains(*name))
+            .cloned()
+            .collect();
+        Ok(StackPlan {
+            name: self.name.clone(),
+            services,
+            order,
+        })
     }
 }
 

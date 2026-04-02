@@ -26,7 +26,7 @@ const DASHBOARD_PORT: u16 = 47832;
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn up(
     context: &CliContext,
-    stack: Option<String>,
+    targets: Vec<String>,
     stack_flag: Option<String>,
     new: bool,
     force: bool,
@@ -36,7 +36,8 @@ pub(crate) async fn up(
     file: Option<PathBuf>,
     no_wait: bool,
 ) -> Result<()> {
-    let stack = stack_flag.or(stack);
+    let (stack_positional, services) = split_up_targets(targets);
+    let stack = stack_flag.or(stack_positional);
     let (resolved_context, stack) = resolve_up_context(stack, project, file)?;
     let project_dir = resolved_context.project_dir.clone();
     let config_path = resolved_context.config_path.clone();
@@ -54,6 +55,7 @@ pub(crate) async fn up(
                 no_wait,
                 new_run: new,
                 force,
+                services: vec![],
             };
             let response = context
                 .daemon_request("POST", "/v1/runs/up", Some(req), None)
@@ -73,6 +75,7 @@ pub(crate) async fn up(
         no_wait,
         new_run: new,
         force,
+        services,
     };
     let response = context
         .daemon_request("POST", "/v1/runs/up", Some(req), None)
@@ -360,6 +363,18 @@ fn open_dashboard() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn split_up_targets(targets: Vec<String>) -> (Option<String>, Vec<String>) {
+    if targets.is_empty() {
+        return (None, vec![]);
+    }
+    if targets.len() == 1 {
+        return (Some(targets.into_iter().next().unwrap()), vec![]);
+    }
+    let stack = targets[0].clone();
+    let services = targets[1..].to_vec();
+    (Some(stack), services)
 }
 
 fn exec_command(run_id: &str, command: &[String]) -> Result<()> {
