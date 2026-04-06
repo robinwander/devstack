@@ -1,6 +1,17 @@
 # devstack
+A cli for coding agents, that makes it easy for them to manage and debug running services locally.
 
-Local development orchestration with automatic port allocation, structured logs, and file watching. Think docker-compose for local dev, but services never hardcode ports, dependencies start in order, and you get full-text search across all logs.
+Local development orchestration with automatic port allocation, structured logs, and file watching, built for worktrees and parallel agent work. Think docker-compose meets make files for agents, which provides an easy way for agents to run services, query logs, run package commands, etc.
+
+This prevents many of the common issues agents run in to when trying to run and test apps locally:  
+
+- Agent running indefintely blocking commands trying to start the dev server or other processes
+- Wasted turns / context trying to get the app running
+- Pkilling your running services because the agent doesn't know where / how things are running
+- Port collisions due to hard coded ports with multiple worktrees
+- Service logs or test / build / lint commands dumping thousands of line into context, only returns error logs by default (all app and task logs are structured logs, that are faceted and searchable)
+
+Also provides a UI so you can also search, manage, and debug your locally running apps and easily share logs with your coding agent.
 
 ![devstack dashboard](docs/assets/dashboard-overview.png)
 
