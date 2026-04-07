@@ -64,12 +64,16 @@ async fn resolve_log_target(
     Ok((None, Some(target)))
 }
 
-fn log_output_format(context: &CliContext) -> LogOutputFormat {
+fn service_log_output_format(context: &CliContext) -> LogOutputFormat {
     if context.interactive {
         LogOutputFormat::Text
     } else {
         LogOutputFormat::Json
     }
+}
+
+fn aggregate_log_output_format() -> LogOutputFormat {
+    LogOutputFormat::Json
 }
 
 pub(crate) fn normalize_since_arg(since: Option<String>) -> Result<Option<String>> {
@@ -153,14 +157,14 @@ pub(crate) async fn run(
                 print_log_facets(&format!("Source: {source_name}"), &response);
             } else {
                 for entry in &response.entries {
-                    print_entry(entry, LogOutputFormat::Text, no_health);
+                    print_entry(entry, aggregate_log_output_format(), no_health);
                 }
             }
         } else if facets {
             print_json(&response);
         } else {
             for entry in &response.entries {
-                print_entry(entry, LogOutputFormat::Json, no_health);
+                print_entry(entry, aggregate_log_output_format(), no_health);
             }
         }
         return Ok(());
@@ -211,7 +215,7 @@ pub(crate) async fn run(
             tail,
             follow,
             follow_for,
-            log_output_format(context),
+            service_log_output_format(context),
             no_health,
         )
         .await;
@@ -228,7 +232,7 @@ pub(crate) async fn run(
         let tail = tail.unwrap_or(500);
         let response =
             fetch_run_log_view(context, &run_id, view_query(Some(tail), true, false)).await?;
-        let output_format = log_output_format(context);
+        let output_format = aggregate_log_output_format();
         for entry in &response.entries {
             print_entry(entry, output_format, no_health);
         }
@@ -274,7 +278,7 @@ pub(crate) async fn run(
         print_lines(
             &service,
             &response.lines,
-            log_output_format(context),
+            service_log_output_format(context),
             no_health,
         );
         Ok(())
@@ -293,7 +297,7 @@ pub(crate) async fn run(
                 tail,
                 follow,
                 follow_for,
-                log_output_format(context),
+                service_log_output_format(context),
                 no_health,
             )
             .await
@@ -544,7 +548,7 @@ async fn stream_service_logs_api(
         since,
     )
     .await?;
-    let output_format = log_output_format(context);
+    let output_format = service_log_output_format(context);
     print_lines(service, &response.lines, output_format, no_health);
     let mut after = response.next_after;
 
@@ -632,6 +636,23 @@ async fn task_log_path_candidates(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn aggregate_logs_always_use_json_output() {
+        assert_eq!(aggregate_log_output_format(), LogOutputFormat::Json);
+    }
+
+    #[test]
+    fn service_logs_use_text_output_when_interactive() {
+        let context = CliContext::new(true);
+        assert_eq!(service_log_output_format(&context), LogOutputFormat::Text);
+    }
+
+    #[test]
+    fn service_logs_use_json_output_when_noninteractive() {
+        let context = CliContext::new(false);
+        assert_eq!(service_log_output_format(&context), LogOutputFormat::Json);
+    }
 
     #[test]
     fn task_log_path_candidates_prioritize_run_logs() {
