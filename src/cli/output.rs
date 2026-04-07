@@ -4,18 +4,21 @@ use time::format_description::well_known::Rfc3339;
 use toon_format::{EncodeOptions, encode, types::KeyFoldingMode};
 
 use crate::api::{FacetValueCount, LogEntry, LogViewResponse, RunWatchResponse};
-use crate::logs::{is_health_noise_line, is_health_noise_message};
+use crate::logs::{LogOutputFormat, render_log_entry, render_log_line};
 use crate::model::{RunLifecycle, ServiceState};
 
-static TOON_OPTS: std::sync::LazyLock<EncodeOptions> = std::sync::LazyLock::new(|| {
-    EncodeOptions::new().with_key_folding(KeyFoldingMode::Safe)
-});
+static TOON_OPTS: std::sync::LazyLock<EncodeOptions> =
+    std::sync::LazyLock::new(|| EncodeOptions::new().with_key_folding(KeyFoldingMode::Safe));
 
 pub(crate) fn print_toon(value: &impl Serialize) {
     match encode(value, &TOON_OPTS) {
         Ok(toon) => println!("{toon}"),
-        Err(_) => println!("{}", serde_json::to_string(value).unwrap_or_default()),
+        Err(_) => print_json(value),
     }
+}
+
+pub(crate) fn print_json(value: &impl Serialize) {
+    println!("{}", serde_json::to_string(value).unwrap_or_default());
 }
 
 pub(crate) fn print_watch_status_human(status: &RunWatchResponse) {
@@ -228,23 +231,26 @@ fn format_count_with_commas(value: usize) -> String {
     out
 }
 
-pub(crate) fn print_entry(entry: &LogEntry, no_health: bool) {
-    if no_health && is_health_noise_message(&entry.message) {
-        return;
+pub(crate) fn print_entry(entry: &LogEntry, format: LogOutputFormat, no_health: bool) {
+    if let Some(output) = render_log_entry(entry, format, no_health) {
+        println!("{output}");
     }
-    println!("[{}] {}", entry.service, entry.raw);
 }
 
-pub(crate) fn print_line(line: &str, no_health: bool) {
-    if no_health && is_health_noise_line(line) {
-        return;
+pub(crate) fn print_line(service: &str, line: &str, format: LogOutputFormat, no_health: bool) {
+    if let Some(output) = render_log_line(service, line, format, no_health) {
+        println!("{output}");
     }
-    println!("{line}");
 }
 
-pub(crate) fn print_lines(lines: &[String], no_health: bool) {
+pub(crate) fn print_lines(
+    service: &str,
+    lines: &[String],
+    format: LogOutputFormat,
+    no_health: bool,
+) {
     for line in lines {
-        print_line(line, no_health);
+        print_line(service, line, format, no_health);
     }
 }
 
@@ -426,5 +432,35 @@ mod tests {
             ..ready
         };
         assert!(!is_service_healthy(&unhealthy));
+    }
+
+    #[test]
+    fn format_line_returns_json_for_machine_logs() {
+        let line = r#"{"time":"2025-01-01T00:00:00Z","stream":"stderr","level":"WARN","msg":"worker-stderr"}"#;
+
+        let output =
+            render_log_line("api", line, LogOutputFormat::Json, false).expect("line output");
+        let value: serde_json::Value = serde_json::from_str(&output).unwrap();
+
+        assert_eq!(value["service"], "api");
+        assert_eq!(value["stream"], "stderr");
+        assert_eq!(value["level"], "warn");
+        assert_eq!(value["message"], "worker-stderr");
+    }
+
+    #[test]
+    fn format_entry_honors_no_health_filter() {
+        let entry = LogEntry {
+            ts: "2025-01-01T00:00:00Z".to_string(),
+            service: "api".to_string(),
+            stream: "stdout".to_string(),
+            level: "info".to_string(),
+            message: "GET /health HTTP/1.1 200".to_string(),
+            raw: "[2025-01-01T00:00:00Z] [stdout] GET /health HTTP/1.1 200".to_string(),
+            attributes: Default::default(),
+        };
+
+        assert!(render_log_entry(&entry, LogOutputFormat::Json, true).is_none());
+        assert!(render_log_entry(&entry, LogOutputFormat::Text, true).is_none());
     }
 }

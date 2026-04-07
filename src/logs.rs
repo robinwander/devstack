@@ -8,13 +8,18 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
 use std::collections::BTreeMap;
 
-#[cfg(test)]
 use crate::api::LogEntry;
 use crate::logfmt::strip_ansi_if_needed;
 use crate::logfmt::{
     classify_line_level, detect_log_level, extract_log_content, extract_timestamp_str,
     is_health_check_line, is_health_check_message,
 };
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum LogOutputFormat {
+    Text,
+    Json,
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct StructuredLogLine {
@@ -43,7 +48,6 @@ pub(crate) fn structured_log_from_raw(service: &str, line: &str) -> StructuredLo
     }
 }
 
-#[cfg(test)]
 pub(crate) fn structured_log_from_entry(entry: &LogEntry) -> StructuredLogLine {
     let stream = if entry.stream.is_empty() {
         "stdout"
@@ -74,6 +78,41 @@ pub(crate) fn is_health_noise_message(message: &str) -> bool {
     is_health_check_message(message)
 }
 
+pub(crate) fn render_log_entry(
+    entry: &LogEntry,
+    format: LogOutputFormat,
+    no_health: bool,
+) -> Option<String> {
+    if no_health && is_health_noise_message(&entry.message) {
+        return None;
+    }
+
+    Some(match format {
+        LogOutputFormat::Text => format!("[{}] {}", entry.service, entry.raw),
+        LogOutputFormat::Json => {
+            serde_json::to_string(&structured_log_from_entry(entry)).unwrap_or_default()
+        }
+    })
+}
+
+pub(crate) fn render_log_line(
+    service: &str,
+    line: &str,
+    format: LogOutputFormat,
+    no_health: bool,
+) -> Option<String> {
+    if no_health && is_health_noise_line(line) {
+        return None;
+    }
+
+    Some(match format {
+        LogOutputFormat::Text => line.to_string(),
+        LogOutputFormat::Json => {
+            serde_json::to_string(&structured_log_from_raw(service, line)).unwrap_or_default()
+        }
+    })
+}
+
 fn normalize_level(level: Option<&str>, message: &str) -> Option<String> {
     if let Some(level) = level {
         let lower = level.trim().to_ascii_lowercase();
@@ -91,11 +130,13 @@ fn normalize_level(level: Option<&str>, message: &str) -> Option<String> {
     }
 }
 
-pub async fn stream_logs(
+pub(crate) async fn stream_logs(
     path: &Path,
+    service: &str,
     tail: Option<usize>,
     follow: bool,
     follow_for: Option<Duration>,
+    format: LogOutputFormat,
     no_health: bool,
 ) -> Result<()> {
     if !path.exists() {
@@ -107,7 +148,7 @@ pub async fn stream_logs(
     let start = tail.map(|n| lines.len().saturating_sub(n)).unwrap_or(0);
 
     for line in &lines[start..] {
-        print_line(line, no_health);
+        print_line(service, line, format, no_health);
     }
 
     if !follow {
@@ -140,10 +181,10 @@ pub async fn stream_logs(
         }
         tokio::select! {
             _ = rx.recv() => {
-                read_new_lines(&mut file, &mut offset, no_health).await?;
+                read_new_lines(&mut file, &mut offset, service, format, no_health).await?;
             }
             _ = tokio::time::sleep(Duration::from_millis(200)) => {
-                read_new_lines(&mut file, &mut offset, no_health).await?;
+                read_new_lines(&mut file, &mut offset, service, format, no_health).await?;
             }
         }
     }
@@ -152,6 +193,8 @@ pub async fn stream_logs(
 async fn read_new_lines(
     file: &mut tokio::fs::File,
     offset: &mut u64,
+    service: &str,
+    format: LogOutputFormat,
     no_health: bool,
 ) -> Result<()> {
     let metadata = file.metadata().await?;
@@ -170,23 +213,27 @@ async fn read_new_lines(
 
     let content = String::from_utf8_lossy(&buf);
     for line in content.lines() {
-        write_line_async(line, no_health).await?;
+        write_line_async(service, line, format, no_health).await?;
     }
     Ok(())
 }
 
-fn print_line(line: &str, no_health: bool) {
-    if no_health && is_health_noise_line(line) {
-        return;
+fn print_line(service: &str, line: &str, format: LogOutputFormat, no_health: bool) {
+    if let Some(output) = render_log_line(service, line, format, no_health) {
+        println!("{output}");
     }
-    println!("{line}");
 }
 
-async fn write_line_async(line: &str, no_health: bool) -> Result<()> {
-    if no_health && is_health_noise_line(line) {
+async fn write_line_async(
+    service: &str,
+    line: &str,
+    format: LogOutputFormat,
+    no_health: bool,
+) -> Result<()> {
+    let Some(output) = render_log_line(service, line, format, no_health) else {
         return Ok(());
-    }
-    tokio::io::stdout().write_all(line.as_bytes()).await?;
+    };
+    tokio::io::stdout().write_all(output.as_bytes()).await?;
     tokio::io::stdout().write_all(b"\n").await?;
     Ok(())
 }

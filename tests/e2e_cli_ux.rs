@@ -1,9 +1,10 @@
 mod support;
 
 use anyhow::Result;
+use serde_json::Value;
+use support::TestHarness;
 use support::fixtures;
 use support::workflows::start_fixture_run;
-use support::TestHarness;
 
 // --- Dashed template name ---
 
@@ -65,13 +66,7 @@ async fn up_with_service_filter_starts_only_named_services() -> Result<()> {
         .cli()
         .run_in(
             &project,
-            &[
-                "up",
-                "--project",
-                &project.path_string(),
-                "dev",
-                "api",
-            ],
+            &["up", "--project", &project.path_string(), "dev", "api"],
         )
         .await?;
     let response: devstack::api::RunResponse = result.success()?.stdout_json()?;
@@ -142,13 +137,7 @@ readiness = { log_regex = "worker-ready" }
         .cli()
         .run_in(
             &project,
-            &[
-                "up",
-                "--project",
-                &project.path_string(),
-                "dev",
-                "api",
-            ],
+            &["up", "--project", &project.path_string(), "dev", "api"],
         )
         .await?;
     let response: devstack::api::RunResponse = result.success()?.stdout_json()?;
@@ -157,7 +146,10 @@ readiness = { log_regex = "worker-ready" }
     run.assert_service_ready("api").await?;
     run.assert_service_ready("db").await?;
     let status = run.status().await?;
-    assert!(!status.services.contains_key("worker"), "worker should NOT be started");
+    assert!(
+        !status.services.contains_key("worker"),
+        "worker should NOT be started"
+    );
 
     run.down().await?;
     daemon.stop().await?;
@@ -175,10 +167,7 @@ async fn logs_positional_service_name() -> Result<()> {
     // Use positional: `devstack logs api` instead of `devstack logs --service api`
     let result = t
         .cli()
-        .run_in(
-            &project,
-            &["logs", "api", "--last", "10"],
-        )
+        .run_in(&project, &["logs", "api", "--last", "10"])
         .await?;
     let output = result.success()?;
     output.assert_stdout_contains("service-started")?;
@@ -197,13 +186,55 @@ async fn logs_flag_service_still_works() -> Result<()> {
     // --service flag should still work exactly as before
     let result = t
         .cli()
-        .run_in(
-            &project,
-            &["logs", "--service", "api", "--last", "10"],
-        )
+        .run_in(&project, &["logs", "--service", "api", "--last", "10"])
         .await?;
     let output = result.success()?;
     output.assert_stdout_contains("service-started")?;
+
+    run.down().await?;
+    daemon.stop().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn logs_noninteractive_output_uses_json_lines() -> Result<()> {
+    let t = TestHarness::new().await?;
+    let (daemon, project, run) = start_fixture_run(&t, fixtures::simple_http()).await?;
+    run.assert_service_ready("api").await?;
+
+    let result = t
+        .cli()
+        .run_in(&project, &["logs", "api", "--last", "10"])
+        .await?;
+    let output = result.success()?;
+    let entries: Vec<Value> = output.stdout_json_lines()?;
+
+    assert!(!entries.is_empty());
+    assert_eq!(entries[0]["service"], "api");
+    assert!(entries.iter().all(|entry| entry.is_object()));
+    assert!(entries.iter().any(|entry| {
+        entry["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("service-started"))
+    }));
+
+    run.down().await?;
+    daemon.stop().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn logs_facets_noninteractive_output_uses_json_object() -> Result<()> {
+    let t = TestHarness::new().await?;
+    let (daemon, project, run) = start_fixture_run(&t, fixtures::multi_service()).await?;
+    run.assert_ready().await?;
+
+    let result = t.cli().run_in(&project, &["logs", "--facets"]).await?;
+    let output = result.success()?;
+    let response: Value = output.stdout_json()?;
+
+    assert!(response["filters"].is_array());
+    assert!(response["entries"].is_array());
 
     run.down().await?;
     daemon.stop().await?;

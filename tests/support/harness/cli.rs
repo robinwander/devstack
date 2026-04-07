@@ -366,11 +366,32 @@ impl CmdResult {
     }
 
     pub fn stdout_json<T: DeserializeOwned>(&self) -> Result<T> {
-        let opts = toon_format::DecodeOptions::new()
-            .with_expand_paths(toon_format::types::PathExpansionMode::Safe);
-        let json_value: serde_json::Value = toon_format::decode(&self.stdout, &opts)
-            .with_context(|| format!("parse command stdout as toon:\n{}", self.stdout))?;
-        serde_json::from_value(json_value)
-            .with_context(|| format!("deserialize toon value:\n{}", self.stdout))
+        match serde_json::from_str(&self.stdout) {
+            Ok(value) => Ok(value),
+            Err(json_err) => {
+                let opts = toon_format::DecodeOptions::new()
+                    .with_expand_paths(toon_format::types::PathExpansionMode::Safe);
+                let json_value: serde_json::Value = toon_format::decode(&self.stdout, &opts)
+                    .with_context(|| {
+                        format!(
+                            "parse command stdout as json or toon:\njson error: {json_err}\nstdout:\n{}",
+                            self.stdout
+                        )
+                    })?;
+                serde_json::from_value(json_value)
+                    .with_context(|| format!("deserialize toon value:\n{}", self.stdout))
+            }
+        }
+    }
+
+    pub fn stdout_json_lines<T: DeserializeOwned>(&self) -> Result<Vec<T>> {
+        self.stdout
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| {
+                serde_json::from_str(line)
+                    .with_context(|| format!("parse command stdout line as json:\n{line}"))
+            })
+            .collect()
     }
 }
