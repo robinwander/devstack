@@ -156,13 +156,17 @@ pub fn run_task(
         stdout,
         log_file.clone(),
         None,
-        service_writer.as_ref().map(|w| (w.file.clone(), w.stream.clone())),
+        service_writer
+            .as_ref()
+            .map(|w| (w.file.clone(), w.stream.clone())),
     );
     let stderr_handle = spawn_log_pump(
         stderr,
         log_file,
         Some(stderr_last_line.clone()),
-        service_writer.as_ref().map(|w| (w.file.clone(), w.stream.clone())),
+        service_writer
+            .as_ref()
+            .map(|w| (w.file.clone(), w.stream.clone())),
     );
 
     let status = child.wait().context("wait for task")?;
@@ -263,6 +267,7 @@ fn run_service_tasks(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run_init_tasks(
     tasks: &BTreeMap<String, TaskConfig>,
     init: &[String],
@@ -287,6 +292,7 @@ pub fn run_init_tasks(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run_post_init_tasks(
     tasks: &BTreeMap<String, TaskConfig>,
     post_init: &[String],

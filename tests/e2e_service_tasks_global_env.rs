@@ -1,9 +1,8 @@
 mod support;
 
 use anyhow::Result;
-use support::fixtures;
-use support::workflows::start_fixture_run;
 use support::TestHarness;
+use support::fixtures;
 
 #[tokio::test]
 async fn global_env_flows_to_service() -> Result<()> {

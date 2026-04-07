@@ -92,8 +92,9 @@ fn validate_service_readiness(stack: &str, service: &str, svc: &ServiceConfig) -
 fn validate_service_tasks(stack: &str, service: &str, svc: &ServiceConfig) -> Result<()> {
     if let Some(tasks) = &svc.tasks {
         for task_name in tasks.as_map().keys() {
-            validate_name_for_path_component("task", task_name)
-                .map_err(|err| anyhow!("invalid task name on service {service} in stack {stack}: {err}"))?;
+            validate_name_for_path_component("task", task_name).map_err(|err| {
+                anyhow!("invalid task name on service {service} in stack {stack}: {err}")
+            })?;
         }
     }
     Ok(())
@@ -104,15 +105,15 @@ fn has_task(
     service: &ServiceConfig,
     global_tasks: Option<&UniqueMap<String, TaskConfig>>,
 ) -> bool {
-    if let Some(svc_tasks) = &service.tasks {
-        if svc_tasks.as_map().contains_key(name) {
-            return true;
-        }
+    if let Some(svc_tasks) = &service.tasks
+        && svc_tasks.as_map().contains_key(name)
+    {
+        return true;
     }
-    if let Some(global) = global_tasks {
-        if global.as_map().contains_key(name) {
-            return true;
-        }
+    if let Some(global) = global_tasks
+        && global.as_map().contains_key(name)
+    {
+        return true;
     }
     false
 }
