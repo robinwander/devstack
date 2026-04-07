@@ -1,17 +1,16 @@
-pub mod model;
-pub mod load;
-pub mod validate;
-pub mod plan;
 pub mod env;
+pub mod load;
+pub mod model;
+pub mod plan;
 mod tests;
+pub mod validate;
 
 // Re-export the main types that were public in the original config.rs
 pub use model::{
-    ConfigFile, StackConfig, ServiceConfig, TaskConfig, TaskDefinition, 
-    PortConfig, ReadinessConfig, ReadinessTcp, ReadinessHttp, ReadinessExit, 
-    StackPlan, UniqueMap
+    ConfigFile, PortConfig, ReadinessConfig, ReadinessExit, ReadinessHttp, ReadinessTcp,
+    ServiceConfig, StackConfig, StackPlan, TaskConfig, TaskDefinition, UniqueMap,
 };
 
 // Re-export public functions
+pub use env::{resolve_env_map, resolve_env_vars};
 pub use plan::topo_sort;
-pub use env::{resolve_env_vars, resolve_env_map};

@@ -69,17 +69,18 @@ pub(crate) async fn run(context: &CliContext, action: Option<ProjectsAction>) ->
                 .daemon_request_json("GET", "/v1/projects", None::<()>, Some(DAEMON_TIMEOUT))
                 .await?;
 
-            let project_id = if let Some(found) = projects.projects.iter().find(|item| item.id == project) {
-                found.id.clone()
-            } else if let Some(found) = projects
-                .projects
-                .iter()
-                .find(|item| item.path == project || item.name == project)
-            {
-                found.id.clone()
-            } else {
-                return Err(anyhow!("project not found: {}", project));
-            };
+            let project_id =
+                if let Some(found) = projects.projects.iter().find(|item| item.id == project) {
+                    found.id.clone()
+                } else if let Some(found) = projects
+                    .projects
+                    .iter()
+                    .find(|item| item.path == project || item.name == project)
+                {
+                    found.id.clone()
+                } else {
+                    return Err(anyhow!("project not found: {}", project));
+                };
 
             let _ = context
                 .daemon_request::<()>(
@@ -93,7 +94,9 @@ pub(crate) async fn run(context: &CliContext, action: Option<ProjectsAction>) ->
             if context.interactive {
                 println!("Removed project: {}", project);
             } else {
-                crate::cli::output::print_toon(&serde_json::json!({ "ok": true, "removed": project_id }));
+                crate::cli::output::print_toon(
+                    &serde_json::json!({ "ok": true, "removed": project_id }),
+                );
             }
         }
     }

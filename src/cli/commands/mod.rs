@@ -28,22 +28,15 @@ pub(crate) async fn run(command: Commands, context: &CliContext) -> Result<()> {
             no_wait,
         } => {
             lifecycle::up(
-                context,
-                targets,
-                stack_flag,
-                new,
-                force,
-                all,
-                project,
-                run_id,
-                file,
-                no_wait,
+                context, targets, stack_flag, new, force, all, project, run_id, file, no_wait,
             )
             .await
         }
         Commands::Status { run_id } => lifecycle::status(context, run_id).await,
         Commands::Watch { action } => lifecycle::watch(context, action).await,
-        Commands::Diagnose { run_id, service } => lifecycle::diagnose(context, run_id, service).await,
+        Commands::Diagnose { run_id, service } => {
+            lifecycle::diagnose(context, run_id, service).await
+        }
         Commands::Ls { all } => lifecycle::list_runs(context, all).await,
         Commands::Logs {
             target,

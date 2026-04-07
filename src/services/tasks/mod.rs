@@ -1,10 +1,10 @@
-pub mod model;
 pub mod executor;
-pub mod orchestration;
 pub mod history;
+pub mod model;
+pub mod orchestration;
 
 // Re-export the main types that were public in the original tasks.rs
-pub use model::{TaskLogScope, TaskResult, TaskExecution, TaskHistory};
-pub use executor::{run_task, run_init_tasks, run_post_init_tasks, ServiceLogSink};
-pub use orchestration::{compute_watch_hash, load_stored_hash, store_hash, task_watch, task_cwd};
+pub use executor::{ServiceLogSink, run_init_tasks, run_post_init_tasks, run_task};
 pub use history::{format_task_duration, summarize_stderr_line, task_log_path};
+pub use model::{TaskExecution, TaskHistory, TaskLogScope, TaskResult};
+pub use orchestration::{compute_watch_hash, load_stored_hash, store_hash, task_cwd, task_watch};

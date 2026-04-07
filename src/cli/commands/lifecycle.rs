@@ -16,7 +16,9 @@ use crate::cli::context::{
     resolve_project_dir_from_cwd, resolve_run_id, resolve_stack_name, resolve_up_context,
     status_from_manifest,
 };
-use crate::cli::output::{print_toon, print_status_human, print_up_summary, print_watch_status_human};
+use crate::cli::output::{
+    print_status_human, print_toon, print_up_summary, print_watch_status_human,
+};
 use crate::config::ConfigFile;
 use crate::paths;
 use crate::persistence::PersistedRun;

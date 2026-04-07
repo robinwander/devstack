@@ -4,9 +4,9 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 
+use super::model::{TaskExecution, TaskHistory, TaskLogScope, TaskResult};
 use crate::paths;
 use crate::util::atomic_write;
-use super::model::{TaskExecution, TaskHistory, TaskLogScope, TaskResult};
 
 impl TaskHistory {
     pub fn load(path: &Path) -> Result<Self> {

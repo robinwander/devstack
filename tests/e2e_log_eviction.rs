@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use anyhow::Result;
 use devstack::api::{LogFilterQuery, LogViewQuery};
-use support::fixtures;
 use support::TestHarness;
+use support::fixtures;
 
 fn view_query(last: usize) -> LogViewQuery {
     LogViewQuery {
@@ -178,22 +178,18 @@ async fn eviction_does_not_break_subsequent_source_ingestion() -> Result<()> {
         .await?;
 
     // Wait for eviction to clear old entries
-    t.wait_until(
-        Duration::from_secs(15),
-        "old source to be evicted",
-        || {
-            let api = t.api();
-            let query = view_query(50);
-            async move {
-                let logs = api.source_logs("evict-old", &query).await?;
-                if logs.total == 0 {
-                    Ok(Some(()))
-                } else {
-                    Ok(None)
-                }
+    t.wait_until(Duration::from_secs(15), "old source to be evicted", || {
+        let api = t.api();
+        let query = view_query(50);
+        async move {
+            let logs = api.source_logs("evict-old", &query).await?;
+            if logs.total == 0 {
+                Ok(Some(()))
+            } else {
+                Ok(None)
             }
-        },
-    )
+        }
+    })
     .await?;
 
     // Add a new source with fresh logs — should ingest cleanly
@@ -223,7 +219,11 @@ async fn eviction_does_not_break_subsequent_source_ingestion() -> Result<()> {
 
     let fresh_logs = t.api().source_logs("fresh", &view_query(50)).await?;
     assert_eq!(fresh_logs.total, 2);
-    let messages: Vec<&str> = fresh_logs.entries.iter().map(|e| e.message.as_str()).collect();
+    let messages: Vec<&str> = fresh_logs
+        .entries
+        .iter()
+        .map(|e| e.message.as_str())
+        .collect();
     assert!(messages.contains(&"fresh-alpha"));
     assert!(messages.contains(&"fresh-beta"));
 

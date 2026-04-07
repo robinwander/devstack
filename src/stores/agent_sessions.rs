@@ -1,9 +1,9 @@
+use anyhow::{Result, anyhow};
 use std::collections::BTreeMap;
-use anyhow::{anyhow, Result};
 use tokio::sync::Mutex;
 
-use crate::model::AgentSessionState;
 use crate::api::AgentSession;
+use crate::model::AgentSessionState;
 
 /// Store for managing agent sessions
 pub struct AgentSessionStore {
@@ -28,24 +28,24 @@ impl AgentSessionStore {
         pid: u32,
     ) -> AgentSession {
         let mut guard = self.inner.lock().await;
-        
+
         // Clean up stale sessions before registering
         self.cleanup_stale_sessions_internal(&mut guard);
-        
+
         let _now = crate::util::now_rfc3339();
-        let entry = guard
-            .entry(agent_id.clone())
-            .or_insert_with(|| AgentSessionState::new(
+        let entry = guard.entry(agent_id.clone()).or_insert_with(|| {
+            AgentSessionState::new(
                 agent_id.clone(),
                 project_dir.clone(),
                 stack.clone(),
                 command.clone(),
                 pid,
-            ));
+            )
+        });
 
         // Update the session details
         entry.update(project_dir, stack, command, pid);
-        
+
         convert_to_api_session(entry)
     }
 
@@ -60,11 +60,11 @@ impl AgentSessionStore {
     pub async fn queue_message(&self, agent_id: &str, message: String) -> Result<usize> {
         let mut guard = self.inner.lock().await;
         self.cleanup_stale_sessions_internal(&mut guard);
-        
+
         let session = guard
             .get_mut(agent_id)
             .ok_or_else(|| anyhow!("agent session {} not found", agent_id))?;
-        
+
         Ok(session.queue_message(message))
     }
 
@@ -72,11 +72,11 @@ impl AgentSessionStore {
     pub async fn poll_messages(&self, agent_id: &str) -> Result<Vec<String>> {
         let mut guard = self.inner.lock().await;
         self.cleanup_stale_sessions_internal(&mut guard);
-        
+
         let session = guard
             .get_mut(agent_id)
             .ok_or_else(|| anyhow!("agent session {} not found", agent_id))?;
-        
+
         Ok(session.drain_messages())
     }
 
@@ -84,7 +84,7 @@ impl AgentSessionStore {
     pub async fn find_latest_for_project(&self, project_dir: &str) -> Option<AgentSession> {
         let mut guard = self.inner.lock().await;
         self.cleanup_stale_sessions_internal(&mut guard);
-        
+
         guard
             .values()
             .filter(|session| session.project_dir == project_dir)
@@ -100,11 +100,8 @@ impl AgentSessionStore {
     pub async fn list_sessions(&self) -> Vec<AgentSession> {
         let mut guard = self.inner.lock().await;
         self.cleanup_stale_sessions_internal(&mut guard);
-        
-        guard
-            .values()
-            .map(convert_to_api_session)
-            .collect()
+
+        guard.values().map(convert_to_api_session).collect()
     }
 
     /// Cleanup stale sessions (public interface)

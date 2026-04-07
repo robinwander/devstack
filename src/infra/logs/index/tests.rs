@@ -1,4 +1,3 @@
-
 use super::*;
 use crate::api::{LogFilterQuery, LogViewQuery, LogViewResponse, LogsQuery};
 use std::io::Write;

@@ -73,7 +73,7 @@ mod config_tests {
             auto_restart: false,
             init: None,
             post_init: None,
-                tasks: None,
+            tasks: None,
         };
         let kind = svc.readiness_kind(true).unwrap();
         assert!(matches!(kind, ReadinessKind::Tcp));
@@ -96,7 +96,7 @@ mod config_tests {
             auto_restart: false,
             init: None,
             post_init: None,
-                tasks: None,
+            tasks: None,
         };
         let kind = svc.readiness_kind(false).unwrap();
         assert!(matches!(kind, ReadinessKind::None));
@@ -130,7 +130,7 @@ mod config_tests {
             auto_restart: false,
             init: None,
             post_init: None,
-                tasks: None,
+            tasks: None,
         };
         let kind = svc.readiness_kind(true).unwrap();
         match kind {
@@ -172,7 +172,7 @@ mod config_tests {
             auto_restart: false,
             init: None,
             post_init: None,
-                tasks: None,
+            tasks: None,
         };
         let kind = svc.readiness_kind(false).unwrap();
         match kind {
@@ -208,7 +208,7 @@ mod config_tests {
             auto_restart: false,
             init: None,
             post_init: None,
-                tasks: None,
+            tasks: None,
         };
         let kind = svc.readiness_kind(false).unwrap();
         assert!(matches!(kind, ReadinessKind::Exit));

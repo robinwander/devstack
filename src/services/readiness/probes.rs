@@ -6,10 +6,10 @@ use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::TokioExecutor;
 use notify::{RecursiveMode, Watcher};
 use regex::Regex;
-use tokio::process::Command;
-use tokio::time::{Instant, sleep};
 use std::path::Path;
 use std::time::Duration;
+use tokio::process::Command;
+use tokio::time::{Instant, sleep};
 
 use super::model::ReadinessContext;
 

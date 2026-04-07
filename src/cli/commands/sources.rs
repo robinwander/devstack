@@ -2,8 +2,8 @@ use anyhow::{Result, anyhow};
 
 use crate::api::AddSourceRequest;
 use crate::cli::args::SourcesAction;
-use crate::cli::context::{CliContext, DAEMON_LONG_TIMEOUT};
 use crate::cli::commands::logs::{absolutize_source_patterns, refresh_source_index};
+use crate::cli::context::{CliContext, DAEMON_LONG_TIMEOUT};
 use crate::cli::output::print_toon;
 use crate::sources::SourcesLedger;
 
@@ -38,12 +38,7 @@ pub(crate) async fn run(context: &CliContext, action: Option<SourcesAction>) -> 
                     paths: patterns,
                 };
                 context
-                    .daemon_request(
-                        "POST",
-                        "/v1/sources",
-                        Some(req),
-                        Some(DAEMON_LONG_TIMEOUT),
-                    )
+                    .daemon_request("POST", "/v1/sources", Some(req), Some(DAEMON_LONG_TIMEOUT))
                     .await?;
             } else {
                 let mut ledger = SourcesLedger::load()?;

@@ -75,9 +75,7 @@ cmd = "echo 'running migrations'; echo 'migration complete'"
 
     // Init output should have stream field indicating it came from an init task
     assert!(
-        logs.lines
-            .iter()
-            .any(|line| line.contains("init:setup-db")),
+        logs.lines.iter().any(|line| line.contains("init:setup-db")),
         "expected init task stream label 'init:setup-db' in service logs, got:\n{}",
         logs.lines.join("\n")
     );
@@ -200,10 +198,7 @@ cmd = "echo 'starting migration'; echo 'ERROR: relation already exists' >&2; exi
     let daemon = t.daemon().start().await?;
 
     // Up should still succeed (the run is created, service is marked failed)
-    let run = t.api().up_with(
-        &project,
-        &UpOptions::default(),
-    ).await?;
+    let run = t.api().up_with(&project, &UpOptions::default()).await?;
 
     run.service("api").assert_failed().await?;
 
@@ -282,7 +277,10 @@ cmd = "echo 'cannot connect to database' >&2; exit 1"
         .await?;
     let response: RunResponse = result.stdout_json()?;
 
-    let api = response.services.get("api").expect("api service in response");
+    let api = response
+        .services
+        .get("api")
+        .expect("api service in response");
     assert_eq!(api.state, ServiceState::Failed);
     assert!(
         api.last_failure.is_some(),
@@ -334,7 +332,9 @@ expect_status = [200, 299]
         .await?
         .success()?;
 
-    let _: RunResponse = result.stdout_json().expect("non-interactive up should output valid TOON");
+    let _: RunResponse = result
+        .stdout_json()
+        .expect("non-interactive up should output valid TOON");
 
     daemon.stop().await?;
     Ok(())
@@ -521,16 +521,12 @@ cmd = "echo 'second step done'"
         logs.lines.join("\n")
     );
     assert!(
-        logs.lines
-            .iter()
-            .any(|line| line.contains("init:step-one")),
+        logs.lines.iter().any(|line| line.contains("init:step-one")),
         "expected init:step-one stream label, got:\n{}",
         logs.lines.join("\n")
     );
     assert!(
-        logs.lines
-            .iter()
-            .any(|line| line.contains("init:step-two")),
+        logs.lines.iter().any(|line| line.contains("init:step-two")),
         "expected init:step-two stream label, got:\n{}",
         logs.lines.join("\n")
     );

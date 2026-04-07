@@ -1,6 +1,9 @@
 use std::sync::Arc;
 
-use axum::{Router, routing::{delete, get, post}};
+use axum::{
+    Router,
+    routing::{delete, get, post},
+};
 use tokio::sync::Mutex;
 
 use crate::app::AppContext;
@@ -18,7 +21,10 @@ pub struct DaemonState {
 pub fn build_router(state: DaemonState) -> Router {
     Router::new()
         .route("/v1/ping", get(handlers::ping::ping))
-        .route("/v1/agent/sessions", post(handlers::agent::register_agent_session))
+        .route(
+            "/v1/agent/sessions",
+            post(handlers::agent::register_agent_session),
+        )
         .route(
             "/v1/agent/sessions/{agent_id}",
             delete(handlers::agent::unregister_agent_session),
@@ -35,7 +41,10 @@ pub fn build_router(state: DaemonState) -> Router {
             "/v1/agent/sessions/latest",
             get(handlers::agent::get_latest_agent_session),
         )
-        .route("/v1/agent/share", post(handlers::agent::share_agent_message))
+        .route(
+            "/v1/agent/share",
+            post(handlers::agent::share_agent_message),
+        )
         .route("/v1/events", get(handlers::events::events))
         .route("/v1/runs/up", post(handlers::runs::up))
         .route("/v1/runs/down", post(handlers::runs::down))
@@ -47,9 +56,15 @@ pub fn build_router(state: DaemonState) -> Router {
         .route("/v1/runs/{run_id}/status", get(handlers::runs::status))
         .route("/v1/runs", get(handlers::runs::list_runs))
         .route("/v1/tasks/run", post(handlers::tasks::start_task))
-        .route("/v1/tasks/{execution_id}", get(handlers::tasks::task_status))
+        .route(
+            "/v1/tasks/{execution_id}",
+            get(handlers::tasks::task_status),
+        )
         .route("/v1/runs/{run_id}/tasks", get(handlers::tasks::run_tasks))
-        .route("/v1/runs/{run_id}/watch", get(handlers::watch::watch_status))
+        .route(
+            "/v1/runs/{run_id}/watch",
+            get(handlers::watch::watch_status),
+        )
         .route(
             "/v1/runs/{run_id}/watch/pause",
             post(handlers::watch::watch_pause),
@@ -58,15 +73,33 @@ pub fn build_router(state: DaemonState) -> Router {
             "/v1/runs/{run_id}/watch/resume",
             post(handlers::watch::watch_resume),
         )
-        .route("/v1/runs/{run_id}/logs/{service}", get(handlers::logs::logs))
+        .route(
+            "/v1/runs/{run_id}/logs/{service}",
+            get(handlers::logs::logs),
+        )
         .route("/v1/runs/{run_id}/logs", get(handlers::logs::logs_view))
         .route("/v1/globals", get(handlers::globals::list_globals))
         .route("/v1/projects", get(handlers::projects::list_projects))
-        .route("/v1/projects/register", post(handlers::projects::register_project))
-        .route("/v1/projects/{project_id}", delete(handlers::projects::remove_project))
-        .route("/v1/sources", get(handlers::sources::list_sources).post(handlers::sources::add_source))
-        .route("/v1/sources/{name}", delete(handlers::sources::remove_source))
-        .route("/v1/sources/{name}/logs", get(handlers::sources::source_logs_view))
+        .route(
+            "/v1/projects/register",
+            post(handlers::projects::register_project),
+        )
+        .route(
+            "/v1/projects/{project_id}",
+            delete(handlers::projects::remove_project),
+        )
+        .route(
+            "/v1/sources",
+            get(handlers::sources::list_sources).post(handlers::sources::add_source),
+        )
+        .route(
+            "/v1/sources/{name}",
+            delete(handlers::sources::remove_source),
+        )
+        .route(
+            "/v1/sources/{name}/logs",
+            get(handlers::sources::source_logs_view),
+        )
         .route(
             "/v1/navigation/intent",
             get(handlers::navigation::get_navigation_intent)

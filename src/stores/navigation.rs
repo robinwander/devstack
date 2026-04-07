@@ -1,5 +1,5 @@
-use tokio::sync::Mutex;
 use crate::api::NavigationIntent;
+use tokio::sync::Mutex;
 
 /// Store for managing navigation intent state
 pub struct NavigationStore {

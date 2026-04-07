@@ -78,15 +78,18 @@ async fn restart_service_inner(
         .map_err(|_| AppError::not_found(format!("run {run_id} not found")))??;
     app.emit_events(events);
 
-    let post_init =
-        load_post_init_context_for_run_service(
-            run_id, &stack, &project_dir, service, env.clone(),
-            Some(crate::services::tasks::ServiceLogSink {
-                path: log_path.clone(),
-                stream_prefix: "post_init".to_string(),
-            }),
-        )
-            .map_err(AppError::from)?;
+    let post_init = load_post_init_context_for_run_service(
+        run_id,
+        &stack,
+        &project_dir,
+        service,
+        env.clone(),
+        Some(crate::services::tasks::ServiceLogSink {
+            path: log_path.clone(),
+            stream_prefix: "post_init".to_string(),
+        }),
+    )
+    .map_err(AppError::from)?;
 
     app.systemd
         .restart_unit(&unit_name)
