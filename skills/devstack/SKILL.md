@@ -30,7 +30,7 @@ Use this skill when a user asks to set up or operate devstack in a repo: create 
 - `devstack watch` — show auto-restart watcher status per service
 - `devstack watch pause [--service <name>]` / `devstack watch resume [--service <name>]`
 - `devstack diagnose [--run <id>] [--service <name>]` — deep diagnostics including port binding, systemd state, and recent errors
-- `devstack logs [--run <id>] --service <svc> [--last N] [--follow] [--follow-for 15s] [--json]`
+- `devstack logs [<target>] [--run <id>] [--service <svc>] [--last N] [--follow] [--follow-for 15s]` — `<target>` is a positional service or source name (equivalent to `--service <name>`)
 - `devstack logs --service <svc> --no-noise` — filter noisy health check requests (alias: `--no-health`)
 - `devstack logs --service <svc> --errors` — alias for `--level error`
 - `devstack logs --source <name> [--last N] [--search <query>] [--level <level>] [--stream <stream>] [--since <duration|iso8601>]`
@@ -42,9 +42,13 @@ Use this skill when a user asks to set up or operate devstack in a repo: create 
 5) Run tasks
 - `devstack run` — list available tasks
 - `devstack run <task>` — execute a named task from [tasks] in config
+- `devstack run <task> --verbose` — stream stdout/stderr to the terminal (default: captured)
+- `devstack run <task> --detach` — hand the task to the daemon and return immediately with an `execution_id` + resolved `run_id`
+- `devstack run --status <task-id>` — query a detached task execution (state, started/finished, exit code, duration)
 - `devstack run --init` — run all init tasks for the current stack
 - `devstack run --init --stack <name>` — run init tasks for a specific stack
 - Tasks support `watch` patterns for skip-if-unchanged semantics
+- `--detach` is the right primitive for long-running tasks from inside an agent workflow — don't block a tool call on them, poll `--status` instead
 
 6) Manage projects
 - `devstack projects ls` — list all registered projects
@@ -53,29 +57,31 @@ Use this skill when a user asks to set up or operate devstack in a repo: create 
 
 7) Manage external log sources
 - `devstack sources add <name> <path>...` — register external JSONL files (globs supported)
+- **Quote globs** to prevent shell expansion: `devstack sources add mem '/tmp/*.jsonl'`. If you pass an unquoted `*.jsonl`, your shell expands it first and only the matched-at-that-moment files are registered as literal paths — new files matching the glob won't be picked up later.
 - `devstack sources rm <name>` — remove a source
 - `devstack sources ls` — list registered sources
 - External sources are JSONL files not managed by devstack (e.g. app logs, agent logs). The shim writes JSON lines; external sources must also be JSONL. When an app outputs JSON, fields are merged into the envelope. When plain text, the shim wraps it in a JSON object with `time`, `stream`, and `msg`.
-- The daemon periodically re-ingests registered sources so new files matching globs are picked up automatically.
+- The daemon periodically re-ingests registered sources so **new files** matching globs are picked up automatically. **Appended content to already-ingested files is not re-read** by the periodic re-ingest — if you need to refresh, `sources rm` + `sources add` to re-index everything matching the glob.
+- The envelope `service` field is derived from the source name when the source resolves to a single path, and from the matched filename stem (e.g. `app.jsonl` → `app`) when the source is a glob matching multiple files. The original `service` field inside the JSONL payload is moved to attributes and not promoted.
 - Query with `devstack logs --source <name>` — same flags as run logs (`--last`, `--search`, `--level`, `--since`, `--service`).
 - Discover available facets with `devstack logs --source <name> --facets` before querying.
 
 8) Open dashboard
 - `devstack ui` — opens the devstack dashboard in browser at http://localhost:47832
 
-9) Share a log view with the user
-- `devstack show` — opens the dashboard and navigates to a filtered log view
+9) Share a log view with the user (agent → user)
+- `devstack show` — posts a navigation intent to the daemon (`POST /v1/navigation/intent`) and opens the dashboard at a pre-filtered log view
 - Use this to **show the user** something interesting — errors, specific service output, search results
 - `devstack show --service api --level error` — show api errors
 - `devstack show --service worker --search "timeout"` — show worker logs matching "timeout"
 - `devstack show --run <id> --service api --since 5m` — show recent api logs for a specific run
-- The dashboard updates in real-time when you send a `show` command — the user sees the view change immediately
+- The dashboard polls the intent and applies it on arrival, then clears it, so refresh won't re-apply
 - **This is the preferred way to share log context with the user** instead of dumping raw log output
 
 10) Stop or clean up
 - `devstack down [--run <id>] [--purge]`
 - `devstack kill [--run <id>]` (if hung)
-- `devstack gc [--older-than 7d] [--all]`
+- `devstack gc [--older-than 7d] [--all]` — no dry-run flag; check `devstack ls --all` first to see what would be removed
 
 ## Log format
 Devstack writes all logs as JSON lines. The shim wraps each line of service output:
@@ -191,7 +197,7 @@ Set `auto_restart = true` to enable live file watching + automatic service resta
 Flag names below are the canonical form. Common aliases: `--run-id` → `--run`, `--tail` → `--last`, `--q` → `--search`, `--no-health` → `--no-noise`.
 
 ### Global flags
-- `--pretty` — Force pretty JSON even when non-interactive
+- _(none)_ — there is no global `--pretty` or `--json` flag. Output format is per-subcommand.
 
 ### devstack up
 - `[<stack>]` — Stack name (positional, conflicts with `--stack`)
@@ -206,7 +212,6 @@ Flag names below are the canonical form. Common aliases: `--run-id` → `--run`,
 
 ### devstack status
 - `--run <id>` — Specific run (alias: `--run-id`)
-- `--json` — Force JSON output (even on TTY)
 
 ### devstack watch
 - _(no flags)_ — Show auto-restart watcher status per service
@@ -218,6 +223,7 @@ Flag names below are the canonical form. Common aliases: `--run-id` → `--run`,
 - `--service <name>` — Diagnose specific service only
 
 ### devstack logs
+- `[<target>]` — Positional service or source name (equivalent to `--service <name>`)
 - `--run <id>` — Run scope (alias: `--run-id`)
 - `--source <name>` — Query external source (conflicts with `--run`, `--all`, `--task`)
 - `--facets` — Show available field values (conflicts with `--follow`, `--last`, `--task`)
@@ -227,13 +233,13 @@ Flag names below are the canonical form. Common aliases: `--run-id` → `--run`,
 - `--last <N>` — Last N lines (default: 500, or 200 with `--follow`; alias: `--tail`)
 - `--search <query>` — Tantivy query string (boolean ops, phrases; alias: `--q`)
 - `--level <all|warn|error>` — Filter by level
-- `--errors` — Alias for `--level error`
+- `--errors` — Alias for `--level error` (hidden from `--help` but supported)
 - `--stream <stdout|stderr>` — Filter by stream
 - `--since <timestamp|duration>` — RFC3339 or duration like "5m", "1h"
 - `--no-noise` — Filter health check noise (alias: `--no-health`)
 - `--follow` — Stream new logs (requires `--service`)
 - `--follow-for <duration>` — Follow timeout (default: 15s in non-interactive)
-- `--json` — Output JSON
+- `devstack logs` emits **JSON lines** by default (each line is a self-contained JSON object). Other subcommands (`status`, `ls`, `sources`, etc.) emit a custom structured format, not JSON.
 
 ### devstack down
 - `--run <id>` — Specific run (alias: `--run-id`)
@@ -274,7 +280,16 @@ Flag names below are the canonical form. Common aliases: `--run-id` → `--run`,
 - `--project <path>` — Project directory
 - `--file <path>` — Config file
 - `--verbose` — Stream stdout/stderr to terminal (default: capture to log)
-- `--json` — Output JSON result
+- `--detach` — Hand the task to the daemon and return immediately with an `execution_id` (conflicts with `--init`, `--status`, `--verbose`)
+- `--status <task-id>` — Query a detached task execution by id (returns `state`, `started_at`, `finished_at`, `exit_code`, `duration_ms`)
+- `-- <args...>` — Extra arguments passed to the task command (after `--`)
+
+### devstack agent
+- `--auto-share <error|warn>` — Auto-share service logs at this level or above into the wrapped agent's stdin
+- `--no-auto-share` — Disable auto-sharing entirely (conflicts with `--auto-share`)
+- `--watch <svc1,svc2>` — Comma-separated service list; restrict auto-sharing to these services only (default: all services in the run)
+- `--run <id>` — Target run id (alias: `--run-id`); default is the latest non-stopped run for the current project
+- `-- <command...>` — Agent command and arguments (required, after `--`)
 
 ### devstack projects
 - `ls` — List registered projects
@@ -299,12 +314,15 @@ Flag names below are the canonical form. Common aliases: `--run-id` → `--run`,
 - Use `devstack ls` and `devstack status` to avoid guessing current run IDs.
 - Use `devstack diagnose` when services fail to start — it checks port binding, systemd state, and recent logs.
 - Use `devstack lint` to validate config changes without starting services.
-- Default output is pretty JSON on a TTY and compact JSON when non-interactive (`--pretty` forces pretty).
+- Output format is per-subcommand: `devstack logs` emits JSON lines; `status`, `ls`, `sources`, `projects`, etc. emit a custom structured format (`runs[2]{run_id,stack,...}:` style). **There is no global `--pretty` or `--json` flag.**
 - `devstack logs --follow` defaults to a 15s timeout in non-interactive shells; use `--follow-for` to override.
 - Use `--facets` to discover what's queryable before writing `--search` filters. Works with both `--source` and run-scoped logs.
 - Use `--no-noise` (alias `--no-health`) to filter out repetitive health check requests from logs.
 - Use `--errors` as a quick alias for `--level error`.
+- **Search field syntax:** field values containing `:` must be double-quoted in the query string: `--search 'stream:"post_init:moto-init"'`. Backslash escaping (`stream:post_init\:moto-init`) does not work. Querying a field that doesn't exist in the index returns `400 Bad Request Field does not exist: '<name>'`, not an empty result set.
+- **Pipe guardrail:** devstack blocks piping its own output to `head`/`tail` (`"Use devstack's own limiting flags instead of piping to head/tail"`). Use `--last <N>` / `--follow-for <dur>` to bound output, or redirect to a file if you genuinely need to process the full output.
 - **Use `devstack show` to share log views with the user.** Instead of pasting log output, send a filtered dashboard view — the user sees it live in their browser. Example: `devstack show --service api --level error --since 5m`.
+- **Use `devstack agent -- <cmd>` when running an interactive agent.** It enables the full bidirectional channel: `--auto-share error` surfaces new errors into the agent's session automatically, and the dashboard's Share button lights up so the user can push refined log queries back into your terminal. Without the wrapper, only the agent→user direction (`show`) works.
 
 ## When to restart (and when not to)
 
