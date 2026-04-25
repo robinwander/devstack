@@ -23,6 +23,7 @@ use crate::paths;
 use crate::persistence::daemon_state::{load_globals_from_disk, load_state_from_disk};
 use crate::persistence::global_manifest_is_restorable;
 use crate::projects::ProjectsLedger;
+use crate::sources::{SourcesLedger, source_run_id};
 use crate::stores::{AgentSessionStore, GlobalStore, NavigationStore, RunStore, TaskStore};
 use crate::systemd::SystemdManager;
 
@@ -332,7 +333,8 @@ fn spawn_log_index_maintenance_task(log_index: Arc<LogIndex>) {
             interval.tick().await;
             let index = log_index.clone();
             let _ = tokio::task::spawn_blocking(move || {
-                match index.evict(max_age, max_bytes) {
+                let protected_run_ids = registered_source_run_ids();
+                match index.evict(max_age, max_bytes, &protected_run_ids) {
                     Ok(stats) if stats.age_deleted > 0 || stats.size_deleted > 0 => {
                         eprintln!(
                             "[log-index] evicted {} docs by age, {} docs by size",
@@ -349,6 +351,18 @@ fn spawn_log_index_maintenance_task(log_index: Arc<LogIndex>) {
             .await;
         }
     });
+}
+
+fn registered_source_run_ids() -> Vec<String> {
+    SourcesLedger::load()
+        .map(|ledger| {
+            ledger
+                .list()
+                .into_iter()
+                .map(|source| source_run_id(&source.name))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn dashboard_disabled() -> bool {

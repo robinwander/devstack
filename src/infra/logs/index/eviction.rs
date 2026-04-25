@@ -4,7 +4,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result};
 use tantivy::Term;
 use tantivy::collector::{Count, TopDocs};
-use tantivy::query::{AllQuery, RangeQuery};
+use tantivy::query::{AllQuery, BooleanQuery, Occur, Query, RangeQuery, TermQuery};
 
 use super::LogIndex;
 
@@ -14,22 +14,30 @@ pub(crate) struct EvictionStats {
 }
 
 impl LogIndex {
-    pub(crate) fn evict(&self, max_age: Duration, max_bytes: u64) -> Result<EvictionStats> {
-        let age_deleted = self.evict_older_than(max_age)?;
-        let size_deleted = self.evict_to_size(max_bytes)?;
+    pub(crate) fn evict(
+        &self,
+        max_age: Duration,
+        max_bytes: u64,
+        protected_run_ids: &[String],
+    ) -> Result<EvictionStats> {
+        let age_deleted = self.evict_older_than(max_age, protected_run_ids)?;
+        let size_deleted = self.evict_to_size(max_bytes, protected_run_ids)?;
         Ok(EvictionStats {
             age_deleted,
             size_deleted,
         })
     }
 
-    fn evict_older_than(&self, max_age: Duration) -> Result<usize> {
+    fn evict_older_than(&self, max_age: Duration, protected_run_ids: &[String]) -> Result<usize> {
         let cutoff_nanos = age_cutoff_nanos(max_age);
 
-        let query = Box::new(RangeQuery::new(
-            Bound::Unbounded,
-            Bound::Excluded(Term::from_field_i64(self.fields.ts_nanos, cutoff_nanos)),
-        ));
+        let query = self.protect_run_ids(
+            Box::new(RangeQuery::new(
+                Bound::Unbounded,
+                Bound::Excluded(Term::from_field_i64(self.fields.ts_nanos, cutoff_nanos)),
+            )),
+            protected_run_ids,
+        );
 
         let count = {
             let searcher = self.reader.read().unwrap().searcher();
@@ -56,7 +64,7 @@ impl LogIndex {
         Ok(count)
     }
 
-    fn evict_to_size(&self, max_bytes: u64) -> Result<usize> {
+    fn evict_to_size(&self, max_bytes: u64, protected_run_ids: &[String]) -> Result<usize> {
         let current_size = dir_size_bytes(&self.index_dir);
         if current_size <= max_bytes {
             return Ok(0);
@@ -70,9 +78,18 @@ impl LogIndex {
             return Ok(0);
         }
 
+        let deletable_query = self.protect_run_ids(Box::new(AllQuery), protected_run_ids);
+        let deletable_docs = {
+            let searcher = self.reader.read().unwrap().searcher();
+            searcher.search(deletable_query.as_ref(), &Count)?
+        };
+        if deletable_docs == 0 {
+            return Ok(0);
+        }
+
         let ratio = max_bytes as f64 / current_size as f64;
         let target_docs = ((total_docs as f64) * ratio) as usize;
-        let docs_to_remove = total_docs.saturating_sub(target_docs);
+        let docs_to_remove = total_docs.saturating_sub(target_docs).min(deletable_docs);
         if docs_to_remove == 0 {
             return Ok(0);
         }
@@ -80,7 +97,7 @@ impl LogIndex {
         let cutoff_ts = {
             let searcher = self.reader.read().unwrap().searcher();
             let top_docs = searcher.search(
-                &AllQuery,
+                deletable_query.as_ref(),
                 &TopDocs::with_limit(docs_to_remove)
                     .order_by_fast_field::<i64>("ts_nanos", tantivy::Order::Asc),
             )?;
@@ -90,10 +107,13 @@ impl LogIndex {
             }
         };
 
-        let delete_query = Box::new(RangeQuery::new(
-            Bound::Unbounded,
-            Bound::Included(Term::from_field_i64(self.fields.ts_nanos, cutoff_ts)),
-        ));
+        let delete_query = self.protect_run_ids(
+            Box::new(RangeQuery::new(
+                Bound::Unbounded,
+                Bound::Included(Term::from_field_i64(self.fields.ts_nanos, cutoff_ts)),
+            )),
+            protected_run_ids,
+        );
 
         {
             let _gate = self.ingest_gate.lock().unwrap();
@@ -111,6 +131,28 @@ impl LogIndex {
         self.clear_facet_cache();
 
         Ok(docs_to_remove)
+    }
+
+    fn protect_run_ids(
+        &self,
+        query: Box<dyn Query>,
+        protected_run_ids: &[String],
+    ) -> Box<dyn Query> {
+        if protected_run_ids.is_empty() {
+            return query;
+        }
+
+        let mut clauses = vec![(Occur::Must, query)];
+        for run_id in protected_run_ids {
+            clauses.push((
+                Occur::MustNot,
+                Box::new(TermQuery::new(
+                    Term::from_field_text(self.fields.run_id, run_id),
+                    tantivy::schema::IndexRecordOption::Basic,
+                )) as Box<dyn Query>,
+            ));
+        }
+        Box::new(BooleanQuery::new(clauses))
     }
 }
 
