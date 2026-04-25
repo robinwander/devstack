@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde_json::Value as JsonValue;
-use tantivy::schema::{FAST, INDEXED, STORED, STRING, TEXT};
+use tantivy::schema::{FAST, INDEXED, STORED, STRING, TEXT, TextOptions};
 use tantivy::{Index, ReloadPolicy};
 
 use crate::paths;
@@ -125,15 +125,16 @@ impl LogIndex {
 
     fn build_schema() -> tantivy::schema::Schema {
         let mut schema = tantivy::schema::Schema::builder();
+        let stored_text = TextOptions::default().set_stored();
         schema.add_text_field("run_id", STRING | STORED | FAST);
         schema.add_text_field("service", STRING | STORED | FAST);
         schema.add_text_field("stream", STRING | STORED | FAST);
         schema.add_text_field("level", STRING | STORED | FAST);
         schema.add_i64_field("ts_nanos", INDEXED | FAST | STORED);
-        schema.add_text_field("ts", STRING | STORED);
+        schema.add_text_field("ts", stored_text.clone());
         schema.add_u64_field("seq", INDEXED | FAST | STORED);
         schema.add_text_field("message", TEXT | STORED);
-        schema.add_text_field("raw", STRING | STORED);
+        schema.add_text_field("raw", stored_text);
         schema.build()
     }
 
@@ -204,8 +205,9 @@ impl LogIndex {
         for (_, field_entry) in schema.fields() {
             schema_builder.add_field(field_entry.clone());
         }
+        let dynamic_field_options = TextOptions::default().set_stored().set_fast(None);
         for field_name in &missing {
-            schema_builder.add_text_field(field_name, STRING | STORED | FAST);
+            schema_builder.add_text_field(field_name, dynamic_field_options.clone());
         }
 
         let mut metas = self.index.read().unwrap().load_metas()?;

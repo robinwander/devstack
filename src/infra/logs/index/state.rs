@@ -8,7 +8,7 @@ use crate::api::LogViewResponse;
 use tantivy::schema::Field;
 use tantivy::{Index, IndexReader, IndexWriter};
 
-pub(crate) const CURRENT_SCHEMA_VERSION: &str = "4";
+pub(crate) const CURRENT_SCHEMA_VERSION: &str = "5";
 pub(crate) const FACET_TERMS_LIMIT: u32 = 50;
 pub(crate) const COMPACTION_SEGMENT_BATCH_SIZE: usize = 32;
 pub(crate) const COMPACTION_MAX_BATCHES_PER_PASS: usize = 8;
