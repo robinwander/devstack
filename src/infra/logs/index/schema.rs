@@ -234,12 +234,14 @@ impl LogIndex {
             schema_builder.add_text_field(field_name, dynamic_field_options.clone());
         }
 
+        if let Some(writer) = state.writer.take() {
+            writer.wait_merging_threads()?;
+        }
+
         let mut metas = self.index.read().unwrap().load_metas()?;
         metas.schema = schema_builder.build();
         let bytes = serde_json::to_vec_pretty(&metas)?;
         atomic_write(&self.index_dir.join("meta.json"), &bytes)?;
-
-        drop(state.writer.take());
 
         let index = Index::open_in_dir(&self.index_dir)?;
         let schema = index.schema();
