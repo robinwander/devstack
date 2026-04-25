@@ -9,10 +9,11 @@ use crate::api::{
     SourcesResponse,
 };
 use crate::app::error::AppError;
+use crate::daemon::bootstrap::log_index_max_age;
 use crate::daemon::router::DaemonState;
 use crate::daemon::source_ingest::{
-    replace_source_index, should_ingest_source_synchronously, source_log_sources,
-    spawn_source_backfill, warmup_sources_for_query,
+    replace_source_index, retention_cutoff_nanos, should_ingest_source_synchronously,
+    source_log_sources, spawn_source_backfill, warmup_sources_for_query,
 };
 use crate::sources::{SourcesLedger, source_run_id};
 
@@ -51,13 +52,16 @@ pub async fn add_source(
         .ok_or_else(|| AppError::Internal(anyhow!("source {} was not persisted", request.name)))?;
 
     let sources = source_log_sources(&ledger, &request.name).map_err(AppError::from)?;
+    let min_ts_nanos = Some(retention_cutoff_nanos(log_index_max_age()));
     let index = state.app.log_index.clone();
     let name = request.name.clone();
     if should_ingest_source_synchronously(&sources) {
-        tokio::task::spawn_blocking(move || replace_source_index(&index, &name, &sources))
-            .await
-            .map_err(|err| AppError::Internal(anyhow!("source ingest task failed: {err}")))?
-            .map_err(AppError::from)?;
+        tokio::task::spawn_blocking(move || {
+            replace_source_index(&index, &name, &sources, min_ts_nanos)
+        })
+        .await
+        .map_err(|err| AppError::Internal(anyhow!("source ingest task failed: {err}")))?
+        .map_err(AppError::from)?;
     } else {
         let run_id = source_run_id(&name);
         let delete_index = index.clone();
@@ -65,7 +69,7 @@ pub async fn add_source(
             .await
             .map_err(|err| AppError::Internal(anyhow!("source cleanup task failed: {err}")))?
             .map_err(AppError::from)?;
-        spawn_source_backfill(index, name, sources);
+        spawn_source_backfill(index, name, sources, min_ts_nanos);
     }
 
     Ok(Json(AddSourceResponse {
@@ -118,12 +122,13 @@ pub async fn source_logs_view(
     }
 
     let sources = source_log_sources(&ledger, &name).map_err(AppError::from)?;
+    let min_ts_nanos = Some(retention_cutoff_nanos(log_index_max_age()));
     let run_id = source_run_id(&name);
     let index = state.app.log_index.clone();
 
     if should_ingest_source_synchronously(&sources) {
         let response: LogViewResponse = tokio::task::spawn_blocking(move || {
-            index.ingest_sources(&sources)?;
+            index.ingest_sources_after(&sources, min_ts_nanos)?;
             index.query_view(&run_id, query)
         })
         .await
@@ -136,7 +141,7 @@ pub async fn source_logs_view(
     let query_index = index.clone();
     let response: LogViewResponse = tokio::task::spawn_blocking(move || {
         if !warmup_sources.is_empty() && !query_index.sources_are_current(&warmup_sources) {
-            query_index.ingest_sources(&warmup_sources)?;
+            query_index.ingest_sources_after(&warmup_sources, min_ts_nanos)?;
         }
         query_index.query_view(&run_id, query)
     })
@@ -145,7 +150,7 @@ pub async fn source_logs_view(
     .map_err(map_log_index_error)?;
 
     if !index.sources_are_current(&sources) {
-        spawn_source_backfill(index, name, sources);
+        spawn_source_backfill(index, name, sources, min_ts_nanos);
     }
 
     Ok(Json(response))

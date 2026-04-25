@@ -23,7 +23,6 @@ use crate::paths;
 use crate::persistence::daemon_state::{load_globals_from_disk, load_state_from_disk};
 use crate::persistence::global_manifest_is_restorable;
 use crate::projects::ProjectsLedger;
-use crate::sources::{SourcesLedger, source_run_id};
 use crate::stores::{AgentSessionStore, GlobalStore, NavigationStore, RunStore, TaskStore};
 use crate::systemd::SystemdManager;
 
@@ -36,7 +35,7 @@ use sd_notify::notify;
 
 use super::log_tailing::RunLogTailRegistry;
 use super::router::{DaemonState, build_router};
-use super::source_ingest::spawn_registered_source_backfill;
+use super::source_ingest::{retention_cutoff_nanos, spawn_registered_source_backfill};
 
 pub async fn run_daemon() -> Result<()> {
     paths::ensure_base_layout()?;
@@ -72,8 +71,9 @@ pub async fn run_daemon() -> Result<()> {
     sync_port_reservations_from_disk(&app).await?;
     restore_active_globals(&app).await?;
     restore_auto_restart_watchers(&app).await;
-    spawn_log_index_maintenance_task(app.log_index.clone());
-    spawn_registered_source_backfill(app.log_index.clone());
+    let max_age = log_index_max_age();
+    spawn_log_index_maintenance_task(app.log_index.clone(), max_age);
+    spawn_registered_source_backfill(app.log_index.clone(), Some(retention_cutoff_nanos(max_age)));
 
     if let Ok(runs_dir) = paths::runs_dir()
         && let Ok(mut ledger) = ProjectsLedger::load()
@@ -306,7 +306,7 @@ fn log_index_maintenance_interval() -> Duration {
         .unwrap_or(DEFAULT_MAINTENANCE_INTERVAL)
 }
 
-fn log_index_max_age() -> Duration {
+pub(crate) fn log_index_max_age() -> Duration {
     std::env::var("DEVSTACK_LOG_INDEX_MAX_AGE_SECS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
@@ -321,9 +321,8 @@ fn log_index_max_bytes() -> u64 {
         .unwrap_or(DEFAULT_MAX_BYTES)
 }
 
-fn spawn_log_index_maintenance_task(log_index: Arc<LogIndex>) {
+fn spawn_log_index_maintenance_task(log_index: Arc<LogIndex>, max_age: Duration) {
     let interval_duration = log_index_maintenance_interval();
-    let max_age = log_index_max_age();
     let max_bytes = log_index_max_bytes();
 
     tokio::spawn(async move {
@@ -333,8 +332,7 @@ fn spawn_log_index_maintenance_task(log_index: Arc<LogIndex>) {
             interval.tick().await;
             let index = log_index.clone();
             let _ = tokio::task::spawn_blocking(move || {
-                let protected_run_ids = registered_source_run_ids();
-                match index.evict(max_age, max_bytes, &protected_run_ids) {
+                match index.evict(max_age, max_bytes) {
                     Ok(stats) if stats.age_deleted > 0 || stats.size_deleted > 0 => {
                         eprintln!(
                             "[log-index] evicted {} docs by age, {} docs by size",
@@ -351,18 +349,6 @@ fn spawn_log_index_maintenance_task(log_index: Arc<LogIndex>) {
             .await;
         }
     });
-}
-
-fn registered_source_run_ids() -> Vec<String> {
-    SourcesLedger::load()
-        .map(|ledger| {
-            ledger
-                .list()
-                .into_iter()
-                .map(|source| source_run_id(&source.name))
-                .collect()
-        })
-        .unwrap_or_default()
 }
 
 fn dashboard_disabled() -> bool {

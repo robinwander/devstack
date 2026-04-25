@@ -39,7 +39,7 @@ const EVICTION_ENV: &[(&str, &str)] = &[
 ];
 
 #[tokio::test]
-async fn daemon_preserves_registered_source_logs_across_age_eviction() -> Result<()> {
+async fn daemon_skips_old_source_logs_by_retention() -> Result<()> {
     let t = TestHarness::new().await?;
     let project = t.fixture(fixtures::simple_http()).create().await?;
     let daemon = t.daemon().start_with_env(EVICTION_ENV).await?;
@@ -70,20 +70,14 @@ async fn daemon_preserves_registered_source_logs_across_age_eviction() -> Result
         .await?;
 
     let before = t.api().source_logs("evict-age", &view_query(50)).await?;
-    assert_eq!(before.total, 3);
+    assert_eq!(before.total, 1);
+    assert_eq!(before.entries[0].message, "recent-entry");
 
     tokio::time::sleep(Duration::from_secs(6)).await;
 
     let after = t.api().source_logs("evict-age", &view_query(50)).await?;
-    assert_eq!(after.total, 3);
-    let messages: Vec<&str> = after
-        .entries
-        .iter()
-        .map(|entry| entry.message.as_str())
-        .collect();
-    assert!(messages.contains(&"ancient-entry"));
-    assert!(messages.contains(&"also-ancient"));
-    assert!(messages.contains(&"recent-entry"));
+    assert_eq!(after.total, 1);
+    assert_eq!(after.entries[0].message, "recent-entry");
 
     daemon.stop().await?;
     Ok(())
@@ -168,7 +162,7 @@ async fn maintenance_does_not_break_subsequent_source_ingestion() -> Result<()> 
 
     tokio::time::sleep(Duration::from_secs(6)).await;
     let old_logs = t.api().source_logs("evict-old", &view_query(50)).await?;
-    assert_eq!(old_logs.total, 1);
+    assert_eq!(old_logs.total, 0);
 
     // Add a new source with fresh logs — should ingest cleanly
     let fresh_path = project.path().join("state/fresh.jsonl");

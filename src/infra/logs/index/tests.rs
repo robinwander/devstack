@@ -618,21 +618,13 @@ fn schema_version_mismatch_rebuilds_index_state() {
 }
 
 #[test]
-fn age_eviction_preserves_protected_source_runs() {
+fn age_eviction_removes_old_source_and_run_logs() {
     let dir = tempfile::tempdir().unwrap();
     let index = LogIndex::open_or_create_in(dir.path()).unwrap();
     let source_path = dir.path().join("source.log");
-    std::fs::write(
-        &source_path,
-        "[2000-01-01T00:00:00Z] [stdout] protected old source\n",
-    )
-    .unwrap();
+    std::fs::write(&source_path, "[2000-01-01T00:00:00Z] [stdout] old source\n").unwrap();
     let run_path = dir.path().join("run.log");
-    std::fs::write(
-        &run_path,
-        "[2000-01-01T00:00:00Z] [stdout] unprotected old run\n",
-    )
-    .unwrap();
+    std::fs::write(&run_path, "[2000-01-01T00:00:00Z] [stdout] old run\n").unwrap();
 
     let sources = vec![
         LogSource {
@@ -649,14 +641,10 @@ fn age_eviction_preserves_protected_source_runs() {
     ingest(&index, &sources);
 
     let stats = index
-        .evict(
-            std::time::Duration::from_secs(60 * 60),
-            u64::MAX,
-            &["source:ext".to_string()],
-        )
+        .evict(std::time::Duration::from_secs(60 * 60), u64::MAX)
         .unwrap();
 
-    assert_eq!(stats.age_deleted, 1);
+    assert_eq!(stats.age_deleted, 2);
     assert_eq!(
         index
             .query_view(
@@ -665,7 +653,7 @@ fn age_eviction_preserves_protected_source_runs() {
             )
             .unwrap()
             .total,
-        1
+        0
     );
     assert_eq!(
         index

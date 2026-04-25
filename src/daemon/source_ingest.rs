@@ -4,7 +4,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
 
-use crate::api::{LogFilterQuery, LogViewQuery};
+use crate::api::LogViewQuery;
 use crate::infra::logs::index::{LogIndex, LogSource};
 use crate::logfmt::parse_timestamp_nanos;
 use crate::sources::{SourcesLedger, source_run_id};
@@ -53,27 +53,39 @@ pub(crate) fn should_ingest_source_synchronously(sources: &[LogSource]) -> bool 
     total_bytes.is_some()
 }
 
+pub(crate) fn retention_cutoff_nanos(max_age: Duration) -> i64 {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or(Duration::ZERO);
+    now.saturating_sub(max_age).as_nanos() as i64
+}
+
 pub(crate) fn replace_source_index(
     index: &LogIndex,
     name: &str,
     sources: &[LogSource],
+    min_ts_nanos: Option<i64>,
 ) -> Result<()> {
     let run_id = source_run_id(name);
     index.delete_run(&run_id)?;
     if !sources.is_empty() {
-        index.ingest_sources(sources)?;
+        index.ingest_sources_after(sources, min_ts_nanos)?;
     }
     Ok(())
 }
 
-pub(crate) fn spawn_source_backfill(index: Arc<LogIndex>, name: String, sources: Vec<LogSource>) {
+pub(crate) fn spawn_source_backfill(
+    index: Arc<LogIndex>,
+    name: String,
+    sources: Vec<LogSource>,
+    min_ts_nanos: Option<i64>,
+) {
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(100)).await;
         let run_id = source_run_id(&name);
         match tokio::task::spawn_blocking(move || {
-            repair_stale_source_index(&index, &run_id, &sources)?;
             if !index.sources_are_current(&sources) {
-                ingest_sources_in_priority_batches(&index, &sources)?;
+                ingest_sources_in_priority_batches(&index, &sources, min_ts_nanos)?;
                 index.warm_facets(&run_id);
             }
             Ok::<(), anyhow::Error>(())
@@ -91,15 +103,14 @@ pub(crate) fn spawn_source_backfill(index: Arc<LogIndex>, name: String, sources:
     });
 }
 
-pub(crate) fn spawn_registered_source_backfill(index: Arc<LogIndex>) {
+pub(crate) fn spawn_registered_source_backfill(index: Arc<LogIndex>, min_ts_nanos: Option<i64>) {
     tokio::spawn(async move {
         match tokio::task::spawn_blocking(move || {
             let ledger = SourcesLedger::load()?;
             for source in ledger.list() {
                 let sources = source_log_sources(&ledger, &source.name)?;
                 let run_id = source_run_id(&source.name);
-                repair_stale_source_index(&index, &run_id, &sources)?;
-                ingest_sources_in_priority_batches(&index, &sources)?;
+                ingest_sources_in_priority_batches(&index, &sources, min_ts_nanos)?;
                 index.warm_facets(&run_id);
             }
             Ok::<(), anyhow::Error>(())
@@ -113,37 +124,15 @@ pub(crate) fn spawn_registered_source_backfill(index: Arc<LogIndex>) {
     });
 }
 
-fn repair_stale_source_index(index: &LogIndex, run_id: &str, sources: &[LogSource]) -> Result<()> {
-    let cursor_docs = index.source_cursor_next_seq_total(sources);
-    if cursor_docs == 0 {
-        return Ok(());
-    }
-
-    let indexed_docs = index
-        .query_view(
-            run_id,
-            LogViewQuery {
-                filter: LogFilterQuery::default(),
-                service: None,
-                include_entries: false,
-                include_facets: false,
-            },
-        )?
-        .total as u64;
-    if indexed_docs < cursor_docs {
-        index.delete_run(run_id)?;
-    }
-    Ok(())
-}
-
 pub(crate) fn ingest_sources_in_priority_batches(
     index: &LogIndex,
     sources: &[LogSource],
+    min_ts_nanos: Option<i64>,
 ) -> Result<()> {
     let batches = priority_source_batches(sources);
     let last_batch_index = batches.len().saturating_sub(1);
     for (batch_index, batch) in batches.into_iter().enumerate() {
-        index.ingest_sources(&batch)?;
+        index.ingest_sources_after(&batch, min_ts_nanos)?;
         if batch_index < last_batch_index {
             std::thread::sleep(Duration::from_millis(5));
         }
@@ -346,13 +335,16 @@ mod tests {
     }
 
     #[test]
-    fn stale_source_cursor_reingests_missing_index_docs() {
+    fn source_backfill_respects_retention_cutoff() {
         let dir = tempfile::tempdir().unwrap();
         let index = LogIndex::open_or_create_in(dir.path()).unwrap();
         let source_path = dir.path().join("source.jsonl");
         std::fs::write(
             &source_path,
-            "{\"time\":\"2000-01-01T00:00:00Z\",\"msg\":\"old source\"}\n",
+            concat!(
+                "{\"time\":\"2000-01-01T00:00:00Z\",\"msg\":\"old source\"}\n",
+                "{\"time\":\"2200-01-01T00:00:00Z\",\"msg\":\"retained source\"}\n",
+            ),
         )
         .unwrap();
         let sources = vec![LogSource {
@@ -360,21 +352,19 @@ mod tests {
             service: "source".to_string(),
             path: source_path,
         }];
-        index.ingest_sources(&sources).unwrap();
-        index
-            .evict(std::time::Duration::from_secs(60 * 60), u64::MAX, &[])
+
+        ingest_sources_in_priority_batches(
+            &index,
+            &sources,
+            parse_timestamp_nanos("2100-01-01T00:00:00Z"),
+        )
+        .unwrap();
+
+        let response = index
+            .query_view("source:test", query(Some(10), None))
             .unwrap();
-
-        repair_stale_source_index(&index, "source:test", &sources).unwrap();
-        ingest_sources_in_priority_batches(&index, &sources).unwrap();
-
-        assert_eq!(
-            index
-                .query_view("source:test", query(Some(10), None))
-                .unwrap()
-                .total,
-            1
-        );
+        assert_eq!(response.total, 1);
+        assert_eq!(response.entries[0].message, "retained source");
     }
 
     #[test]

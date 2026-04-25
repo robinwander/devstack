@@ -30,18 +30,15 @@ impl LogIndex {
         })
     }
 
-    pub(crate) fn source_cursor_next_seq_total(&self, sources: &[LogSource]) -> u64 {
-        let ingest = self.ingest.lock().unwrap();
-        sources
-            .iter()
-            .filter_map(|source| {
-                let key = Self::source_key(&source.run_id, &source.service);
-                ingest.sources.get(&key).map(|cursor| cursor.next_seq)
-            })
-            .sum()
+    pub(crate) fn ingest_sources(&self, sources: &[LogSource]) -> Result<()> {
+        self.ingest_sources_after(sources, None)
     }
 
-    pub(crate) fn ingest_sources(&self, sources: &[LogSource]) -> Result<()> {
+    pub(crate) fn ingest_sources_after(
+        &self,
+        sources: &[LogSource],
+        min_ts_nanos: Option<i64>,
+    ) -> Result<()> {
         let _gate = self.ingest_gate.lock().unwrap();
         if sources.is_empty() {
             return Ok(());
@@ -136,13 +133,18 @@ impl LogIndex {
                 let parsed = parse_log_line(&line);
                 let ts = parsed.timestamp.unwrap_or_default();
                 let ts_nanos = parse_timestamp_nanos(&ts).unwrap_or(0);
+                let seq = cursor.next_seq;
+                cursor.next_seq = cursor.next_seq.saturating_add(1);
+
+                if min_ts_nanos.is_some_and(|min_ts_nanos| ts_nanos < min_ts_nanos) {
+                    continue;
+                }
+
                 let dynamic_fields = parsed
                     .json
                     .as_ref()
                     .map(Self::extract_dynamic_json_fields_from_map)
                     .unwrap_or_default();
-                let seq = cursor.next_seq;
-                cursor.next_seq = cursor.next_seq.saturating_add(1);
 
                 for (field_name, _) in &dynamic_fields {
                     dynamic_field_names.insert(field_name.clone());
@@ -178,7 +180,7 @@ impl LogIndex {
             }
         }
 
-        if pending_docs.is_empty() {
+        if pending_updates.is_empty() {
             return Ok(());
         }
 
