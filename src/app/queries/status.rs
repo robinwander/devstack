@@ -17,6 +17,8 @@ use crate::app::handles::HealthHandle;
 use crate::logfmt::{extract_log_content, extract_timestamp_str};
 use crate::model::{RunLifecycle, ServiceState};
 
+const STDERR_NEEDLE: &[u8] = b"stderr";
+
 pub async fn build_status(app: &AppContext, run_id: &str) -> AppResult<RunStatusResponse> {
     let run = app
         .runs
@@ -167,6 +169,10 @@ fn push_recent_stderr_line(lines: &mut Vec<RecentErrorLine>, raw_line: &[u8], li
         return;
     }
 
+    if memchr::memmem::find(raw_line, STDERR_NEEDLE).is_none() {
+        return;
+    }
+
     let raw_line = String::from_utf8_lossy(raw_line);
     let raw_line = crate::logfmt::strip_ansi_if_needed(raw_line.trim_end_matches(['\r', '\n']));
     if raw_line.is_empty() {
@@ -230,4 +236,31 @@ async fn recent_stderr_lines(log_path: &Path, limit: usize) -> Vec<RecentErrorLi
         .ok()
         .and_then(|result| result.ok())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::recent_stderr_lines_from_file;
+
+    #[test]
+    fn recent_stderr_lines_returns_latest_stderr_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("service.log");
+        std::fs::write(
+            &path,
+            concat!(
+                "{\"time\":\"2025-01-01T00:00:00Z\",\"stream\":\"stderr\",\"msg\":\"first\"}\n",
+                "{\"time\":\"2025-01-01T00:00:01Z\",\"stream\":\"stdout\",\"msg\":\"mentions stderr but stdout\"}\n",
+                "[2025-01-01T00:00:02Z] [stderr] second\n",
+                "{\"time\":\"2025-01-01T00:00:03Z\",\"stream\":\"stderr\",\"msg\":\"third\"}\n",
+            ),
+        )
+        .unwrap();
+
+        let lines = recent_stderr_lines_from_file(&path, 2).unwrap();
+
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].message, "second");
+        assert_eq!(lines[1].message, "third");
+    }
 }
