@@ -1,7 +1,9 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::{LazyLock, Mutex};
+use std::time::SystemTime;
 
 use anyhow::{Context, Result};
 use time::OffsetDateTime;
@@ -18,6 +20,17 @@ use crate::logfmt::{extract_log_content, extract_timestamp_str};
 use crate::model::{RunLifecycle, ServiceState};
 
 const STDERR_NEEDLE: &[u8] = b"stderr";
+
+static RECENT_STDERR_CACHE: LazyLock<Mutex<HashMap<PathBuf, RecentStderrCacheEntry>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+#[derive(Clone)]
+struct RecentStderrCacheEntry {
+    len: u64,
+    modified: Option<SystemTime>,
+    limit: usize,
+    lines: Vec<RecentErrorLine>,
+}
 
 pub async fn build_status(app: &AppContext, run_id: &str) -> AppResult<RunStatusResponse> {
     let run = app
@@ -229,18 +242,64 @@ fn recent_stderr_lines_from_file(log_path: &Path, limit: usize) -> Result<Vec<Re
     Ok(lines)
 }
 
+fn recent_stderr_signature(log_path: &Path) -> Option<(u64, Option<SystemTime>)> {
+    let metadata = std::fs::metadata(log_path).ok()?;
+    Some((metadata.len(), metadata.modified().ok()))
+}
+
+fn cached_recent_stderr_lines(
+    log_path: &Path,
+    limit: usize,
+    signature: (u64, Option<SystemTime>),
+) -> Option<Vec<RecentErrorLine>> {
+    let cache = RECENT_STDERR_CACHE.lock().unwrap();
+    let entry = cache.get(log_path)?;
+    (entry.limit == limit && entry.len == signature.0 && entry.modified == signature.1)
+        .then(|| entry.lines.clone())
+}
+
 async fn recent_stderr_lines(log_path: &Path, limit: usize) -> Vec<RecentErrorLine> {
+    if limit == 0 {
+        return Vec::new();
+    }
+
     let log_path = log_path.to_path_buf();
-    tokio::task::spawn_blocking(move || recent_stderr_lines_from_file(log_path.as_path(), limit))
-        .await
-        .ok()
-        .and_then(|result| result.ok())
-        .unwrap_or_default()
+    let Some(signature) = recent_stderr_signature(&log_path) else {
+        RECENT_STDERR_CACHE.lock().unwrap().remove(&log_path);
+        return Vec::new();
+    };
+    if let Some(lines) = cached_recent_stderr_lines(&log_path, limit, signature) {
+        return lines;
+    }
+
+    let lines = tokio::task::spawn_blocking({
+        let log_path = log_path.clone();
+        move || recent_stderr_lines_from_file(log_path.as_path(), limit)
+    })
+    .await
+    .ok()
+    .and_then(|result| result.ok())
+    .unwrap_or_default();
+
+    if recent_stderr_signature(&log_path) == Some(signature) {
+        RECENT_STDERR_CACHE.lock().unwrap().insert(
+            log_path,
+            RecentStderrCacheEntry {
+                len: signature.0,
+                modified: signature.1,
+                limit,
+                lines: lines.clone(),
+            },
+        );
+    }
+
+    lines
 }
 
 #[cfg(test)]
 mod tests {
-    use super::recent_stderr_lines_from_file;
+    use super::{recent_stderr_lines, recent_stderr_lines_from_file};
+    use std::io::Write;
 
     #[test]
     fn recent_stderr_lines_returns_latest_stderr_entries() {
@@ -262,5 +321,34 @@ mod tests {
         assert_eq!(lines.len(), 2);
         assert_eq!(lines[0].message, "second");
         assert_eq!(lines[1].message, "third");
+    }
+
+    #[tokio::test]
+    async fn recent_stderr_cache_invalidates_when_file_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("service.log");
+        std::fs::write(
+            &path,
+            "{\"time\":\"2025-01-01T00:00:00Z\",\"stream\":\"stderr\",\"msg\":\"first\"}\n",
+        )
+        .unwrap();
+
+        let first = recent_stderr_lines(&path, 3).await;
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].message, "first");
+
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(
+                b"{\"time\":\"2025-01-01T00:00:01Z\",\"stream\":\"stderr\",\"msg\":\"second\"}\n",
+            )
+            .unwrap();
+
+        let second = recent_stderr_lines(&path, 3).await;
+        assert_eq!(second.len(), 2);
+        assert_eq!(second[0].message, "first");
+        assert_eq!(second[1].message, "second");
     }
 }
