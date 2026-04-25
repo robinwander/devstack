@@ -30,6 +30,17 @@ impl LogIndex {
         })
     }
 
+    pub(crate) fn source_cursor_next_seq_total(&self, sources: &[LogSource]) -> u64 {
+        let ingest = self.ingest.lock().unwrap();
+        sources
+            .iter()
+            .filter_map(|source| {
+                let key = Self::source_key(&source.run_id, &source.service);
+                ingest.sources.get(&key).map(|cursor| cursor.next_seq)
+            })
+            .sum()
+    }
+
     pub(crate) fn ingest_sources(&self, sources: &[LogSource]) -> Result<()> {
         let _gate = self.ingest_gate.lock().unwrap();
         if sources.is_empty() {
