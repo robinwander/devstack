@@ -812,6 +812,7 @@ dependencies = [
  "shlex",
  "systemd-zbus",
  "tantivy",
+ "tantivy-columnar",
  "tempfile",
  "time",
  "tokio",

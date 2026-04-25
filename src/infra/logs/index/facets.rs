@@ -1,14 +1,16 @@
 use std::collections::{BTreeSet, HashMap};
 
 use crate::api::FacetValueCount;
+use columnar::StrColumn;
 use tantivy::collector::{Collector, SegmentCollector};
-use tantivy::schema::{Field, FieldType, Value};
-use tantivy::store::StoreReader;
+use tantivy::schema::{Field, FieldType};
 use tantivy::{DocId, Score, SegmentReader};
 
-use super::{FACET_STORE_CACHE_BLOCKS, FACET_TERMS_LIMIT, LogIndex};
+use super::{FACET_TERMS_LIMIT, LogIndex};
 
 pub(super) type FacetTermCounts = HashMap<String, HashMap<String, usize>>;
+
+type FacetOrdinalCounts = HashMap<String, (StrColumn, HashMap<u64, usize>)>;
 
 #[derive(Default)]
 pub(super) struct ServiceScopeStats {
@@ -27,21 +29,19 @@ pub(super) struct ScopeStatsCollector {
 
 struct SegmentFacetFieldCounter {
     name: String,
-    field: Field,
-    counts: HashMap<String, usize>,
+    column: StrColumn,
+    counts: HashMap<u64, usize>,
 }
 
 pub(super) struct FacetCountSegmentCollector {
-    store_reader: StoreReader,
     fields: Vec<SegmentFacetFieldCounter>,
-    error: Option<tantivy::TantivyError>,
 }
 
 pub(super) struct ScopeStatsSegmentCollector {
-    store_reader: StoreReader,
-    level_field: Field,
+    level_column: Option<StrColumn>,
+    error_ord: Option<u64>,
+    warn_ord: Option<u64>,
     stats: ServiceScopeStats,
-    error: Option<tantivy::TantivyError>,
 }
 
 impl FacetCountCollector {
@@ -67,27 +67,17 @@ impl Collector for FacetCountCollector {
         _segment_local_id: u32,
         segment: &SegmentReader,
     ) -> tantivy::Result<Self::Child> {
-        let store_reader = segment
-            .get_store_reader(FACET_STORE_CACHE_BLOCKS)
-            .map_err(tantivy::TantivyError::from)?;
-        let fields =
-            self.field_names
-                .iter()
-                .filter_map(|field_name| {
-                    segment.schema().get_field(field_name).ok().map(|field| {
-                        SegmentFacetFieldCounter {
-                            name: field_name.clone(),
-                            field,
-                            counts: HashMap::new(),
-                        }
-                    })
-                })
-                .collect();
-        Ok(FacetCountSegmentCollector {
-            store_reader,
-            fields,
-            error: None,
-        })
+        let mut fields = Vec::new();
+        for field_name in &self.field_names {
+            if let Some(column) = segment.fast_fields().str(field_name)? {
+                fields.push(SegmentFacetFieldCounter {
+                    name: field_name.clone(),
+                    column,
+                    counts: HashMap::new(),
+                });
+            }
+        }
+        Ok(FacetCountSegmentCollector { fields })
     }
 
     fn requires_scoring(&self) -> bool {
@@ -96,14 +86,22 @@ impl Collector for FacetCountCollector {
 
     fn merge_fruits(
         &self,
-        segment_fruits: Vec<tantivy::Result<FacetTermCounts>>,
+        segment_fruits: Vec<tantivy::Result<FacetOrdinalCounts>>,
     ) -> tantivy::Result<Self::Fruit> {
         let mut merged = HashMap::new();
         for segment_counts in segment_fruits {
-            for (field, values) in segment_counts? {
+            for (field, (column, values)) in segment_counts? {
                 let merged_values = merged.entry(field).or_insert_with(HashMap::new);
-                for (value, count) in values {
-                    *merged_values.entry(value).or_insert(0) += count;
+                let mut value = String::new();
+                for (term_ord, count) in values {
+                    value.clear();
+                    if column
+                        .ord_to_str(term_ord, &mut value)
+                        .map_err(tantivy::TantivyError::from)?
+                        && !value.is_empty()
+                    {
+                        *merged_values.entry(value.clone()).or_insert(0) += count;
+                    }
                 }
             }
         }
@@ -112,47 +110,21 @@ impl Collector for FacetCountCollector {
 }
 
 impl SegmentCollector for FacetCountSegmentCollector {
-    type Fruit = tantivy::Result<FacetTermCounts>;
+    type Fruit = tantivy::Result<FacetOrdinalCounts>;
 
     fn collect(&mut self, doc: DocId, _score: Score) {
-        if self.error.is_some() {
-            return;
-        }
-
-        let stored_doc: tantivy::TantivyDocument = match self.store_reader.get(doc) {
-            Ok(doc) => doc,
-            Err(err) => {
-                self.error = Some(err);
-                return;
-            }
-        };
-
         for field in &mut self.fields {
-            if let Some(value) = stored_doc
-                .get_first(field.field)
-                .and_then(|value| value.as_str())
-            {
-                if value.is_empty() {
-                    continue;
-                }
-                if let Some(count) = field.counts.get_mut(value) {
-                    *count += 1;
-                } else {
-                    field.counts.insert(value.to_string(), 1);
-                }
+            for term_ord in field.column.term_ords(doc) {
+                *field.counts.entry(term_ord).or_insert(0) += 1;
             }
         }
     }
 
     fn harvest(self) -> Self::Fruit {
-        if let Some(err) = self.error {
-            return Err(err);
-        }
-
         let mut counts = HashMap::new();
         for field in self.fields {
             if !field.counts.is_empty() {
-                counts.insert(field.name, field.counts);
+                counts.insert(field.name, (field.column, field.counts));
             }
         }
         Ok(counts)
@@ -168,14 +140,31 @@ impl Collector for ScopeStatsCollector {
         _segment_local_id: u32,
         segment: &SegmentReader,
     ) -> tantivy::Result<Self::Child> {
-        let store_reader = segment
-            .get_store_reader(FACET_STORE_CACHE_BLOCKS)
-            .map_err(tantivy::TantivyError::from)?;
+        let field_name = segment
+            .schema()
+            .get_field_entry(self.level_field)
+            .name()
+            .to_string();
+        let level_column = segment.fast_fields().str(&field_name)?;
+        let (error_ord, warn_ord) = if let Some(column) = &level_column {
+            (
+                column
+                    .dictionary()
+                    .term_ord("error")
+                    .map_err(tantivy::TantivyError::from)?,
+                column
+                    .dictionary()
+                    .term_ord("warn")
+                    .map_err(tantivy::TantivyError::from)?,
+            )
+        } else {
+            (None, None)
+        };
         Ok(ScopeStatsSegmentCollector {
-            store_reader,
-            level_field: self.level_field,
+            level_column,
+            error_ord,
+            warn_ord,
             stats: ServiceScopeStats::default(),
-            error: None,
         })
     }
 
@@ -202,34 +191,24 @@ impl SegmentCollector for ScopeStatsSegmentCollector {
     type Fruit = tantivy::Result<ServiceScopeStats>;
 
     fn collect(&mut self, doc: DocId, _score: Score) {
-        if self.error.is_some() {
-            return;
-        }
-
         self.stats.total += 1;
 
-        let stored_doc: tantivy::TantivyDocument = match self.store_reader.get(doc) {
-            Ok(doc) => doc,
-            Err(err) => {
-                self.error = Some(err);
+        let Some(level_column) = &self.level_column else {
+            return;
+        };
+        for term_ord in level_column.term_ords(doc) {
+            if Some(term_ord) == self.error_ord {
+                self.stats.error_count += 1;
                 return;
             }
-        };
-
-        match stored_doc
-            .get_first(self.level_field)
-            .and_then(|value| value.as_str())
-        {
-            Some("error") => self.stats.error_count += 1,
-            Some("warn") => self.stats.warn_count += 1,
-            _ => {}
+            if Some(term_ord) == self.warn_ord {
+                self.stats.warn_count += 1;
+                return;
+            }
         }
     }
 
     fn harvest(self) -> Self::Fruit {
-        if let Some(err) = self.error {
-            return Err(err);
-        }
         Ok(self.stats)
     }
 }

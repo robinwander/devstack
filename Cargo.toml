@@ -12,6 +12,7 @@ async-trait = "0.1.89"
 axum = "0.8.8"
 blake3 = "1.5.6"
 clap = { version = "4.5.54", features = ["derive"] }
+columnar = { package = "tantivy-columnar", version = "0.6.0" }
 directories = "5.0.1"
 dotenvy = "0.15.7"
 glob = "0.3.3"
