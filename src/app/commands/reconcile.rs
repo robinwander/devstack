@@ -3,7 +3,10 @@ use crate::app::queries::status::build_status;
 use crate::app::runtime::{persist_manifest, run_state_changed_event, service_state_changed_event};
 use crate::model::RunLifecycle;
 
-pub async fn reconcile_run(app: &AppContext, run_id: &str) -> AppResult<()> {
+pub async fn reconcile_run(
+    app: &AppContext,
+    run_id: &str,
+) -> AppResult<crate::api::RunStatusResponse> {
     let status = build_status(app, run_id).await?;
     let (changed, events) = app
         .runs
@@ -42,7 +45,7 @@ pub async fn reconcile_run(app: &AppContext, run_id: &str) -> AppResult<()> {
     if changed {
         persist_manifest(app, run_id).await?;
     }
-    Ok(())
+    Ok(status)
 }
 
 pub async fn reconcile_runs(app: &AppContext) -> AppResult<()> {
@@ -51,7 +54,7 @@ pub async fn reconcile_runs(app: &AppContext) -> AppResult<()> {
         .with_runs(|runs| runs.keys().cloned().collect::<Vec<_>>())
         .await;
     for run_id in run_ids {
-        reconcile_run(app, &run_id).await?;
+        let _ = reconcile_run(app, &run_id).await?;
     }
     Ok(())
 }

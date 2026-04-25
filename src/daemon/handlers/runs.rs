@@ -88,9 +88,8 @@ pub async fn status(
     State(state): State<DaemonState>,
     AxumPath(run_id): AxumPath<String>,
 ) -> Result<Json<RunStatusResponse>, AppError> {
-    commands::reconcile::reconcile_run(&state.app, &run_id).await?;
     Ok(Json(
-        queries::status::build_status(&state.app, &run_id).await?,
+        commands::reconcile::reconcile_run(&state.app, &run_id).await?,
     ))
 }
 
