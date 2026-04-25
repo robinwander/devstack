@@ -28,17 +28,21 @@ fi
 DASH_SRC="${ROOT_DIR}/devstack-dash"
 
 if [[ -d "${DASH_SRC}" ]]; then
-  mkdir -p "${DASH_DIR}"
-  rsync -a --delete "${DASH_SRC}/" "${DASH_DIR}/"
-
   if command -v pnpm >/dev/null 2>&1; then
-    (cd "${DASH_DIR}" && pnpm install --frozen-lockfile)
+    (cd "${DASH_SRC}" && pnpm install --frozen-lockfile && pnpm build)
   elif command -v npm >/dev/null 2>&1; then
-    (cd "${DASH_DIR}" && npm ci)
-  else
-    echo "Warning: pnpm/npm not found, skipping dashboard dependency install"
+    (cd "${DASH_SRC}" && npm ci && npm run build)
+  elif [[ ! -f "${DASH_SRC}/dist/index.html" ]]; then
+    echo "Warning: pnpm/npm not found and dashboard dist is missing, skipping dashboard install"
+    DASH_SRC=""
   fi
-  echo "Installed dashboard to ${DASH_DIR}"
+
+  if [[ -n "${DASH_SRC}" ]]; then
+    rm -rf "${DASH_DIR}"
+    mkdir -p "${DASH_DIR}"
+    rsync -a --delete "${DASH_SRC}/dist/" "${DASH_DIR}/dist/"
+    echo "Installed dashboard to ${DASH_DIR}"
+  fi
 fi
 
 if command -v systemctl >/dev/null 2>&1; then

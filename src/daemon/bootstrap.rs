@@ -1,14 +1,17 @@
 use std::fs::OpenOptions;
 use std::os::unix::io::AsRawFd;
-use std::path::Path;
-use std::process::Stdio;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
+use axum::body::Body;
+use axum::http::{StatusCode, Uri, header};
+use axum::response::{IntoResponse, Response};
+use axum::routing::get;
 use http_body_util::{BodyExt, Full};
 use hyper_util::rt::TokioIo;
-use tokio::net::UnixStream;
+use tokio::net::{TcpListener, UnixStream};
 use tokio::sync::Mutex;
 
 use crate::app::AppContext;
@@ -83,15 +86,15 @@ pub async fn run_daemon() -> Result<()> {
         .with_context(|| format!("bind socket {socket_path:?}"))?;
 
     let app = build_router(state.clone());
-    let dashboard_handle = spawn_dashboard().await;
+    let dashboard_handle = spawn_dashboard(state.clone()).await;
 
     #[cfg(target_os = "linux")]
     let _ = notify(false, &[sd_notify::NotifyState::Ready]);
 
     axum::serve(listener, app).await?;
 
-    if let Some(mut child) = dashboard_handle {
-        let _ = child.kill().await;
+    if let Some(handle) = dashboard_handle {
+        handle.abort();
     }
 
     Ok(())
@@ -356,105 +359,106 @@ fn dashboard_disabled() -> bool {
         .unwrap_or(false)
 }
 
-async fn spawn_dashboard() -> Option<tokio::process::Child> {
+async fn spawn_dashboard(state: DaemonState) -> Option<tokio::task::JoinHandle<()>> {
     if dashboard_disabled() {
         eprintln!("[dashboard] disabled by DEVSTACK_DISABLE_DASHBOARD");
         return None;
     }
 
-    let dashboard_dir = match paths::dashboard_dir() {
-        Ok(dir) => dir,
+    let dist_dir = match paths::dashboard_dir() {
+        Ok(dir) => dir.join("dist"),
         Err(err) => {
-            eprintln!("[dashboard] failed to get dashboard dir: {}", err);
+            eprintln!("[dashboard] failed to get dashboard dir: {err}");
             return None;
         }
     };
-    if !dashboard_dir.join("package.json").exists() {
+    if !dist_dir.join("index.html").exists() {
         eprintln!(
-            "[dashboard] no package.json found at {:?}, skipping",
-            dashboard_dir
+            "[dashboard] no built dashboard found at {}, skipping",
+            dist_dir.display()
         );
         return None;
     }
 
-    let home = std::env::var("HOME").unwrap_or_default();
-    let pnpm_paths = [
-        format!("{home}/.local/share/pnpm/pnpm"),
-        "/opt/homebrew/bin/pnpm".to_string(),
-        "/usr/local/bin/pnpm".to_string(),
-        "/usr/bin/pnpm".to_string(),
-    ];
-    let npm_paths = [
-        format!("{home}/.local/share/fnm/aliases/default/bin/npm"),
-        format!("{home}/.nvm/current/bin/npm"),
-        "/opt/homebrew/bin/npm".to_string(),
-        "/usr/local/bin/npm".to_string(),
-        "/usr/bin/npm".to_string(),
-    ];
+    let listener = match TcpListener::bind(("0.0.0.0", DASHBOARD_PORT)).await {
+        Ok(listener) => listener,
+        Err(err) => {
+            eprintln!("[dashboard] failed to bind port {DASHBOARD_PORT}: {err}");
+            return None;
+        }
+    };
 
-    let (cmd, is_pnpm) = pnpm_paths
-        .iter()
-        .find(|path| Path::new(path.as_str()).exists())
-        .map(|path| (path.clone(), true))
-        .or_else(|| {
-            npm_paths
-                .iter()
-                .find(|path| Path::new(path.as_str()).exists())
-                .map(|path| (path.clone(), false))
-        })
-        .unwrap_or_else(|| {
-            eprintln!("[dashboard] pnpm/npm not found in common paths, skipping dashboard");
-            (String::new(), false)
-        });
+    let app_dist_dir = dist_dir.clone();
+    let app = axum::Router::new()
+        .nest("/api", build_router(state))
+        .fallback(get(move |uri: Uri| {
+            let dist_dir = app_dist_dir.clone();
+            async move { serve_dashboard_asset(dist_dir, uri).await }
+        }));
 
-    if cmd.is_empty() {
-        return None;
+    Some(tokio::spawn(async move {
+        if let Err(err) = axum::serve(listener, app).await {
+            eprintln!("[dashboard] server failed: {err}");
+        }
+    }))
+}
+
+async fn serve_dashboard_asset(dist_dir: PathBuf, uri: Uri) -> Response {
+    let path = dashboard_asset_path(&dist_dir, uri.path());
+    match tokio::fs::read(&path).await {
+        Ok(bytes) => {
+            let cache_control =
+                if path.file_name().and_then(|name| name.to_str()) == Some("index.html") {
+                    "no-cache"
+                } else {
+                    "public, max-age=31536000, immutable"
+                };
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, dashboard_content_type(&path))
+                .header(header::CACHE_CONTROL, cache_control)
+                .body(Body::from(bytes))
+                .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+        }
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+fn dashboard_asset_path(dist_dir: &Path, request_path: &str) -> PathBuf {
+    let relative = request_path.trim_start_matches('/');
+    let relative = if relative.is_empty() {
+        Path::new("index.html")
+    } else {
+        Path::new(relative)
+    };
+
+    let mut safe_relative = PathBuf::new();
+    for component in relative.components() {
+        let std::path::Component::Normal(part) = component else {
+            return dist_dir.join("index.html");
+        };
+        safe_relative.push(part);
     }
 
-    let port_str = DASHBOARD_PORT.to_string();
-    let args: Vec<&str> = if is_pnpm {
-        vec!["dev", "--port", &port_str, "--host", "0.0.0.0"]
+    let candidate = dist_dir.join(safe_relative);
+    if candidate.is_file() {
+        candidate
     } else {
-        vec!["run", "dev", "--", "--port", &port_str, "--host", "0.0.0.0"]
-    };
+        dist_dir.join("index.html")
+    }
+}
 
-    let log_path = match paths::daemon_dir() {
-        Ok(dir) => dir.join("dashboard.log"),
-        Err(_) => dashboard_dir.join("dashboard.log"),
-    };
-    let log_file = match std::fs::File::create(&log_path) {
-        Ok(file) => file,
-        Err(err) => {
-            eprintln!("[dashboard] failed to create log file: {}", err);
-            return None;
-        }
-    };
-    let log_file_err = match log_file.try_clone() {
-        Ok(file) => file,
-        Err(err) => {
-            eprintln!("[dashboard] failed to clone log file: {}", err);
-            return None;
-        }
-    };
-
-    let path_env = format!(
-        "{home}/.local/share/pnpm:{home}/.local/share/fnm/aliases/default/bin:{home}/.nvm/current/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
-    );
-
-    match tokio::process::Command::new(&cmd)
-        .args(&args)
-        .current_dir(&dashboard_dir)
-        .env("PATH", path_env)
-        .stdin(Stdio::null())
-        .stdout(Stdio::from(log_file))
-        .stderr(Stdio::from(log_file_err))
-        .spawn()
-    {
-        Ok(child) => Some(child),
-        Err(err) => {
-            eprintln!("[dashboard] failed to start: {}", err);
-            None
-        }
+fn dashboard_content_type(path: &Path) -> &'static str {
+    match path.extension().and_then(|ext| ext.to_str()).unwrap_or("") {
+        "css" => "text/css; charset=utf-8",
+        "html" => "text/html; charset=utf-8",
+        "ico" => "image/x-icon",
+        "js" => "text/javascript; charset=utf-8",
+        "json" => "application/json; charset=utf-8",
+        "png" => "image/png",
+        "svg" => "image/svg+xml",
+        "woff2" => "font/woff2",
+        _ => "application/octet-stream",
     }
 }
 
