@@ -12,6 +12,12 @@ fn old_timestamp() -> String {
     "2000-01-01T00:00:00Z".to_string()
 }
 
+fn recent_timestamp(offset_seconds: i64) -> String {
+    (time::OffsetDateTime::now_utc() + time::Duration::seconds(offset_seconds))
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap()
+}
+
 #[tokio::test]
 async fn up_ensures_globals_and_list_globals_reports_them() -> Result<()> {
     let t = TestHarness::new().await?;
@@ -326,7 +332,10 @@ async fn sources_add_list_remove_round_trip() -> Result<()> {
     std::fs::create_dir_all(source_path.parent().unwrap())?;
     std::fs::write(
         &source_path,
-        "{\"time\":\"2025-01-01T00:00:00Z\",\"stream\":\"stdout\",\"msg\":\"ready\"}\n",
+        format!(
+            "{{\"time\":\"{}\",\"stream\":\"stdout\",\"msg\":\"ready\"}}\n",
+            recent_timestamp(0)
+        ),
     )?;
 
     let source_arg = source_path.to_string_lossy().to_string();
@@ -359,9 +368,13 @@ async fn source_logs_can_be_queried() -> Result<()> {
     std::fs::create_dir_all(source_path.parent().unwrap())?;
     std::fs::write(
         &source_path,
-        concat!(
-            "{\"time\":\"2025-01-01T00:00:00Z\",\"stream\":\"stdout\",\"level\":\"info\",\"msg\":\"source-ready\"}\n",
-            "{\"time\":\"2025-01-01T00:00:01Z\",\"stream\":\"stderr\",\"level\":\"error\",\"msg\":\"source-boom\"}\n"
+        format!(
+            concat!(
+                "{{\"time\":\"{}\",\"stream\":\"stdout\",\"level\":\"info\",\"msg\":\"source-ready\"}}\n",
+                "{{\"time\":\"{}\",\"stream\":\"stderr\",\"level\":\"error\",\"msg\":\"source-boom\"}}\n"
+            ),
+            recent_timestamp(0),
+            recent_timestamp(1),
         ),
     )?;
 
@@ -405,7 +418,10 @@ async fn removing_source_makes_it_unqueryable() -> Result<()> {
     std::fs::create_dir_all(source_path.parent().unwrap())?;
     std::fs::write(
         &source_path,
-        "{\"time\":\"2025-01-01T00:00:00Z\",\"stream\":\"stdout\",\"msg\":\"source-live\"}\n",
+        format!(
+            "{{\"time\":\"{}\",\"stream\":\"stdout\",\"msg\":\"source-live\"}}\n",
+            recent_timestamp(0)
+        ),
     )?;
 
     t.api()
@@ -466,7 +482,10 @@ async fn readding_source_refreshes_searchable_entries() -> Result<()> {
     std::fs::create_dir_all(source_path.parent().unwrap())?;
     std::fs::write(
         &source_path,
-        "{\"time\":\"2025-01-01T00:00:00Z\",\"stream\":\"stdout\",\"msg\":\"source-old\"}\n",
+        format!(
+            "{{\"time\":\"{}\",\"stream\":\"stdout\",\"msg\":\"source-old\"}}\n",
+            recent_timestamp(0)
+        ),
     )?;
 
     let source_arg = source_path.to_string_lossy().to_string();
@@ -497,7 +516,10 @@ async fn readding_source_refreshes_searchable_entries() -> Result<()> {
 
     std::fs::write(
         &source_path,
-        "{\"time\":\"2025-01-01T00:00:01Z\",\"stream\":\"stdout\",\"msg\":\"source-new\"}\n",
+        format!(
+            "{{\"time\":\"{}\",\"stream\":\"stdout\",\"msg\":\"source-new\"}}\n",
+            recent_timestamp(1)
+        ),
     )?;
     t.cli()
         .sources_add(&project, "ext", std::slice::from_ref(&source_arg))
