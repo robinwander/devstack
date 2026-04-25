@@ -418,6 +418,14 @@ fn source_log_sources(ledger: &SourcesLedger, name: &str) -> anyhow::Result<Vec<
         .collect())
 }
 
+fn map_log_index_error(err: anyhow::Error) -> AppError {
+    let message = err.to_string();
+    if let Some(rest) = message.strip_prefix("bad_query:") {
+        return AppError::bad_request(rest.trim().to_string());
+    }
+    AppError::Internal(err)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -464,12 +472,4 @@ mod tests {
 
         assert_eq!(lines, vec!["one".to_string(), "two".to_string()]);
     }
-}
-
-fn map_log_index_error(err: anyhow::Error) -> AppError {
-    let message = err.to_string();
-    if let Some(rest) = message.strip_prefix("bad_query:") {
-        return AppError::bad_request(rest.trim().to_string());
-    }
-    AppError::Internal(err)
 }
