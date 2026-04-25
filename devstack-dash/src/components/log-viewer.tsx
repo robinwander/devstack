@@ -350,6 +350,7 @@ export function LogViewer({
   const [debouncedSearch, setDebouncedSearch] = useState('')
   const [isAdvancedQuery, setIsAdvancedQuery] = useState(false)
   const [facetsOpen, setFacetsOpen] = useState(false)
+  const [searchFocused, setSearchFocused] = useState(false)
   const initialTimeRange = useMemo(
     () => parseTimeRangeParams(readUrlParam('since'), readUrlParam('until')),
     [],
@@ -525,11 +526,15 @@ export function LogViewer({
     enabled: (isSourceView ? !!activeSourceName : !!runId) && !isLiveMode,
   })
 
-  const facetsQuery = useQuery(
-    isSourceView
-      ? queries.sourceLogFacets(activeSourceName || '', facetsQueryParams)
-      : queries.runLogFacets(runId, facetsQueryParams),
-  )
+  const shouldLoadFacets = facetsOpen || searchFocused
+  const facetsQueryOptions = isSourceView
+    ? queries.sourceLogFacets(activeSourceName || '', facetsQueryParams)
+    : queries.runLogFacets(runId, facetsQueryParams)
+  const facetsQuery = useQuery({
+    ...facetsQueryOptions,
+    enabled:
+      (isSourceView ? !!activeSourceName : !!runId) && shouldLoadFacets,
+  })
 
   const latestAgentSessionQuery = useQuery({
     ...queries.latestAgentSession(projectDir),
@@ -1505,6 +1510,7 @@ export function LogViewer({
             onPrevMatch={prevMatch}
             isMobile={isMobile}
             inputRef={searchInputRef}
+            onFocusChange={setSearchFocused}
           />
 
           {/* Right-side view controls */}

@@ -27,6 +27,7 @@ export interface SearchBarProps {
   onPrevMatch: () => void
   isMobile?: boolean
   inputRef: React.RefObject<HTMLInputElement | null>
+  onFocusChange?: (focused: boolean) => void
 }
 
 // ── Overlay segment types ──
@@ -115,6 +116,7 @@ export function SearchBar({
   onPrevMatch,
   isMobile,
   inputRef,
+  onFocusChange,
 }: SearchBarProps) {
   const overlayRef = useRef<HTMLDivElement>(null)
   const [isFocused, setIsFocused] = useState(false)
@@ -279,10 +281,16 @@ export function SearchBar({
     onActiveMatchIndexReset()
   }, [onChange, onActiveMatchIndexReset])
 
-  const handleFocus = useCallback(() => setIsFocused(true), [])
+  const handleFocus = useCallback(() => {
+    setIsFocused(true)
+    onFocusChange?.(true)
+  }, [onFocusChange])
   const handleBlur = useCallback(() => {
-    setTimeout(() => setIsFocused(false), 120)
-  }, [])
+    setTimeout(() => {
+      setIsFocused(false)
+      onFocusChange?.(false)
+    }, 120)
+  }, [onFocusChange])
 
   const handleContainerClick = useCallback(() => {
     inputRef.current?.focus()
