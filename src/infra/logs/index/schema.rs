@@ -238,7 +238,7 @@ impl LogIndex {
         Ok(())
     }
 
-    pub(super) fn extract_dynamic_json_fields_from_map(
+    pub(crate) fn extract_dynamic_json_fields_from_map(
         map: &serde_json::Map<String, JsonValue>,
     ) -> Vec<(String, String)> {
         let mut fields = HashMap::new();
