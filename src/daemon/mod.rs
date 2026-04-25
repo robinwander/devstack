@@ -3,6 +3,7 @@ pub mod event_bus;
 pub mod handlers;
 pub mod log_tailing;
 pub mod router;
+pub(crate) mod source_ingest;
 
 pub use bootstrap::{doctor, run_daemon};
 pub use handlers::agent::{

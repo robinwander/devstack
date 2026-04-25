@@ -35,6 +35,7 @@ use sd_notify::notify;
 
 use super::log_tailing::RunLogTailRegistry;
 use super::router::{DaemonState, build_router};
+use super::source_ingest::spawn_registered_source_backfill;
 
 pub async fn run_daemon() -> Result<()> {
     paths::ensure_base_layout()?;
@@ -71,6 +72,7 @@ pub async fn run_daemon() -> Result<()> {
     restore_active_globals(&app).await?;
     restore_auto_restart_watchers(&app).await;
     spawn_log_index_maintenance_task(app.log_index.clone());
+    spawn_registered_source_backfill(app.log_index.clone());
 
     if let Ok(runs_dir) = paths::runs_dir()
         && let Ok(mut ledger) = ProjectsLedger::load()

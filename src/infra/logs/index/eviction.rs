@@ -4,7 +4,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result};
 use tantivy::Term;
 use tantivy::collector::{Count, TopDocs};
-use tantivy::query::{AllQuery, RangeQuery, TermQuery};
+use tantivy::query::{AllQuery, RangeQuery};
 
 use super::LogIndex;
 
@@ -52,7 +52,6 @@ impl LogIndex {
         }
         self.reader.read().unwrap().reload().ok();
         self.clear_facet_cache();
-        self.prune_dead_ingest_cursors()?;
 
         Ok(count)
     }
@@ -110,51 +109,8 @@ impl LogIndex {
         }
         self.reader.read().unwrap().reload().ok();
         self.clear_facet_cache();
-        self.prune_dead_ingest_cursors()?;
 
         Ok(docs_to_remove)
-    }
-
-    fn prune_dead_ingest_cursors(&self) -> Result<()> {
-        let mut ingest = self.ingest.lock().unwrap();
-        let keys: Vec<String> = ingest.sources.keys().cloned().collect();
-        let mut any_removed = false;
-
-        let searcher = self.reader.read().unwrap().searcher();
-        for key in keys {
-            let Some((run_id, service)) = key.split_once('/') else {
-                continue;
-            };
-            let query = tantivy::query::BooleanQuery::new(vec![
-                (
-                    tantivy::query::Occur::Must,
-                    Box::new(TermQuery::new(
-                        Term::from_field_text(self.fields.run_id, run_id),
-                        tantivy::schema::IndexRecordOption::Basic,
-                    )) as Box<dyn tantivy::query::Query>,
-                ),
-                (
-                    tantivy::query::Occur::Must,
-                    Box::new(TermQuery::new(
-                        Term::from_field_text(self.fields.service, service),
-                        tantivy::schema::IndexRecordOption::Basic,
-                    )),
-                ),
-            ]);
-            let count = searcher.search(&query, &Count).unwrap_or(0);
-            if count == 0 {
-                ingest.sources.remove(&key);
-                ingest.facet_fields.remove(&key);
-                any_removed = true;
-            }
-        }
-
-        if any_removed {
-            let bytes = serde_json::to_vec_pretty(&*ingest)?;
-            crate::util::atomic_write(&self.ingest_state_path, &bytes)?;
-        }
-
-        Ok(())
     }
 }
 
