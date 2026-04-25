@@ -70,6 +70,8 @@ impl LogIndex {
                 .unwrap_or(0);
             if file_len < cursor.offset {
                 cursor.offset = 0;
+            } else if file_len == cursor.offset {
+                continue;
             }
 
             let mut file =
