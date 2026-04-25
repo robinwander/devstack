@@ -71,8 +71,10 @@ pub(crate) fn spawn_source_backfill(index: Arc<LogIndex>, name: String, sources:
         tokio::time::sleep(Duration::from_millis(100)).await;
         let run_id = source_run_id(&name);
         match tokio::task::spawn_blocking(move || {
-            ingest_sources_in_priority_batches(&index, &sources)?;
-            index.warm_facets(&run_id);
+            if !index.sources_are_current(&sources) {
+                ingest_sources_in_priority_batches(&index, &sources)?;
+                index.warm_facets(&run_id);
+            }
             Ok::<(), anyhow::Error>(())
         })
         .await

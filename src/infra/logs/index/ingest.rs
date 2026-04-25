@@ -13,6 +13,23 @@ use crate::util::atomic_write;
 use super::{IngestCursor, LogIndex, LogSource};
 
 impl LogIndex {
+    pub(crate) fn sources_are_current(&self, sources: &[LogSource]) -> bool {
+        let ingest = self.ingest.lock().unwrap();
+        sources.iter().all(|source| {
+            let Ok(metadata) = std::fs::metadata(&source.path) else {
+                return true;
+            };
+            if !metadata.is_file() {
+                return true;
+            }
+            let key = Self::source_key(&source.run_id, &source.service);
+            ingest
+                .sources
+                .get(&key)
+                .is_some_and(|cursor| cursor.offset == metadata.len())
+        })
+    }
+
     pub(crate) fn ingest_sources(&self, sources: &[LogSource]) -> Result<()> {
         let _gate = self.ingest_gate.lock().unwrap();
         if sources.is_empty() {

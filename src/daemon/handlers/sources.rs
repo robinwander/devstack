@@ -135,7 +135,7 @@ pub async fn source_logs_view(
     let warmup_sources = warmup_sources_for_query(&sources, &query).map_err(AppError::from)?;
     let query_index = index.clone();
     let response: LogViewResponse = tokio::task::spawn_blocking(move || {
-        if !warmup_sources.is_empty() {
+        if !warmup_sources.is_empty() && !query_index.sources_are_current(&warmup_sources) {
             query_index.ingest_sources(&warmup_sources)?;
         }
         query_index.query_view(&run_id, query)
@@ -144,7 +144,9 @@ pub async fn source_logs_view(
     .map_err(|err| AppError::Internal(anyhow!("source log view task failed: {err}")))?
     .map_err(map_log_index_error)?;
 
-    spawn_source_backfill(index, name, sources);
+    if !index.sources_are_current(&sources) {
+        spawn_source_backfill(index, name, sources);
+    }
 
     Ok(Json(response))
 }
