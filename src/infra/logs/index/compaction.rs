@@ -29,6 +29,7 @@ impl LogIndex {
             Self::schedule_compaction(&self.index, writer);
         }
         self.reader.read().unwrap().reload().ok();
+        self.clear_facet_cache();
         {
             let mut ingest = self.ingest.lock().unwrap();
             let prefix = format!("{run_id}/");

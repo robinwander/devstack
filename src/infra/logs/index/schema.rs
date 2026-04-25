@@ -105,6 +105,7 @@ impl LogIndex {
             ingest_state_path: ingest_state_path.to_path_buf(),
             ingest_gate: std::sync::Mutex::new(()),
             ingest: std::sync::Mutex::new(ingest),
+            facet_cache: std::sync::Mutex::new(HashMap::new()),
         })
     }
 

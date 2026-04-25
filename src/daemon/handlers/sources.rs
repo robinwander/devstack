@@ -134,13 +134,17 @@ pub async fn source_logs_view(
                     .map_err(map_log_index_error)?;
             return Ok(Json(response));
         }
-        let index = index.clone();
+        let tail_index = index.clone();
+        let warm_index = index.clone();
+        let warm_run_id = run_id.clone();
         let last = query.filter.last.unwrap_or(500);
-        let response =
-            tokio::task::spawn_blocking(move || read_source_tail(&sources, last, &index, &run_id))
-                .await
-                .map_err(|err| AppError::Internal(anyhow!("source tail task failed: {err}")))?
-                .map_err(AppError::from)?;
+        let response = tokio::task::spawn_blocking(move || {
+            read_source_tail(&sources, last, &tail_index, &run_id)
+        })
+        .await
+        .map_err(|err| AppError::Internal(anyhow!("source tail task failed: {err}")))?
+        .map_err(AppError::from)?;
+        tokio::task::spawn_blocking(move || warm_index.warm_facets(&warm_run_id));
         return Ok(Json(response));
     }
 

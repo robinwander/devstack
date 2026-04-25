@@ -51,6 +51,7 @@ impl LogIndex {
             std::mem::drop(writer.garbage_collect_files());
         }
         self.reader.read().unwrap().reload().ok();
+        self.clear_facet_cache();
         self.prune_dead_ingest_cursors()?;
 
         Ok(count)
@@ -108,6 +109,7 @@ impl LogIndex {
             Self::schedule_compaction(&self.index, writer);
         }
         self.reader.read().unwrap().reload().ok();
+        self.clear_facet_cache();
         self.prune_dead_ingest_cursors()?;
 
         Ok(docs_to_remove)

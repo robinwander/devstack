@@ -222,6 +222,7 @@ impl LogIndex {
             writer.commit()?;
         }
         self.reader.read().unwrap().reload()?;
+        self.clear_facet_cache();
 
         {
             let mut ingest = self.ingest.lock().unwrap();

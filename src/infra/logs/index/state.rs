@@ -3,6 +3,8 @@ use std::path::PathBuf;
 use std::sync::{Mutex, RwLock};
 
 use serde::{Deserialize, Serialize};
+
+use crate::api::LogViewResponse;
 use tantivy::schema::Field;
 use tantivy::{Index, IndexReader, IndexWriter};
 
@@ -32,6 +34,16 @@ pub(crate) struct IngestCursor {
     pub(crate) next_seq: u64,
 }
 
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct FacetCacheKey {
+    pub(crate) run_id: String,
+    pub(crate) service: Option<String>,
+    pub(crate) since: Option<String>,
+    pub(crate) search: Option<String>,
+    pub(crate) level: Option<String>,
+    pub(crate) stream: Option<String>,
+}
+
 #[derive(Clone)]
 pub(crate) struct LogIndexFields {
     pub(crate) run_id: Field,
@@ -59,4 +71,5 @@ pub(crate) struct LogIndex {
     pub(crate) ingest_state_path: PathBuf,
     pub(crate) ingest_gate: Mutex<()>,
     pub(crate) ingest: Mutex<IngestStateFile>,
+    pub(crate) facet_cache: Mutex<HashMap<FacetCacheKey, LogViewResponse>>,
 }

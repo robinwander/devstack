@@ -12,7 +12,7 @@ use crate::api::{FacetFilter, LogEntry, LogViewQuery, LogViewResponse, LogsQuery
 use crate::logfmt::parse_timestamp_nanos;
 
 use super::facets::{FacetCountCollector, ScopeStatsCollector};
-use super::{LogIndex, LogIndexFields, LogSource};
+use super::{FacetCacheKey, LogIndex, LogIndexFields, LogSource};
 
 impl LogIndex {
     pub(crate) fn search_service(
@@ -153,6 +153,13 @@ impl LogIndex {
     }
 
     pub(crate) fn query_view(&self, run_id: &str, query: LogViewQuery) -> Result<LogViewResponse> {
+        let facet_cache_key = Self::facet_cache_key(run_id, &query);
+        if let Some(cache_key) = facet_cache_key.as_ref()
+            && let Some(response) = self.facet_cache.lock().unwrap().get(cache_key).cloned()
+        {
+            return Ok(response);
+        }
+
         let tail = query.filter.last.unwrap_or(500);
         let level_filter = query.filter.level.as_deref().unwrap_or("all");
         let stream_filter = query.filter.stream.as_deref();
@@ -335,12 +342,46 @@ impl LogIndex {
             });
         }
 
-        Ok(LogViewResponse {
+        let response = LogViewResponse {
             entries: entries.into_iter().map(|(_, _, entry)| entry).collect(),
             truncated: query.include_entries && total > tail && tail > 0,
             total,
             filters,
+        };
+        if let Some(cache_key) = facet_cache_key {
+            self.facet_cache
+                .lock()
+                .unwrap()
+                .insert(cache_key, response.clone());
+        }
+        Ok(response)
+    }
+
+    fn facet_cache_key(run_id: &str, query: &LogViewQuery) -> Option<FacetCacheKey> {
+        (query.include_facets && !query.include_entries).then(|| FacetCacheKey {
+            run_id: run_id.to_string(),
+            service: query.service.clone(),
+            since: query.filter.since.clone(),
+            search: query.filter.search.clone(),
+            level: query.filter.level.clone(),
+            stream: query.filter.stream.clone(),
         })
+    }
+
+    pub(crate) fn warm_facets(&self, run_id: &str) {
+        let _ = self.query_view(
+            run_id,
+            LogViewQuery {
+                filter: Default::default(),
+                service: None,
+                include_entries: false,
+                include_facets: true,
+            },
+        );
+    }
+
+    pub(crate) fn clear_facet_cache(&self) {
+        self.facet_cache.lock().unwrap().clear();
     }
 
     fn build_scope_query(
