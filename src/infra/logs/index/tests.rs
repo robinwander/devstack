@@ -618,6 +618,40 @@ fn schema_version_mismatch_rebuilds_index_state() {
 }
 
 #[test]
+fn missing_segment_files_reset_index_state() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let index = LogIndex::open_or_create_in(dir.path()).unwrap();
+        let log_path = dir.path().join("api.log");
+        std::fs::write(&log_path, "[2025-01-01T00:00:00Z] [stdout] hello\n").unwrap();
+        let sources = vec![LogSource {
+            run_id: "run-broken".to_string(),
+            service: "api".to_string(),
+            path: log_path,
+        }];
+        ingest(&index, &sources);
+    }
+
+    let term_file = std::fs::read_dir(dir.path().join("logs_index"))
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.path())
+        .find(|path| path.extension().and_then(|ext| ext.to_str()) == Some("term"))
+        .unwrap();
+    std::fs::remove_file(term_file).unwrap();
+
+    let index = LogIndex::open_or_create_in(dir.path()).unwrap();
+    let response = index
+        .query_view(
+            "run-broken",
+            log_view_query(Some(10), None, None, None, None, true, false),
+        )
+        .unwrap();
+
+    assert_eq!(response.total, 0);
+}
+
+#[test]
 fn ingest_is_idempotent_if_cursor_rolls_back() {
     let dir = tempfile::tempdir().unwrap();
     let index = LogIndex::open_or_create_in(dir.path()).unwrap();

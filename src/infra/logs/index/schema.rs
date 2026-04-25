@@ -56,26 +56,40 @@ impl LogIndex {
 
     fn open_or_create_at(index_dir: &Path, ingest_state_path: &Path) -> Result<Self> {
         Self::reset_for_schema_version(index_dir, ingest_state_path)?;
-        std::fs::create_dir_all(index_dir)?;
+        let index = Self::open_or_create_tantivy_index(index_dir)?;
+        match Self::open_from_tantivy_index(index_dir, ingest_state_path, index) {
+            Ok(index) => Ok(index),
+            Err(_) => {
+                Self::reset_index_storage(index_dir, ingest_state_path)?;
+                let index = Self::open_or_create_tantivy_index(index_dir)?;
+                Self::open_from_tantivy_index(index_dir, ingest_state_path, index)
+            }
+        }
+    }
 
+    fn open_or_create_tantivy_index(index_dir: &Path) -> Result<Index> {
+        std::fs::create_dir_all(index_dir)?;
         let index = match Index::open_in_dir(index_dir) {
             Ok(index) => index,
             Err(_) => {
-                if index_dir.join("meta.json").exists() {
-                    let backup = index_dir.with_extension(format!("broken.{}", std::process::id()));
-                    let _ = std::fs::rename(index_dir, &backup);
-                    std::fs::create_dir_all(index_dir)?;
-                }
+                Self::reset_index_storage(index_dir, &index_dir.join("ingest_state.json"))?;
+                std::fs::create_dir_all(index_dir)?;
                 let schema = Self::build_schema();
                 Index::create_in_dir(index_dir, schema)?
             }
         };
-
         atomic_write(
             &Self::schema_version_path(index_dir),
             CURRENT_SCHEMA_VERSION.as_bytes(),
         )?;
+        Ok(index)
+    }
 
+    fn open_from_tantivy_index(
+        index_dir: &Path,
+        ingest_state_path: &Path,
+        index: Index,
+    ) -> Result<Self> {
         let schema = index.schema();
         let fields = Self::resolve_fields(&schema)?;
 
@@ -107,6 +121,16 @@ impl LogIndex {
             ingest: std::sync::Mutex::new(ingest),
             facet_cache: std::sync::Mutex::new(HashMap::new()),
         })
+    }
+
+    fn reset_index_storage(index_dir: &Path, ingest_state_path: &Path) -> Result<()> {
+        if index_dir.exists() {
+            std::fs::remove_dir_all(index_dir)?;
+        }
+        if ingest_state_path.exists() {
+            std::fs::remove_file(ingest_state_path)?;
+        }
+        Ok(())
     }
 
     fn open_writer_with_retry(index: &Index) -> Result<tantivy::IndexWriter> {
