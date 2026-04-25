@@ -7,10 +7,7 @@ use anyhow::{Context, Result};
 use tantivy::Term;
 use tantivy::query::{BooleanQuery, Occur, RangeQuery, TermQuery};
 
-use crate::logfmt::{
-    classify_line_level, extract_log_content, extract_timestamp_str, parse_timestamp_nanos,
-};
-use crate::logfmt::{contains_ansi, strip_ansi};
+use crate::logfmt::{contains_ansi, parse_log_line, parse_timestamp_nanos, strip_ansi};
 use crate::util::atomic_write;
 
 use super::{IngestCursor, LogIndex, LogSource};
@@ -106,11 +103,14 @@ impl LogIndex {
                 }
                 any_lines = true;
 
-                let ts = extract_timestamp_str(&line).unwrap_or_default();
+                let parsed = parse_log_line(&line);
+                let ts = parsed.timestamp.unwrap_or_default();
                 let ts_nanos = parse_timestamp_nanos(&ts).unwrap_or(0);
-                let (stream, message) = extract_log_content(&line);
-                let level = classify_line_level(&line);
-                let dynamic_fields = Self::extract_dynamic_json_fields(&line);
+                let dynamic_fields = parsed
+                    .json
+                    .as_ref()
+                    .map(Self::extract_dynamic_json_fields_from_map)
+                    .unwrap_or_default();
                 let seq = cursor.next_seq;
                 cursor.next_seq = cursor.next_seq.saturating_add(1);
 
@@ -125,12 +125,12 @@ impl LogIndex {
                 pending_docs.push(PendingDoc {
                     run_id: source.run_id.clone(),
                     service: source.service.clone(),
-                    stream,
-                    level,
+                    stream: parsed.stream,
+                    level: parsed.level,
                     ts_nanos,
                     ts,
                     seq,
-                    message,
+                    message: parsed.message,
                     raw: line,
                     dynamic_fields,
                 });

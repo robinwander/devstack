@@ -1,5 +1,5 @@
 use regex::Regex;
-use serde_json::Value;
+use serde_json::{Map, Value};
 use std::sync::LazyLock;
 
 pub(crate) fn encode_log_line(stream: &str, content: &str, timestamp: &str) -> String {
@@ -180,6 +180,79 @@ fn value_as_string(value: &Value) -> Option<String> {
         Value::Number(n) => Some(n.to_string()),
         Value::Bool(b) => Some(b.to_string()),
         _ => None,
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct ParsedLogLine {
+    pub(crate) timestamp: Option<String>,
+    pub(crate) stream: String,
+    pub(crate) message: String,
+    pub(crate) level: String,
+    pub(crate) json: Option<Map<String, Value>>,
+}
+
+pub(crate) fn parse_log_line(line: &str) -> ParsedLogLine {
+    if let Some(map) = parse_json_object(line) {
+        let timestamp = ["time", "ts", "timestamp"]
+            .into_iter()
+            .find_map(|field| map.get(field).and_then(value_as_string));
+        let stream = map
+            .get("stream")
+            .and_then(value_as_string)
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "stdout".to_string());
+        let message = map
+            .get("msg")
+            .or_else(|| map.get("message"))
+            .and_then(value_as_string)
+            .unwrap_or_else(|| line.to_string());
+        let level = map
+            .get("level")
+            .or_else(|| map.get("severity"))
+            .and_then(normalize_level_value)
+            .unwrap_or_else(|| {
+                let msg = map
+                    .get("msg")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("");
+                let stream = map
+                    .get("stream")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("stdout");
+                let detected = detect_log_level(msg);
+                if detected == "info" && stream == "stderr" {
+                    "warn".to_string()
+                } else {
+                    detected.to_string()
+                }
+            });
+
+        return ParsedLogLine {
+            timestamp,
+            stream,
+            message,
+            level,
+            json: Some(map),
+        };
+    }
+
+    let timestamp = extract_bracket_timestamp(line);
+    let (stream, message) =
+        extract_bracket_content(line).unwrap_or_else(|| ("stdout".to_string(), line.to_string()));
+    let detected = detect_log_level(&message);
+    let level = if detected == "info" && stream == "stderr" {
+        "warn".to_string()
+    } else {
+        detected.to_string()
+    };
+
+    ParsedLogLine {
+        timestamp,
+        stream,
+        message,
+        level,
+        json: None,
     }
 }
 

@@ -238,25 +238,18 @@ impl LogIndex {
         Ok(())
     }
 
-    pub(super) fn extract_dynamic_json_fields(line: &str) -> Vec<(String, String)> {
-        let trimmed = line.trim();
-        if !trimmed.starts_with('{') {
-            return Vec::new();
-        }
-
-        let Ok(JsonValue::Object(map)) = serde_json::from_str::<JsonValue>(trimmed) else {
-            return Vec::new();
-        };
-
+    pub(super) fn extract_dynamic_json_fields_from_map(
+        map: &serde_json::Map<String, JsonValue>,
+    ) -> Vec<(String, String)> {
         let mut fields = HashMap::new();
         for (field_name, value) in map {
-            let Some(field_name) = Self::normalize_dynamic_field_name(&field_name) else {
+            let Some(field_name) = Self::normalize_dynamic_field_name(field_name) else {
                 continue;
             };
             if Self::is_reserved_dynamic_field(&field_name) {
                 continue;
             }
-            let Some(value) = Self::dynamic_value_to_string(&value) else {
+            let Some(value) = Self::dynamic_value_to_string(value) else {
                 continue;
             };
             fields.entry(field_name).or_insert(value);
