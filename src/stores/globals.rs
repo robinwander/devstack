@@ -24,6 +24,10 @@ impl GlobalStore {
 
     pub async fn upsert_global(&self, record: GlobalRecord) {
         let mut guard = self.inner.lock().await;
+        if let Some(mut previous) = guard.remove(&record.key) {
+            previous.service.stop_health_monitor();
+            previous.service.stop_watch();
+        }
         guard.insert(record.key.clone(), record);
     }
 

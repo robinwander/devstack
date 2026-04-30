@@ -1,10 +1,24 @@
 mod support;
 
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom};
+use std::time::Duration;
+
 use anyhow::Result;
 use devstack::model::RunLifecycle;
 use support::fixtures;
 use support::workflows::{latest_run_for_project, start_fixture_run};
-use support::{ProjectHandle, RunHandle, TestHarness};
+use support::{ProjectHandle, RunHandle, TestHarness, UpOptions};
+use tokio::time::sleep;
+
+fn read_log_suffix(path: &std::path::Path, offset: u64) -> Result<String> {
+    let mut file = File::open(path)?;
+    file.seek(SeekFrom::Start(offset))?;
+
+    let mut contents = String::new();
+    file.read_to_string(&mut contents)?;
+    Ok(contents)
+}
 
 async fn assert_up_failure_marks_service_failed(
     t: &TestHarness,
@@ -47,6 +61,47 @@ async fn http_readiness_transitions_to_ready_successfully() -> Result<()> {
     let (daemon, _project, run) = start_fixture_run(&t, fixtures::simple_http()).await?;
 
     run.assert_ready().await?;
+    run.down().await?;
+    daemon.stop().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn force_refresh_does_not_leak_health_monitors() -> Result<()> {
+    let t = TestHarness::new().await?;
+    let project = t.fixture(fixtures::simple_http()).create().await?;
+    let daemon = t.daemon().start().await?;
+    let run = t.cli().up(&project).await?;
+
+    run.assert_ready().await?;
+
+    for _ in 0..3 {
+        let refreshed = t
+            .cli()
+            .up_with(
+                &project,
+                UpOptions {
+                    force: true,
+                    ..UpOptions::default()
+                },
+            )
+            .await?;
+        assert_eq!(refreshed.id(), run.id());
+        refreshed.assert_ready().await?;
+    }
+
+    let log_path = t.run_dir(run.id()).join("logs/api.log");
+    let offset = std::fs::metadata(&log_path)?.len();
+
+    sleep(Duration::from_secs(12)).await;
+
+    let appended_logs = read_log_suffix(&log_path, offset)?;
+    let health_probe_count = appended_logs.matches("http-access name=api").count();
+    assert!(
+        health_probe_count <= 4,
+        "expected a single health monitor after repeated force refreshes, got {health_probe_count} probes\n{appended_logs}",
+    );
+
     run.down().await?;
     daemon.stop().await?;
     Ok(())

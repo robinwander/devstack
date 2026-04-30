@@ -19,7 +19,7 @@ use crate::app::runtime::{
 };
 use crate::config::{ConfigFile, StackPlan, TaskConfig};
 use crate::ids::RunId;
-use crate::model::{InstanceScope, RunRecord};
+use crate::model::{InstanceScope, RunRecord, ServiceRecord};
 use crate::model::{RunLifecycle, ServiceState};
 use crate::paths;
 use crate::port::allocate_ports;
@@ -627,6 +627,23 @@ async fn sync_unchanged_service(
     Ok(())
 }
 
+fn replace_service_record(
+    run: &mut RunRecord,
+    service_name: &str,
+    record: ServiceRecord,
+) -> Option<ServiceState> {
+    let previous = run.services.remove(service_name);
+    let previous_state = previous.as_ref().map(|record| record.runtime.state.clone());
+
+    if let Some(mut previous) = previous {
+        previous.stop_health_monitor();
+        previous.stop_watch();
+    }
+
+    run.services.insert(service_name.to_string(), record);
+    previous_state
+}
+
 async fn record_failed_init_service(
     app: &AppContext,
     run_id: &RunId,
@@ -643,7 +660,7 @@ async fn record_failed_init_service(
     let events = app
         .runs
         .with_run_mut(run_id.as_str(), |run| {
-            run.services.insert(service_name.to_string(), record);
+            replace_service_record(run, service_name, record);
             vec![service_state_changed_event(
                 run_id.as_str(),
                 service_name,
@@ -680,11 +697,7 @@ async fn store_service_launch_result(
     let events = app
         .runs
         .with_run_mut(run_id.as_str(), |run| {
-            let previous_state = run
-                .services
-                .get(service_name)
-                .map(|record| record.runtime.state.clone());
-            run.services.insert(service_name.to_string(), record);
+            let previous_state = replace_service_record(run, service_name, record);
             if previous_state.as_ref() != Some(&initial_state) {
                 vec![service_state_changed_event(
                     run_id.as_str(),
