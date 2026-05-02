@@ -163,6 +163,21 @@ async fn daemon_restart_preserves_visible_run_state() -> Result<()> {
 }
 
 #[tokio::test]
+async fn daemon_stop_cleans_local_process_manager_units_including_globals() -> Result<()> {
+    let t = TestHarness::new().await?;
+    let (daemon, _project, run) = start_fixture_run(&t, fixtures::globals_fixture()).await?;
+
+    run.assert_ready().await?;
+    assert!(t.local_units_path().exists());
+
+    run.down().await?;
+    daemon.stop().await?;
+
+    assert!(!t.local_units_path().exists());
+    Ok(())
+}
+
+#[tokio::test]
 async fn daemon_restart_restores_legacy_run_manifest_without_config_dir() -> Result<()> {
     let t = TestHarness::new().await?;
     let (daemon, _project, run) = start_fixture_run(&t, fixtures::simple_http()).await?;

@@ -87,6 +87,8 @@ impl DaemonHandle {
             }
         }
 
+        devstack::systemd::LocalSystemd::cleanup_registry(&self.harness.local_units_path());
+
         if let Some(mut child) = self.child.take() {
             let _ = child.kill().await;
             let _ = child.wait().await;
@@ -115,6 +117,7 @@ impl DaemonHandle {
 impl Drop for DaemonHandle {
     fn drop(&mut self) {
         if let Some(child) = self.child.as_mut() {
+            devstack::systemd::LocalSystemd::cleanup_registry(&self.harness.local_units_path());
             let _ = child.start_kill();
         }
     }

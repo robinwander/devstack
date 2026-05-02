@@ -60,6 +60,10 @@ pub fn daemon_state_path() -> Result<PathBuf> {
     Ok(daemon_dir()?.join("state.json"))
 }
 
+pub fn local_units_path() -> Result<PathBuf> {
+    Ok(daemon_dir()?.join("local-units.json"))
+}
+
 pub fn daemon_lock_path() -> Result<PathBuf> {
     Ok(daemon_dir()?.join("daemon.lock"))
 }

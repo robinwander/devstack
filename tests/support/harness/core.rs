@@ -166,6 +166,10 @@ impl TestHarness {
         self.base_dir().join("daemon").join("devstackd.sock")
     }
 
+    pub fn local_units_path(&self) -> PathBuf {
+        self.base_dir().join("daemon").join("local-units.json")
+    }
+
     pub fn run_dir(&self, run_id: &str) -> PathBuf {
         self.base_dir().join("runs").join(run_id)
     }

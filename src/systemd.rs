@@ -3,14 +3,14 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ExecStart {
     pub path: String,
     pub argv: Vec<String>,
     pub ignore_failure: bool,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct UnitProperties {
     pub description: String,
     pub working_directory: String,
@@ -203,13 +203,15 @@ impl SystemdManager for RealSystemd {
 }
 
 #[cfg(unix)]
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+#[cfg(unix)]
+use std::path::PathBuf;
 #[cfg(unix)]
 use std::process::ExitStatus;
 #[cfg(unix)]
 use std::sync::Arc;
 #[cfg(unix)]
-use tokio::process::Command;
+use tokio::process::{Child, Command};
 #[cfg(unix)]
 use tokio::sync::Mutex;
 #[cfg(unix)]
@@ -219,14 +221,51 @@ use tokio::time::{Duration, timeout};
 #[derive(Clone)]
 pub struct LocalSystemd {
     units: Arc<Mutex<HashMap<String, LocalUnit>>>,
+    registry_path: Arc<PathBuf>,
 }
 
 #[cfg(unix)]
 struct LocalUnit {
     props: UnitProperties,
-    child: tokio::process::Child,
+    child: Option<Child>,
     pgid: Option<i32>,
-    last_status: Option<ExitStatus>,
+    last_status: Option<LocalExitStatus>,
+}
+
+#[cfg(unix)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct LocalExitStatus {
+    success: bool,
+    code: Option<i32>,
+}
+
+#[cfg(unix)]
+impl LocalExitStatus {
+    fn result(&self) -> String {
+        if self.success {
+            "success".to_string()
+        } else {
+            "exit-code".to_string()
+        }
+    }
+}
+
+#[cfg(unix)]
+impl From<ExitStatus> for LocalExitStatus {
+    fn from(status: ExitStatus) -> Self {
+        Self {
+            success: status.success(),
+            code: status.code(),
+        }
+    }
+}
+
+#[cfg(unix)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct PersistedLocalUnit {
+    props: UnitProperties,
+    pgid: Option<i32>,
+    last_status: Option<LocalExitStatus>,
 }
 
 #[cfg(unix)]
@@ -239,40 +278,167 @@ impl Default for LocalSystemd {
 #[cfg(unix)]
 impl LocalSystemd {
     pub fn new() -> Self {
-        let units = Arc::new(Mutex::new(HashMap::new()));
-        Self::spawn_reaper(units.clone());
-        Self { units }
+        let registry_path = crate::paths::local_units_path()
+            .unwrap_or_else(|_| std::env::temp_dir().join("devstack-local-units.json"));
+        Self::with_registry_path(registry_path)
     }
 
-    fn spawn_reaper(units: Arc<Mutex<HashMap<String, LocalUnit>>>) {
+    #[cfg(test)]
+    fn new_with_registry_path(registry_path: PathBuf) -> Self {
+        Self::with_registry_path(registry_path)
+    }
+
+    fn with_registry_path(registry_path: PathBuf) -> Self {
+        let mut loaded = Self::load_units(&registry_path);
+        loaded.retain(|_, unit| Self::should_keep_loaded_unit(unit));
+        Self::persist_units_sync(&registry_path, &loaded);
+
+        let units = Arc::new(Mutex::new(loaded));
+        let registry_path = Arc::new(registry_path);
+        Self::spawn_reaper(units.clone(), registry_path.clone());
+        Self {
+            units,
+            registry_path,
+        }
+    }
+
+    fn should_keep_loaded_unit(unit: &LocalUnit) -> bool {
+        if unit.props.remain_after_exit && unit.last_status.is_some() {
+            return true;
+        }
+        unit.pgid.is_some_and(process_group_exists)
+    }
+
+    fn load_units(registry_path: &Path) -> HashMap<String, LocalUnit> {
+        let Ok(raw) = std::fs::read(registry_path) else {
+            return HashMap::new();
+        };
+        let Ok(persisted) = serde_json::from_slice::<BTreeMap<String, PersistedLocalUnit>>(&raw)
+        else {
+            return HashMap::new();
+        };
+        persisted
+            .into_iter()
+            .map(|(name, unit)| {
+                (
+                    name,
+                    LocalUnit {
+                        props: unit.props,
+                        child: None,
+                        pgid: unit.pgid,
+                        last_status: unit.last_status,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    fn persist_units_sync(registry_path: &Path, units: &HashMap<String, LocalUnit>) {
+        let persisted = units
+            .iter()
+            .map(|(name, unit)| {
+                (
+                    name.clone(),
+                    PersistedLocalUnit {
+                        props: unit.props.clone(),
+                        pgid: unit.pgid,
+                        last_status: unit.last_status.clone(),
+                    },
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+
+        if let Some(parent) = registry_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let tmp_path = registry_path.with_extension("json.tmp");
+        if persisted.is_empty() {
+            let _ = std::fs::remove_file(registry_path);
+            let _ = std::fs::remove_file(tmp_path);
+            return;
+        }
+        let Ok(bytes) = serde_json::to_vec_pretty(&persisted) else {
+            return;
+        };
+        if std::fs::write(&tmp_path, bytes).is_ok() {
+            let _ = std::fs::rename(tmp_path, registry_path);
+        }
+    }
+
+    fn persist_units(&self, units: &HashMap<String, LocalUnit>) {
+        Self::persist_units_sync(&self.registry_path, units);
+    }
+
+    pub fn cleanup_registry(registry_path: &Path) {
+        let units = Self::load_units(registry_path);
+        for unit in units.values() {
+            Self::signal_unit(unit, libc::SIGTERM);
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while std::time::Instant::now() < deadline
+            && units
+                .values()
+                .any(|unit| unit.pgid.is_some_and(|pgid| process_group_exists(pgid)))
+        {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        for unit in units.values() {
+            if unit.pgid.is_some_and(|pgid| process_group_exists(pgid)) {
+                Self::signal_unit(unit, libc::SIGKILL);
+            }
+        }
+        let _ = std::fs::remove_file(registry_path);
+    }
+
+    fn spawn_reaper(units: Arc<Mutex<HashMap<String, LocalUnit>>>, registry_path: Arc<PathBuf>) {
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(1));
             loop {
                 interval.tick().await;
                 let mut guard = units.lock().await;
                 let mut to_remove = Vec::new();
+                let mut changed = false;
                 for (name, unit) in guard.iter_mut() {
-                    match unit.child.try_wait() {
-                        Ok(Some(status)) => {
-                            unit.last_status = Some(status);
-                            if !unit.props.remain_after_exit {
+                    if let Some(child) = unit.child.as_mut() {
+                        match child.try_wait() {
+                            Ok(Some(status)) => {
+                                unit.last_status = Some(status.into());
+                                unit.child = None;
+                                changed = true;
+                                if !unit.props.remain_after_exit {
+                                    to_remove.push(name.clone());
+                                }
+                            }
+                            Ok(None) => {}
+                            Err(_) => {
                                 to_remove.push(name.clone());
                             }
                         }
-                        Ok(None) => {}
-                        Err(_) => {
-                            to_remove.push(name.clone());
-                        }
+                        continue;
                     }
+
+                    if unit.props.remain_after_exit && unit.last_status.is_some() {
+                        continue;
+                    }
+                    if unit.pgid.is_some_and(process_group_exists) {
+                        continue;
+                    }
+                    to_remove.push(name.clone());
+                }
+                if !to_remove.is_empty() {
+                    changed = true;
                 }
                 for name in to_remove {
                     guard.remove(&name);
+                }
+                if changed {
+                    Self::persist_units_sync(&registry_path, &guard);
                 }
             }
         });
     }
 
-    fn spawn_child(props: &UnitProperties) -> Result<tokio::process::Child> {
+    fn spawn_child(props: &UnitProperties) -> Result<Child> {
         let mut cmd = Command::new(&props.exec_start.path);
         if !props.exec_start.argv.is_empty() {
             if props.exec_start.argv[0] == props.exec_start.path {
@@ -317,7 +483,7 @@ impl LocalSystemd {
             }
             return;
         }
-        if let Some(pid) = unit.child.id() {
+        if let Some(pid) = unit.child.as_ref().and_then(Child::id) {
             // SAFETY: `pid` comes from the running child handle. Sending a signal to this pid is
             // safe; errors are ignored because the process may have already exited.
             unsafe {
@@ -328,22 +494,64 @@ impl LocalSystemd {
 
     async fn stop_and_reap(unit: &mut LocalUnit, signal: i32) -> Result<()> {
         Self::signal_unit(unit, signal);
+        let pgid = unit.pgid;
 
-        match timeout(Duration::from_secs(3), unit.child.wait()).await {
-            Ok(Ok(status)) => {
-                unit.last_status = Some(status);
-                Ok(())
-            }
-            Ok(Err(err)) => Err(err).context("wait for local service"),
-            Err(_) => {
-                Self::signal_unit(unit, libc::SIGKILL);
-                if let Ok(Ok(status)) = timeout(Duration::from_secs(1), unit.child.wait()).await {
-                    unit.last_status = Some(status);
+        if let Some(child) = unit.child.as_mut() {
+            match timeout(Duration::from_secs(3), child.wait()).await {
+                Ok(Ok(status)) => {
+                    unit.last_status = Some(status.into());
+                    return Ok(());
                 }
-                Ok(())
+                Ok(Err(err)) => return Err(err).context("wait for local service"),
+                Err(_) => {
+                    if let Some(pgid) = pgid {
+                        // SAFETY: negative pid targets the process group created for this unit.
+                        unsafe {
+                            let _ = libc::kill(-pgid, libc::SIGKILL);
+                        }
+                    }
+                    if let Ok(Ok(status)) = timeout(Duration::from_secs(1), child.wait()).await {
+                        unit.last_status = Some(status.into());
+                    }
+                    return Ok(());
+                }
             }
         }
+
+        let Some(pgid) = pgid else {
+            return Ok(());
+        };
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        if wait_for_process_group_exit(pgid, deadline).await {
+            return Ok(());
+        }
+        Self::signal_unit(unit, libc::SIGKILL);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+        let _ = wait_for_process_group_exit(pgid, deadline).await;
+        Ok(())
     }
+}
+
+#[cfg(unix)]
+fn process_group_exists(pgid: i32) -> bool {
+    // SAFETY: `kill(-pgid, 0)` performs a process-group existence probe without sending a signal.
+    unsafe {
+        if libc::kill(-pgid, 0) == 0 {
+            return true;
+        }
+    }
+    std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+}
+
+#[cfg(unix)]
+async fn wait_for_process_group_exit(pgid: i32, deadline: tokio::time::Instant) -> bool {
+    while tokio::time::Instant::now() < deadline {
+        if !process_group_exists(pgid) {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    !process_group_exists(pgid)
 }
 
 #[cfg(unix)]
@@ -352,7 +560,9 @@ impl SystemdManager for LocalSystemd {
     async fn start_transient_service(&self, unit_name: &str, props: UnitProperties) -> Result<()> {
         let existing = {
             let mut units = self.units.lock().await;
-            units.remove(unit_name)
+            let existing = units.remove(unit_name);
+            self.persist_units(&units);
+            existing
         };
         if let Some(mut unit) = existing {
             Self::stop_and_reap(&mut unit, libc::SIGTERM).await?;
@@ -366,18 +576,21 @@ impl SystemdManager for LocalSystemd {
             unit_name.to_string(),
             LocalUnit {
                 props,
-                child,
+                child: Some(child),
                 pgid,
                 last_status: None,
             },
         );
+        self.persist_units(&units);
         Ok(())
     }
 
     async fn stop_unit(&self, unit_name: &str) -> Result<()> {
         let unit = {
             let mut units = self.units.lock().await;
-            units.remove(unit_name)
+            let unit = units.remove(unit_name);
+            self.persist_units(&units);
+            unit
         };
         if let Some(mut unit) = unit {
             Self::stop_and_reap(&mut unit, libc::SIGTERM).await?;
@@ -388,7 +601,9 @@ impl SystemdManager for LocalSystemd {
     async fn restart_unit(&self, unit_name: &str) -> Result<()> {
         let previous = {
             let mut units = self.units.lock().await;
-            units.remove(unit_name)
+            let previous = units.remove(unit_name);
+            self.persist_units(&units);
+            previous
         };
 
         let Some(mut unit) = previous else {
@@ -405,18 +620,21 @@ impl SystemdManager for LocalSystemd {
             unit_name.to_string(),
             LocalUnit {
                 props,
-                child,
+                child: Some(child),
                 pgid,
                 last_status: None,
             },
         );
+        self.persist_units(&units);
         Ok(())
     }
 
     async fn kill_unit(&self, unit_name: &str, signal: i32) -> Result<()> {
         let unit = {
             let mut units = self.units.lock().await;
-            units.remove(unit_name)
+            let unit = units.remove(unit_name);
+            self.persist_units(&units);
+            unit
         };
         if let Some(mut unit) = unit {
             Self::stop_and_reap(&mut unit, signal).await?;
@@ -430,35 +648,60 @@ impl SystemdManager for LocalSystemd {
             return Ok(None);
         };
 
-        match unit.child.try_wait()? {
-            Some(status) => {
-                unit.last_status = Some(status);
-                let result = if status.success() {
-                    Some("success".to_string())
-                } else {
-                    Some("exit-code".to_string())
-                };
-
-                if unit.props.remain_after_exit {
-                    return Ok(Some(UnitStatus {
-                        active_state: "active".to_string(),
+        if let Some(child) = unit.child.as_mut() {
+            match child.try_wait()? {
+                Some(status) => {
+                    unit.last_status = Some(status.into());
+                    unit.child = None;
+                    let result = unit.last_status.as_ref().map(LocalExitStatus::result);
+                    let active_state = if unit.props.remain_after_exit {
+                        "active"
+                    } else {
+                        "inactive"
+                    }
+                    .to_string();
+                    let response = UnitStatus {
+                        active_state,
                         sub_state: "exited".to_string(),
                         result,
+                    };
+                    self.persist_units(&units);
+                    return Ok(Some(response));
+                }
+                None => {
+                    return Ok(Some(UnitStatus {
+                        active_state: "active".to_string(),
+                        sub_state: "running".to_string(),
+                        result: None,
                     }));
                 }
-
-                Ok(Some(UnitStatus {
-                    active_state: "inactive".to_string(),
-                    sub_state: "exited".to_string(),
-                    result,
-                }))
             }
-            None => Ok(Some(UnitStatus {
+        }
+
+        if unit.props.remain_after_exit && unit.last_status.is_some() {
+            return Ok(Some(UnitStatus {
+                active_state: "active".to_string(),
+                sub_state: "exited".to_string(),
+                result: unit.last_status.as_ref().map(LocalExitStatus::result),
+            }));
+        }
+
+        if unit.pgid.is_some_and(process_group_exists) {
+            return Ok(Some(UnitStatus {
                 active_state: "active".to_string(),
                 sub_state: "running".to_string(),
                 result: None,
-            })),
+            }));
         }
+
+        let result = unit.last_status.as_ref().map(LocalExitStatus::result);
+        units.remove(unit_name);
+        self.persist_units(&units);
+        Ok(Some(UnitStatus {
+            active_state: "inactive".to_string(),
+            sub_state: "exited".to_string(),
+            result,
+        }))
     }
 }
 
@@ -468,7 +711,8 @@ mod tests {
 
     #[tokio::test]
     async fn local_systemd_keeps_exited_unit_when_remain_after_exit_enabled() {
-        let systemd = LocalSystemd::new();
+        let dir = tempfile::tempdir().unwrap();
+        let systemd = LocalSystemd::new_with_registry_path(dir.path().join("local-units.json"));
         let unit_name = format!(
             "devstack-local-remain-after-exit-{}.service",
             std::process::id()
@@ -498,5 +742,43 @@ mod tests {
         assert_eq!(status.result.as_deref(), Some("success"));
 
         systemd.stop_unit(&unit_name).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn local_systemd_restores_persisted_unit_after_manager_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry_path = dir.path().join("local-units.json");
+        let unit_name = format!("devstack-local-restore-{}.service", std::process::id());
+        let props = UnitProperties::new(
+            "test".to_string(),
+            Path::new("/"),
+            vec![],
+            ExecStart {
+                path: "/bin/sh".to_string(),
+                argv: vec![
+                    "/bin/sh".to_string(),
+                    "-c".to_string(),
+                    "trap 'exit 0' TERM; while true; do sleep 1; done".to_string(),
+                ],
+                ignore_failure: false,
+            },
+        )
+        .with_restart("no");
+
+        let systemd = LocalSystemd::new_with_registry_path(registry_path.clone());
+        systemd
+            .start_transient_service(&unit_name, props)
+            .await
+            .unwrap();
+        assert!(registry_path.exists());
+        drop(systemd);
+
+        let restored = LocalSystemd::new_with_registry_path(registry_path.clone());
+        let status = restored.unit_status(&unit_name).await.unwrap().unwrap();
+        assert_eq!(status.active_state, "active");
+        assert_eq!(status.sub_state, "running");
+
+        restored.stop_unit(&unit_name).await.unwrap();
+        assert!(!registry_path.exists());
     }
 }
