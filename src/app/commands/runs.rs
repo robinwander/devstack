@@ -110,6 +110,42 @@ fn resolve_service_tasks(
     tasks
 }
 
+fn release_unpreserved_stack_ports(
+    run_id: &str,
+    stack_plan: &StackPlan,
+    port_map: &BTreeMap<String, Option<u16>>,
+    preserved: &BTreeMap<String, Option<u16>>,
+) {
+    for service_name in stack_plan.services.keys() {
+        let port = port_map.get(service_name).copied().flatten();
+        if port.is_some()
+            && preserved.get(service_name).copied().flatten() != port
+            && let Err(err) = release_service_port(run_id, service_name, port)
+        {
+            eprintln!("devstack: failed to release port for {service_name}: {err}");
+        }
+    }
+}
+
+async fn release_unrecorded_stack_ports(
+    app: &AppContext,
+    run_id: &RunId,
+    stack_plan: &StackPlan,
+    resources: &LaunchResources,
+) {
+    let recorded = app
+        .runs
+        .with_run(run_id.as_str(), |run| {
+            run.services
+                .iter()
+                .map(|(name, service)| (name.clone(), service.launch.port))
+                .collect::<BTreeMap<_, _>>()
+        })
+        .await
+        .unwrap_or_default();
+    release_unpreserved_stack_ports(run_id.as_str(), stack_plan, &resources.port_map, &recorded);
+}
+
 async fn initialize_new_run_layout(
     app: &AppContext,
     run_id: &RunId,
@@ -149,7 +185,7 @@ async fn build_new_launch_resources(
     .map_err(|err| AppError::bad_request(err.to_string()))?;
     let tasks_map = build_tasks_map(config);
     let globals = config.globals_map();
-    let global_ports = ensure_globals(
+    let global_ports = match ensure_globals(
         app,
         &globals,
         &tasks_map,
@@ -158,15 +194,36 @@ async fn build_new_launch_resources(
         config_dir,
     )
     .await
-    .map_err(AppError::from)?;
+    {
+        Ok(ports) => ports,
+        Err(err) => {
+            release_unpreserved_stack_ports(
+                run_id.as_str(),
+                stack_plan,
+                &port_map,
+                &BTreeMap::new(),
+            );
+            return Err(AppError::from(err));
+        }
+    };
     let service_schemes = build_service_schemes(stack_plan, &globals);
     for (name, port) in global_ports {
         port_map.entry(name).or_insert(port);
     }
 
     let scope = InstanceScope::run(run_id.clone(), stack_plan.name.clone());
-    let base_env =
-        build_base_env(&scope, project_dir, &port_map, &service_schemes).map_err(AppError::from)?;
+    let base_env = match build_base_env(&scope, project_dir, &port_map, &service_schemes) {
+        Ok(env) => env,
+        Err(err) => {
+            release_unpreserved_stack_ports(
+                run_id.as_str(),
+                stack_plan,
+                &port_map,
+                &BTreeMap::new(),
+            );
+            return Err(AppError::from(err));
+        }
+    };
 
     Ok(LaunchResources {
         config_dir: config_dir.to_path_buf(),
@@ -196,7 +253,16 @@ async fn build_refresh_launch_resources(
     let tasks_map = build_tasks_map(inputs.config);
     let globals = inputs.config.globals_map();
     let config_dir = inputs.config_path.parent().unwrap_or(inputs.project_dir);
-    let global_ports = ensure_globals(
+    let preserved = if inputs.reuse_ports {
+        inputs
+            .existing
+            .iter()
+            .map(|(service, snapshot)| (service.clone(), snapshot.port))
+            .collect::<BTreeMap<_, _>>()
+    } else {
+        BTreeMap::new()
+    };
+    let global_ports = match ensure_globals(
         inputs.app,
         &globals,
         &tasks_map,
@@ -205,15 +271,36 @@ async fn build_refresh_launch_resources(
         config_dir,
     )
     .await
-    .map_err(AppError::from)?;
+    {
+        Ok(ports) => ports,
+        Err(err) => {
+            release_unpreserved_stack_ports(
+                inputs.run_id.as_str(),
+                inputs.stack_plan,
+                &port_map,
+                &preserved,
+            );
+            return Err(AppError::from(err));
+        }
+    };
     let service_schemes = build_service_schemes(inputs.stack_plan, &globals);
     for (name, port) in global_ports {
         port_map.entry(name).or_insert(port);
     }
 
     let scope = InstanceScope::run(inputs.run_id.clone(), inputs.stack_plan.name.clone());
-    let base_env = build_base_env(&scope, inputs.project_dir, &port_map, &service_schemes)
-        .map_err(AppError::from)?;
+    let base_env = match build_base_env(&scope, inputs.project_dir, &port_map, &service_schemes) {
+        Ok(env) => env,
+        Err(err) => {
+            release_unpreserved_stack_ports(
+                inputs.run_id.as_str(),
+                inputs.stack_plan,
+                &port_map,
+                &preserved,
+            );
+            return Err(AppError::from(err));
+        }
+    };
 
     Ok(LaunchResources {
         config_dir: config_dir.to_path_buf(),
@@ -392,7 +479,7 @@ pub async fn up(app: &AppContext, request: UpRequest) -> AppResult<crate::api::R
     .await?;
     create_run_record(app, &run_id, &stack_plan, &project_dir, &resources).await?;
 
-    launch_services(
+    if let Err(err) = launch_services(
         app,
         &run_id,
         &stack_plan,
@@ -402,7 +489,11 @@ pub async fn up(app: &AppContext, request: UpRequest) -> AppResult<crate::api::R
         false,
         &BTreeMap::new(),
     )
-    .await?;
+    .await
+    {
+        release_unrecorded_stack_ports(app, &run_id, &stack_plan, &resources).await;
+        return Err(err);
+    }
 
     finalize_run_launch(app, &run_id).await
 }
@@ -462,7 +553,7 @@ pub async fn refresh_run(
     update_run_launch_resources(app, &run_id, &resources.base_env).await?;
     snapshot_run_config(&run_id, config_path)?;
 
-    launch_services(
+    if let Err(err) = launch_services(
         app,
         &run_id,
         stack_plan,
@@ -472,7 +563,11 @@ pub async fn refresh_run(
         force,
         &existing,
     )
-    .await?;
+    .await
+    {
+        release_unrecorded_stack_ports(app, &run_id, stack_plan, &resources).await;
+        return Err(err);
+    }
 
     finalize_run_launch(app, &run_id).await
 }

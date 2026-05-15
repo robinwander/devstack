@@ -45,23 +45,25 @@ fn allocate_ports_in_registry(
     services: &BTreeMap<String, ServiceConfig>,
     owner_for: impl Fn(&str) -> String,
 ) -> Result<BTreeMap<String, Option<u16>>> {
-    let mut allocated = BTreeMap::new();
+    with_registry(path, |registry| {
+        let mut allocated = BTreeMap::new();
 
-    for (name, svc) in services {
-        let owner = owner_for(name);
-        let port = match &svc.port {
-            Some(config) if config.is_none() => None,
-            Some(PortConfig::Fixed(value)) => {
-                reserve_available_port_in_registry(path, *value, &owner)?;
-                Some(*value)
-            }
-            Some(PortConfig::None(_)) => None,
-            None => Some(allocate_ephemeral_port_in_registry(path, &owner)?),
-        };
-        allocated.insert(name.clone(), port);
-    }
+        for (name, svc) in services {
+            let owner = owner_for(name);
+            let port = match &svc.port {
+                Some(config) if config.is_none() => None,
+                Some(PortConfig::Fixed(value)) => {
+                    reserve_specific_port(registry, *value, &owner, true)?;
+                    Some(*value)
+                }
+                Some(PortConfig::None(_)) => None,
+                None => Some(allocate_ephemeral_port(registry, &owner)?),
+            };
+            allocated.insert(name.clone(), port);
+        }
 
-    Ok(allocated)
+        Ok(allocated)
+    })
 }
 
 fn release_port_in_registry(path: &Path, port: u16, owner: &str) -> Result<()> {
@@ -81,27 +83,25 @@ fn release_port_in_registry(path: &Path, port: u16, owner: &str) -> Result<()> {
     })
 }
 
-fn allocate_ephemeral_port_in_registry(path: &Path, owner: &str) -> Result<u16> {
-    with_registry(path, |registry| {
-        loop {
-            let listener = TcpListener::bind("127.0.0.1:0")?;
-            let port = listener.local_addr()?.port();
-            drop(listener);
+fn allocate_ephemeral_port(registry: &mut PortReservationRegistry, owner: &str) -> Result<u16> {
+    loop {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let port = listener.local_addr()?.port();
+        drop(listener);
 
-            if registry.reservations.contains_key(&port) {
-                continue;
-            }
-
-            registry.reservations.insert(
-                port,
-                PortReservationEntry {
-                    owner: owner.to_string(),
-                    daemon_pid: std::process::id(),
-                },
-            );
-            return Ok(port);
+        if registry.reservations.contains_key(&port) {
+            continue;
         }
-    })
+
+        registry.reservations.insert(
+            port,
+            PortReservationEntry {
+                owner: owner.to_string(),
+                daemon_pid: std::process::id(),
+            },
+        );
+        return Ok(port);
+    }
 }
 
 fn reserve_port_in_registry(path: &Path, port: u16, owner: &str) -> Result<()> {
@@ -119,29 +119,38 @@ fn reserve_specific_port_in_registry(
     require_available: bool,
 ) -> Result<()> {
     with_registry(path, |registry| {
-        match registry.reservations.get(&port) {
-            Some(entry) if entry.owner == owner => return Ok(()),
-            Some(_) => {
-                return Err(anyhow!(
-                    "port {port} is reserved by another devstack service"
-                ));
-            }
-            None => {}
-        }
-
-        if require_available {
-            ensure_available(port)?;
-        }
-
-        registry.reservations.insert(
-            port,
-            PortReservationEntry {
-                owner: owner.to_string(),
-                daemon_pid: std::process::id(),
-            },
-        );
-        Ok(())
+        reserve_specific_port(registry, port, owner, require_available)
     })
+}
+
+fn reserve_specific_port(
+    registry: &mut PortReservationRegistry,
+    port: u16,
+    owner: &str,
+    require_available: bool,
+) -> Result<()> {
+    match registry.reservations.get(&port) {
+        Some(entry) if entry.owner == owner => return Ok(()),
+        Some(_) => {
+            return Err(anyhow!(
+                "port {port} is reserved by another devstack service"
+            ));
+        }
+        None => {}
+    }
+
+    if require_available {
+        ensure_available(port)?;
+    }
+
+    registry.reservations.insert(
+        port,
+        PortReservationEntry {
+            owner: owner.to_string(),
+            daemon_pid: std::process::id(),
+        },
+    );
+    Ok(())
 }
 
 fn with_registry<T>(
@@ -286,6 +295,37 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         let err = reserve_available_port_in_registry(&path, port, "owner:test").unwrap_err();
         assert!(err.to_string().contains("port"));
+    }
+
+    #[test]
+    fn allocate_ports_rolls_back_when_later_service_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ports.json");
+        let first = TcpListener::bind("127.0.0.1:0").unwrap();
+        let first_port = first.local_addr().unwrap().port();
+        drop(first);
+        let blocked = TcpListener::bind("127.0.0.1:0").unwrap();
+        let blocked_port = blocked.local_addr().unwrap().port();
+
+        let mut services = BTreeMap::new();
+        services.insert(
+            "a".to_string(),
+            service_with_port(Some(PortConfig::Fixed(first_port))),
+        );
+        services.insert(
+            "b".to_string(),
+            service_with_port(Some(PortConfig::Fixed(blocked_port))),
+        );
+
+        let err = allocate_ports_in_registry(&path, &services, |name| format!("owner:{name}"))
+            .unwrap_err();
+        assert!(err.to_string().contains("port"));
+
+        with_registry(&path, |registry| {
+            assert!(registry.reservations.is_empty());
+            Ok(())
+        })
+        .unwrap();
     }
 
     #[test]
