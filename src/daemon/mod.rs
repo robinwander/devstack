@@ -20,6 +20,8 @@ pub use handlers::navigation::{
 pub use handlers::ping::ping;
 pub use handlers::projects::{list_projects, register_project, remove_project};
 pub use handlers::runs::{down, kill, list_runs, restart_service, status, up};
-pub use handlers::sources::{add_source, list_sources, remove_source, source_logs_view};
+pub use handlers::sources::{
+    add_source, list_sources, remove_source, source_logs_view, source_status,
+};
 pub use handlers::tasks::{run_tasks, start_task, task_status};
 pub use handlers::watch::{watch_pause, watch_resume, watch_status};

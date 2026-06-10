@@ -5,13 +5,21 @@ use anyhow::{Context, Result};
 use serde::de::{self, Deserializer};
 use serde::{Deserialize, Serialize};
 
-use crate::model::{RunLifecycle, ServiceState};
+use crate::model::{DEFAULT_CAPTURE_API_BODY_LIMIT_BYTES, RunLifecycle, ServiceState};
 use crate::util::atomic_write;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PersistedService {
     pub port: Option<u16>,
     pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub listen_port: Option<u16>,
+    #[serde(default)]
+    pub capture_api: bool,
+    #[serde(default = "default_capture_api_body_limit")]
+    pub capture_api_body_limit: usize,
+    #[serde(default)]
+    pub capture_api_ignore: Vec<String>,
     pub state: ServiceState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub watch_hash: Option<String>,
@@ -21,6 +29,10 @@ pub struct PersistedService {
     pub last_started_at: Option<String>,
     #[serde(default)]
     pub watch_paused: bool,
+}
+
+fn default_capture_api_body_limit() -> usize {
+    DEFAULT_CAPTURE_API_BODY_LIMIT_BYTES
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -330,6 +342,10 @@ mod tests {
             service: PersistedService {
                 port: Some(6379),
                 url: Some("redis://localhost:6379".to_string()),
+                listen_port: Some(6379),
+                capture_api: false,
+                capture_api_body_limit: DEFAULT_CAPTURE_API_BODY_LIMIT_BYTES,
+                capture_api_ignore: Vec::new(),
                 state: ServiceState::Ready,
                 watch_hash: None,
                 last_failure: None,

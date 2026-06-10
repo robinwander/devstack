@@ -14,7 +14,7 @@ pub async fn wait_for_prepared_service(
     post_init: Option<PostInitContext>,
 ) -> Result<()> {
     let context = ReadinessContext {
-        port: prepared.port,
+        port: prepared.listen_port,
         scheme: prepared.scheme.clone(),
         log_path: prepared.log_path.clone(),
         cwd: prepared.cwd.clone(),

@@ -11,10 +11,12 @@ use crate::cli::context::{
     resolve_latest_run_id, resolve_project_dir_from_cwd, resolve_run_id,
 };
 use crate::cli::output::{print_entry, print_json, print_lines, print_log_facets};
+use crate::daemon::bootstrap::log_index_max_age;
+use crate::daemon::source_ingest::retention_cutoff_nanos;
 use crate::infra::logs::index::{LogIndex, LogSource};
 use crate::logs::{LogOutputFormat, stream_logs};
 use crate::paths;
-use crate::sources::{SourcesLedger, source_run_id};
+use crate::sources::{SourcesLedger, source_retention_duration, source_run_id};
 use crate::util::expand_home;
 
 async fn resolve_log_target(
@@ -139,6 +141,7 @@ pub(crate) async fn run(
             service: service.clone(),
             include_entries,
             include_facets,
+            include_total: true,
         };
 
     if let Some(source_name) = source {
@@ -376,6 +379,9 @@ fn build_log_view_query_string(query: &LogViewQuery) -> String {
     if query.include_facets {
         params.push(("include_facets", "true".to_string()));
     }
+    if !query.include_total {
+        params.push(("include_total", "false".to_string()));
+    }
     build_query_string(params)
 }
 
@@ -445,11 +451,16 @@ fn query_source_log_view_local(
             entries: Vec::new(),
             truncated: false,
             total: 0,
+            total_exact: true,
             filters: Vec::new(),
         });
     }
 
-    index.ingest_sources(&sources)?;
+    let retention = ledger
+        .get(source_name)
+        .map(|entry| source_retention_duration(entry, log_index_max_age()))
+        .unwrap_or_else(log_index_max_age);
+    index.ingest_sources_after(&sources, Some(retention_cutoff_nanos(retention)))?;
     let run_id = source_run_id(source_name);
     index.query_view(&run_id, query)
 }
@@ -493,7 +504,11 @@ pub(crate) async fn refresh_source_index(source_name: &str) -> Result<()> {
         if ledger.get(&source_name).is_some() {
             let sources = source_log_sources(&ledger, &source_name)?;
             if !sources.is_empty() {
-                index.ingest_sources(&sources)?;
+                let retention = ledger
+                    .get(&source_name)
+                    .map(|entry| source_retention_duration(entry, log_index_max_age()))
+                    .unwrap_or_else(log_index_max_age);
+                index.ingest_sources_after(&sources, Some(retention_cutoff_nanos(retention)))?;
             }
         }
 
@@ -695,6 +710,7 @@ mod tests {
                 name: "ext".to_string(),
                 paths: vec![log_path.to_string_lossy().to_string()],
                 created_at: "2025-01-01T00:00:00Z".to_string(),
+                retention_seconds: Some(100 * 365 * 24 * 60 * 60),
             },
         );
 
@@ -714,6 +730,7 @@ mod tests {
                 service: None,
                 include_entries: true,
                 include_facets: false,
+                include_total: true,
             },
         )
         .unwrap();
@@ -744,6 +761,7 @@ mod tests {
                 name: "ext".to_string(),
                 paths: vec![log_path.to_string_lossy().to_string()],
                 created_at: "2025-01-01T00:00:00Z".to_string(),
+                retention_seconds: Some(100 * 365 * 24 * 60 * 60),
             },
         );
 
@@ -763,6 +781,7 @@ mod tests {
                 service: None,
                 include_entries: true,
                 include_facets: false,
+                include_total: true,
             },
         )
         .unwrap();
@@ -782,6 +801,7 @@ mod tests {
                     service: None,
                     include_entries: true,
                     include_facets: false,
+                    include_total: true,
                 },
             )
             .unwrap();
@@ -804,6 +824,7 @@ mod tests {
                     service: None,
                     include_entries: true,
                     include_facets: false,
+                    include_total: true,
                 },
             )
             .unwrap();

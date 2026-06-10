@@ -2,24 +2,24 @@
   "openapi": "3.0.3",
   "info": {
     "title": "devstack",
-    "description": "",
+    "description": "Local development orchestration with automatic port allocation, structured logs, and file watching",
     "license": {
-      "name": ""
+      "name": "MIT"
     },
-    "version": "0.1.0"
+    "version": "0.4.0"
   },
   "paths": {
-    "/v1/gc": {
+    "/v1/agent/sessions": {
       "post": {
         "tags": [
           "daemon"
         ],
-        "operationId": "gc",
+        "operationId": "register_agent_session",
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/GcRequest"
+                "$ref": "#/components/schemas/AgentSessionRegisterRequest"
               }
             }
           },
@@ -27,17 +27,224 @@
         },
         "responses": {
           "200": {
-            "description": "Garbage collection results",
+            "description": "Agent session registered",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/GcResponse"
+                  "$ref": "#/components/schemas/AgentSession"
                 }
               }
             }
           },
-          "400": {
-            "description": "Bad request",
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/crate.api.ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agent/sessions/latest": {
+      "get": {
+        "tags": [
+          "daemon"
+        ],
+        "operationId": "get_latest_agent_session",
+        "parameters": [
+          {
+            "name": "project_dir",
+            "in": "query",
+            "description": "Project directory",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Latest agent session for project",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LatestAgentSessionResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/crate.api.ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agent/sessions/{agent_id}": {
+      "delete": {
+        "tags": [
+          "daemon"
+        ],
+        "operationId": "unregister_agent_session",
+        "parameters": [
+          {
+            "name": "agent_id",
+            "in": "path",
+            "description": "Agent session id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Agent session unregistered"
+          },
+          "404": {
+            "description": "Agent session not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/crate.api.ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agent/sessions/{agent_id}/messages": {
+      "post": {
+        "tags": [
+          "daemon"
+        ],
+        "operationId": "post_agent_message",
+        "parameters": [
+          {
+            "name": "agent_id",
+            "in": "path",
+            "description": "Agent session id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentSessionMessageRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Message queued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentSessionMessageResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Agent session not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/crate.api.ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agent/sessions/{agent_id}/messages/poll": {
+      "get": {
+        "tags": [
+          "daemon"
+        ],
+        "operationId": "poll_agent_messages",
+        "parameters": [
+          {
+            "name": "agent_id",
+            "in": "path",
+            "description": "Agent session id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Queued messages for the session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentSessionPollResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Agent session not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/crate.api.ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agent/share": {
+      "post": {
+        "tags": [
+          "daemon"
+        ],
+        "operationId": "share_agent_message",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ShareAgentMessageRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Message queued to latest project agent",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShareAgentMessageResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No matching agent session",
             "content": {
               "application/json": {
                 "schema": {
@@ -59,6 +266,36 @@
         }
       }
     },
+    "/v1/gc": {
+      "post": {
+        "tags": [
+          "daemon"
+        ],
+        "operationId": "gc",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GcRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Garbage collection result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GcResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/globals": {
       "get": {
         "tags": [
@@ -67,7 +304,7 @@
         "operationId": "list_globals",
         "responses": {
           "200": {
-            "description": "Global services",
+            "description": "List global services",
             "content": {
               "application/json": {
                 "schema": {
@@ -75,16 +312,65 @@
                 }
               }
             }
-          },
-          "500": {
-            "description": "Internal error",
+          }
+        }
+      }
+    },
+    "/v1/navigation/intent": {
+      "get": {
+        "tags": [
+          "daemon"
+        ],
+        "operationId": "get_navigation_intent",
+        "responses": {
+          "200": {
+            "description": "Current navigation intent",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/crate.api.ErrorResponse"
+                  "$ref": "#/components/schemas/NavigationIntentResponse"
                 }
               }
             }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "daemon"
+        ],
+        "operationId": "set_navigation_intent",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetNavigationIntentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Navigation intent stored",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NavigationIntentResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "daemon"
+        ],
+        "operationId": "clear_navigation_intent",
+        "responses": {
+          "200": {
+            "description": "Navigation intent cleared"
           }
         }
       }
@@ -127,21 +413,11 @@
         "operationId": "list_runs",
         "responses": {
           "200": {
-            "description": "Run list",
+            "description": "List runs",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/RunListResponse"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Internal error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/crate.api.ErrorResponse"
                 }
               }
             }
@@ -171,37 +447,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/RunManifest"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Bad request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/crate.api.ErrorResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Run not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/crate.api.ErrorResponse"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Internal error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/crate.api.ErrorResponse"
+                  "$ref": "#/components/schemas/RunResponse"
                 }
               }
             }
@@ -231,37 +477,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/RunManifest"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Bad request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/crate.api.ErrorResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Run not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/crate.api.ErrorResponse"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Internal error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/crate.api.ErrorResponse"
+                  "$ref": "#/components/schemas/RunResponse"
                 }
               }
             }
@@ -291,27 +507,78 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/RunManifest"
+                  "$ref": "#/components/schemas/RunResponse"
                 }
               }
             }
-          },
-          "400": {
-            "description": "Bad request",
+          }
+        }
+      }
+    },
+    "/v1/runs/{run_id}/logs": {
+      "get": {
+        "tags": [
+          "daemon"
+        ],
+        "operationId": "logs_view",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "description": "Run id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Combined log view",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/crate.api.ErrorResponse"
+                  "$ref": "#/components/schemas/LogViewResponse"
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "/v1/runs/{run_id}/logs/{service}": {
+      "get": {
+        "tags": [
+          "daemon"
+        ],
+        "operationId": "logs",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "description": "Run id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
           },
-          "500": {
-            "description": "Internal error",
+          {
+            "name": "service",
+            "in": "path",
+            "description": "Service name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Log lines",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/crate.api.ErrorResponse"
+                  "$ref": "#/components/schemas/LogsResponse"
                 }
               }
             }
@@ -352,37 +619,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/RunManifest"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Bad request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/crate.api.ErrorResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Run or service not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/crate.api.ErrorResponse"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Internal error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/crate.api.ErrorResponse"
+                  "$ref": "#/components/schemas/RunResponse"
                 }
               }
             }
@@ -417,23 +654,340 @@
                 }
               }
             }
-          },
-          "404": {
-            "description": "Run not found",
+          }
+        }
+      }
+    },
+    "/v1/runs/{run_id}/tasks": {
+      "get": {
+        "tags": [
+          "daemon"
+        ],
+        "operationId": "run_tasks",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "description": "Run id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Latest task executions for the run",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/crate.api.ErrorResponse"
+                  "$ref": "#/components/schemas/TasksResponse"
                 }
               }
             }
-          },
-          "500": {
-            "description": "Internal error",
+          }
+        }
+      }
+    },
+    "/v1/runs/{run_id}/watch": {
+      "get": {
+        "tags": [
+          "daemon"
+        ],
+        "operationId": "watch_status",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "description": "Run id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Watch status",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/crate.api.ErrorResponse"
+                  "$ref": "#/components/schemas/RunWatchResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/runs/{run_id}/watch/pause": {
+      "post": {
+        "tags": [
+          "daemon"
+        ],
+        "operationId": "watch_pause",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "description": "Run id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WatchControlRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Updated watch status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunWatchResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/runs/{run_id}/watch/resume": {
+      "post": {
+        "tags": [
+          "daemon"
+        ],
+        "operationId": "watch_resume",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "description": "Run id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WatchControlRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Updated watch status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunWatchResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sources": {
+      "get": {
+        "tags": [
+          "daemon"
+        ],
+        "operationId": "list_sources",
+        "responses": {
+          "200": {
+            "description": "List registered log sources",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SourcesResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "daemon"
+        ],
+        "operationId": "add_source",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddSourceRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Source added",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AddSourceResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sources/{name}": {
+      "get": {
+        "tags": [
+          "daemon"
+        ],
+        "operationId": "source_status",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Source name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Source indexing status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SourceStatusResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "daemon"
+        ],
+        "operationId": "remove_source",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Source name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Source removed"
+          }
+        }
+      }
+    },
+    "/v1/sources/{name}/logs": {
+      "get": {
+        "tags": [
+          "daemon"
+        ],
+        "operationId": "source_logs_view",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Source name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Combined source log view",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LogViewResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/tasks/run": {
+      "post": {
+        "tags": [
+          "daemon"
+        ],
+        "operationId": "start_task",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartTaskRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Detached task accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StartTaskResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/tasks/{execution_id}": {
+      "get": {
+        "tags": [
+          "daemon"
+        ],
+        "operationId": "task_status",
+        "parameters": [
+          {
+            "name": "execution_id",
+            "in": "path",
+            "description": "Task execution id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Task execution status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskStatusResponse"
                 }
               }
             }
@@ -444,6 +998,138 @@
   },
   "components": {
     "schemas": {
+      "AddSourceRequest": {
+        "type": "object",
+        "required": [
+          "name",
+          "paths"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "paths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "retention": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
+      "AddSourceResponse": {
+        "type": "object",
+        "required": [
+          "source"
+        ],
+        "properties": {
+          "source": {
+            "$ref": "#/components/schemas/SourceSummary"
+          }
+        }
+      },
+      "AgentSession": {
+        "type": "object",
+        "required": [
+          "agent_id",
+          "project_dir",
+          "command",
+          "pid",
+          "created_at"
+        ],
+        "properties": {
+          "agent_id": {
+            "type": "string"
+          },
+          "command": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "pid": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "project_dir": {
+            "type": "string"
+          },
+          "stack": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
+      "AgentSessionMessageRequest": {
+        "type": "object",
+        "required": [
+          "message"
+        ],
+        "properties": {
+          "message": {
+            "type": "string"
+          }
+        }
+      },
+      "AgentSessionMessageResponse": {
+        "type": "object",
+        "required": [
+          "queued"
+        ],
+        "properties": {
+          "queued": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "AgentSessionPollResponse": {
+        "type": "object",
+        "required": [
+          "messages"
+        ],
+        "properties": {
+          "messages": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "AgentSessionRegisterRequest": {
+        "type": "object",
+        "required": [
+          "agent_id",
+          "project_dir",
+          "command",
+          "pid"
+        ],
+        "properties": {
+          "agent_id": {
+            "type": "string"
+          },
+          "command": {
+            "type": "string"
+          },
+          "pid": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "project_dir": {
+            "type": "string"
+          },
+          "stack": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
       "DownRequest": {
         "type": "object",
         "required": [
@@ -466,6 +1152,44 @@
         ],
         "properties": {
           "error": {
+            "type": "string"
+          }
+        }
+      },
+      "FacetFilter": {
+        "type": "object",
+        "required": [
+          "field",
+          "kind",
+          "values"
+        ],
+        "properties": {
+          "field": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "values": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FacetValueCount"
+            }
+          }
+        }
+      },
+      "FacetValueCount": {
+        "type": "object",
+        "required": [
+          "value",
+          "count"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "value": {
             "type": "string"
           }
         }
@@ -553,6 +1277,39 @@
           }
         }
       },
+      "HealthStatus": {
+        "type": "object",
+        "required": [
+          "passes",
+          "failures",
+          "consecutive_failures"
+        ],
+        "properties": {
+          "consecutive_failures": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "failures": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "last_check_at": {
+            "type": "string",
+            "nullable": true
+          },
+          "last_ok": {
+            "type": "boolean",
+            "nullable": true
+          },
+          "passes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
       "KillRequest": {
         "type": "object",
         "required": [
@@ -561,6 +1318,263 @@
         "properties": {
           "run_id": {
             "type": "string"
+          }
+        }
+      },
+      "LatestAgentSessionResponse": {
+        "type": "object",
+        "properties": {
+          "session": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/AgentSession"
+              }
+            ],
+            "nullable": true
+          }
+        }
+      },
+      "LogEntry": {
+        "type": "object",
+        "required": [
+          "ts",
+          "service",
+          "stream",
+          "level",
+          "message",
+          "raw"
+        ],
+        "properties": {
+          "attributes": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "json": {
+            "nullable": true
+          },
+          "level": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "raw": {
+            "type": "string"
+          },
+          "service": {
+            "type": "string"
+          },
+          "stream": {
+            "type": "string"
+          },
+          "ts": {
+            "type": "string"
+          }
+        }
+      },
+      "LogFilterQuery": {
+        "type": "object",
+        "properties": {
+          "last": {
+            "type": "integer",
+            "nullable": true,
+            "minimum": 0
+          },
+          "level": {
+            "type": "string",
+            "nullable": true
+          },
+          "search": {
+            "type": "string",
+            "description": "Tantivy query string (supports boolean ops, phrases, etc.)",
+            "nullable": true
+          },
+          "since": {
+            "type": "string",
+            "nullable": true
+          },
+          "stream": {
+            "type": "string",
+            "description": "Filter by stream: stdout, stderr",
+            "nullable": true
+          }
+        }
+      },
+      "LogViewQuery": {
+        "type": "object",
+        "required": [
+          "filter",
+          "include_entries",
+          "include_facets",
+          "include_total"
+        ],
+        "properties": {
+          "filter": {
+            "$ref": "#/components/schemas/LogFilterQuery"
+          },
+          "include_entries": {
+            "type": "boolean"
+          },
+          "include_facets": {
+            "type": "boolean"
+          },
+          "include_total": {
+            "type": "boolean"
+          },
+          "service": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
+      "LogViewResponse": {
+        "type": "object",
+        "required": [
+          "entries",
+          "truncated",
+          "total",
+          "filters"
+        ],
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LogEntry"
+            }
+          },
+          "filters": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FacetFilter"
+            }
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "total_exact": {
+            "type": "boolean"
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        }
+      },
+      "LogsQuery": {
+        "type": "object",
+        "required": [
+          "filter"
+        ],
+        "properties": {
+          "after": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true,
+            "minimum": 0
+          },
+          "filter": {
+            "$ref": "#/components/schemas/LogFilterQuery"
+          }
+        }
+      },
+      "LogsResponse": {
+        "type": "object",
+        "required": [
+          "lines",
+          "truncated",
+          "total",
+          "error_count",
+          "warn_count",
+          "matched_total"
+        ],
+        "properties": {
+          "error_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "lines": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "matched_total": {
+            "type": "integer",
+            "description": "Total matches for the requested filters (may exceed `lines.len()` due to `last`)",
+            "minimum": 0
+          },
+          "next_after": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Cursor for follow-style polling (`after` for the next request)",
+            "nullable": true,
+            "minimum": 0
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "warn_count": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "NavigationIntent": {
+        "type": "object",
+        "required": [
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string"
+          },
+          "last": {
+            "type": "integer",
+            "nullable": true,
+            "minimum": 0
+          },
+          "level": {
+            "type": "string",
+            "nullable": true
+          },
+          "run_id": {
+            "type": "string",
+            "nullable": true
+          },
+          "search": {
+            "type": "string",
+            "nullable": true
+          },
+          "service": {
+            "type": "string",
+            "nullable": true
+          },
+          "since": {
+            "type": "string",
+            "nullable": true
+          },
+          "stream": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
+      "NavigationIntentResponse": {
+        "type": "object",
+        "properties": {
+          "intent": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/NavigationIntent"
+              }
+            ],
+            "nullable": true
           }
         }
       },
@@ -612,7 +1626,7 @@
           }
         }
       },
-      "RunManifest": {
+      "RunResponse": {
         "type": "object",
         "required": [
           "run_id",
@@ -646,7 +1660,7 @@
           "services": {
             "type": "object",
             "additionalProperties": {
-              "$ref": "#/components/schemas/ServiceManifest"
+              "$ref": "#/components/schemas/ServiceResponse"
             }
           },
           "stack": {
@@ -722,12 +1736,47 @@
           }
         }
       },
-      "ServiceManifest": {
+      "RunWatchResponse": {
+        "type": "object",
+        "required": [
+          "run_id",
+          "services"
+        ],
+        "properties": {
+          "run_id": {
+            "type": "string"
+          },
+          "services": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/WatchServiceStatus"
+            }
+          }
+        }
+      },
+      "ServiceResponse": {
         "type": "object",
         "required": [
           "state"
         ],
         "properties": {
+          "capture_api": {
+            "type": "boolean"
+          },
+          "capture_api_body_limit": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "capture_api_ignore": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "last_failure": {
+            "type": "string",
+            "nullable": true
+          },
           "port": {
             "type": "integer",
             "format": "int32",
@@ -738,10 +1787,6 @@
             "$ref": "#/components/schemas/ServiceState"
           },
           "url": {
-            "type": "string",
-            "nullable": true
-          },
-          "watch_hash": {
             "type": "string",
             "nullable": true
           }
@@ -765,8 +1810,27 @@
           "state"
         ],
         "properties": {
+          "auto_restart": {
+            "type": "boolean"
+          },
           "desired": {
             "type": "string"
+          },
+          "health": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/HealthStatus"
+              }
+            ],
+            "nullable": true
+          },
+          "health_check_stats": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/HealthCheckStats"
+              }
+            ],
+            "nullable": true
           },
           "last_failure": {
             "type": "string",
@@ -774,6 +1838,12 @@
           },
           "ready": {
             "type": "boolean"
+          },
+          "recent_errors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RecentErrorLine"
+            }
           },
           "state": {
             "$ref": "#/components/schemas/ServiceState"
@@ -786,9 +1856,317 @@
             ],
             "nullable": true
           },
+          "uptime_seconds": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true,
+            "minimum": 0
+          },
           "url": {
             "type": "string",
             "nullable": true
+          },
+          "watch_active": {
+            "type": "boolean"
+          },
+          "watch_paused": {
+            "type": "boolean"
+          }
+        }
+      },
+      "SetNavigationIntentRequest": {
+        "type": "object",
+        "properties": {
+          "last": {
+            "type": "integer",
+            "nullable": true,
+            "minimum": 0
+          },
+          "level": {
+            "type": "string",
+            "nullable": true
+          },
+          "run_id": {
+            "type": "string",
+            "nullable": true
+          },
+          "search": {
+            "type": "string",
+            "nullable": true
+          },
+          "service": {
+            "type": "string",
+            "nullable": true
+          },
+          "since": {
+            "type": "string",
+            "nullable": true
+          },
+          "stream": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
+      "ShareAgentMessageRequest": {
+        "type": "object",
+        "required": [
+          "project_dir",
+          "message"
+        ],
+        "properties": {
+          "command": {
+            "type": "string",
+            "nullable": true
+          },
+          "message": {
+            "type": "string"
+          },
+          "project_dir": {
+            "type": "string"
+          }
+        }
+      },
+      "ShareAgentMessageResponse": {
+        "type": "object",
+        "required": [
+          "agent_id",
+          "queued"
+        ],
+        "properties": {
+          "agent_id": {
+            "type": "string"
+          },
+          "queued": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "SourceFileIndexState": {
+        "type": "object",
+        "required": [
+          "service",
+          "path",
+          "len",
+          "indexed_offset",
+          "next_seq",
+          "skipped_by_retention"
+        ],
+        "properties": {
+          "first_ts_nanos": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true
+          },
+          "indexed_offset": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "last_ts_nanos": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true
+          },
+          "len": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "modified_nanos": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true
+          },
+          "next_seq": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "path": {
+            "type": "string"
+          },
+          "service": {
+            "type": "string"
+          },
+          "skipped_by_retention": {
+            "type": "boolean"
+          }
+        }
+      },
+      "SourceIndexState": {
+        "type": "object",
+        "required": [
+          "name",
+          "run_id",
+          "status",
+          "retention_seconds",
+          "retained_docs",
+          "files"
+        ],
+        "properties": {
+          "error": {
+            "type": "string",
+            "nullable": true
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SourceFileIndexState"
+            }
+          },
+          "last_indexed_at": {
+            "type": "string",
+            "nullable": true
+          },
+          "name": {
+            "type": "string"
+          },
+          "retained_docs": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "retained_through_nanos": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true
+          },
+          "retention_cutoff_nanos": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true
+          },
+          "retention_seconds": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/SourceIndexStatus"
+          }
+        }
+      },
+      "SourceIndexStatus": {
+        "type": "string",
+        "enum": [
+          "queued",
+          "indexing",
+          "current",
+          "error"
+        ]
+      },
+      "SourceStatusResponse": {
+        "type": "object",
+        "required": [
+          "source"
+        ],
+        "properties": {
+          "index": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/crate.sources.SourceIndexState"
+              }
+            ],
+            "nullable": true
+          },
+          "source": {
+            "$ref": "#/components/schemas/SourceSummary"
+          }
+        }
+      },
+      "SourceSummary": {
+        "type": "object",
+        "required": [
+          "name",
+          "paths",
+          "created_at",
+          "effective_retention_seconds"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string"
+          },
+          "effective_retention_seconds": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "name": {
+            "type": "string"
+          },
+          "paths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "retention_seconds": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true,
+            "minimum": 0
+          }
+        }
+      },
+      "SourcesResponse": {
+        "type": "object",
+        "required": [
+          "sources"
+        ],
+        "properties": {
+          "sources": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SourceSummary"
+            }
+          }
+        }
+      },
+      "StartTaskRequest": {
+        "type": "object",
+        "required": [
+          "project_dir",
+          "task"
+        ],
+        "properties": {
+          "args": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "file": {
+            "type": "string",
+            "nullable": true
+          },
+          "project_dir": {
+            "type": "string"
+          },
+          "task": {
+            "type": "string"
+          }
+        }
+      },
+      "StartTaskResponse": {
+        "type": "object",
+        "required": [
+          "execution_id",
+          "task"
+        ],
+        "properties": {
+          "execution_id": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string",
+            "nullable": true
+          },
+          "task": {
+            "type": "string"
           }
         }
       },
@@ -808,6 +2186,112 @@
           },
           "sub_state": {
             "type": "string"
+          }
+        }
+      },
+      "TaskExecutionState": {
+        "type": "string",
+        "enum": [
+          "running",
+          "completed",
+          "failed"
+        ]
+      },
+      "TaskExecutionSummary": {
+        "type": "object",
+        "required": [
+          "task",
+          "state",
+          "started_at"
+        ],
+        "properties": {
+          "duration_ms": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true,
+            "minimum": 0
+          },
+          "execution_id": {
+            "type": "string",
+            "nullable": true
+          },
+          "exit_code": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true
+          },
+          "finished_at": {
+            "type": "string",
+            "nullable": true
+          },
+          "started_at": {
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/TaskExecutionState"
+          },
+          "task": {
+            "type": "string"
+          }
+        }
+      },
+      "TaskStatusResponse": {
+        "type": "object",
+        "required": [
+          "execution_id",
+          "task",
+          "state",
+          "project_dir",
+          "started_at",
+          "duration_ms"
+        ],
+        "properties": {
+          "duration_ms": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "execution_id": {
+            "type": "string"
+          },
+          "exit_code": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true
+          },
+          "finished_at": {
+            "type": "string",
+            "nullable": true
+          },
+          "project_dir": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string",
+            "nullable": true
+          },
+          "started_at": {
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/TaskExecutionState"
+          },
+          "task": {
+            "type": "string"
+          }
+        }
+      },
+      "TasksResponse": {
+        "type": "object",
+        "required": [
+          "tasks"
+        ],
+        "properties": {
+          "tasks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TaskExecutionSummary"
+            }
           }
         }
       },
@@ -839,8 +2323,42 @@
             "type": "string",
             "nullable": true
           },
+          "services": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
           "stack": {
             "type": "string"
+          }
+        }
+      },
+      "WatchControlRequest": {
+        "type": "object",
+        "properties": {
+          "service": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
+      "WatchServiceStatus": {
+        "type": "object",
+        "required": [
+          "auto_restart",
+          "active",
+          "paused"
+        ],
+        "properties": {
+          "active": {
+            "type": "boolean"
+          },
+          "auto_restart": {
+            "type": "boolean"
+          },
+          "paused": {
+            "type": "boolean"
           }
         }
       }

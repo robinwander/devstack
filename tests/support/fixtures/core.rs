@@ -103,6 +103,33 @@ impl ServiceConfigPatch<'_> {
         self
     }
 
+    pub fn capture_api(&mut self, enabled: bool) -> &mut Self {
+        self.table
+            .insert("capture_api".to_string(), Value::Boolean(enabled));
+        self
+    }
+
+    pub fn capture_api_body_limit(&mut self, value: impl Into<String>) -> &mut Self {
+        self.table.insert(
+            "capture_api_body_limit".to_string(),
+            Value::String(value.into()),
+        );
+        self
+    }
+
+    pub fn capture_api_ignore(&mut self, patterns: &[&str]) -> &mut Self {
+        self.table.insert(
+            "capture_api_ignore".to_string(),
+            Value::Array(
+                patterns
+                    .iter()
+                    .map(|value| Value::String((*value).to_string()))
+                    .collect(),
+            ),
+        );
+        self
+    }
+
     pub fn watch(&mut self, patterns: &[&str]) -> &mut Self {
         self.table.insert(
             "watch".to_string(),

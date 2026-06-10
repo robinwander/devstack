@@ -81,11 +81,13 @@ const logSearchResponse = {
   entries: [],
   truncated: false,
   total: 0,
+  total_exact: true,
   filters: [],
 }
 
 const facetsResponse = {
   total: 12,
+  total_exact: true,
   filters: [
     {
       field: 'service',
@@ -121,6 +123,7 @@ const facetsResponse = {
 
 const dynamicFacetsResponse = {
   total: 50,
+  total_exact: true,
   filters: [
     {
       field: 'service',
@@ -538,6 +541,7 @@ describe('LogViewer view toggles', () => {
     ],
     truncated: false,
     total: 2,
+    total_exact: true,
     filters: facetsResponse.filters,
   }
 
@@ -664,6 +668,7 @@ describe('LogViewer detail actions, selection, and custom time range', () => {
     ],
     truncated: false,
     total: 3,
+    total_exact: true,
     filters: dynamicFacetsResponse.filters,
   }
 
@@ -721,6 +726,53 @@ describe('LogViewer detail actions, selection, and custom time range', () => {
     expect((screen.getByLabelText('Search log lines') as HTMLInputElement).value).toBe(
       'stream:stdout',
     )
+  })
+
+  it('surfaces API capture request and response bodies in expanded live rows', async () => {
+    const apiCaptureEntry = {
+      ts: '2025-01-01T12:30:00.000Z',
+      service: 'api',
+      stream: 'api',
+      level: 'info',
+      message: 'POST /debug -> 201 (4 ms)',
+      raw: 'json line',
+      attributes: {
+        event: 'api_capture',
+        method: 'POST',
+        target: '/debug',
+      },
+      json: {
+        event: 'api_capture',
+        method: 'POST',
+        target: '/debug',
+        status: 201,
+        request: {
+          body: {
+            bytes: 17,
+            captured_bytes: 17,
+            truncated: false,
+            json: { hello: 'world' },
+          },
+        },
+        response: {
+          body: {
+            bytes: 11,
+            captured_bytes: 11,
+            truncated: false,
+            json: { ok: true },
+          },
+        },
+      },
+    }
+
+    renderViewer({ liveLogs: [apiCaptureEntry] })
+
+    fireEvent.click(await screen.findByText('POST /debug -> 201 (4 ms)'))
+
+    expect(await screen.findByText('Request Body')).toBeTruthy()
+    expect(screen.getByText('Response Body')).toBeTruthy()
+    expect(screen.getAllByText(/"hello": "world"/).length).toBeGreaterThan(0)
+    expect(screen.getAllByText(/"ok": true/).length).toBeGreaterThan(0)
   })
 
   it('supports selecting rows, shift-selecting ranges, and clearing the selection bar', async () => {

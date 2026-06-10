@@ -151,6 +151,10 @@ pub async fn persist_manifest(app: &AppContext, run_id: &str) -> Result<()> {
                         PersistedService {
                             port: service.launch.port,
                             url: service.launch.url.clone(),
+                            listen_port: service.launch.listen_port,
+                            capture_api: service.launch.capture_api,
+                            capture_api_body_limit: service.launch.capture_api_body_limit,
+                            capture_api_ignore: service.launch.capture_api_ignore.clone(),
                             state: service.runtime.state.clone(),
                             watch_hash: Some(service.launch.watch_hash.clone()),
                             last_failure: service.runtime.last_failure.clone(),
@@ -216,6 +220,10 @@ pub fn persisted_global_from_record(global: &GlobalRecord, path: &Path) -> Persi
         service: PersistedService {
             port: global.service.launch.port,
             url: global.service.launch.url.clone(),
+            listen_port: global.service.launch.listen_port,
+            capture_api: global.service.launch.capture_api,
+            capture_api_body_limit: global.service.launch.capture_api_body_limit,
+            capture_api_ignore: global.service.launch.capture_api_ignore.clone(),
             state: global.service.runtime.state.clone(),
             watch_hash: Some(global.service.launch.watch_hash.clone()),
             last_failure: global.service.runtime.last_failure.clone(),
@@ -240,6 +248,9 @@ pub fn run_response_from_record(run: &RunRecord) -> RunResponse {
                 ServiceResponse {
                     port: service.launch.port,
                     url: service.launch.url.clone(),
+                    capture_api: service.launch.capture_api,
+                    capture_api_body_limit: service.launch.capture_api_body_limit,
+                    capture_api_ignore: service.launch.capture_api_ignore.clone(),
                     state: service.runtime.state.clone(),
                     last_failure: service.runtime.last_failure.clone(),
                 },
@@ -327,6 +338,10 @@ pub fn port_owner(run_id: &str, service: &str) -> String {
     format!("run:{run_id}:{service}")
 }
 
+pub fn capture_backend_port_owner(run_id: &str, service: &str) -> String {
+    format!("run:{run_id}:{service}:api-capture-backend")
+}
+
 pub fn global_port_owner(key: &str, service: &str) -> String {
     format!("global:{key}:{service}")
 }
@@ -357,6 +372,15 @@ pub async fn sync_port_reservations_from_disk(app: &AppContext) -> Result<()> {
             for (service, record) in manifest.services {
                 if let Some(port) = record.port {
                     crate::port::reserve_port(port, &port_owner(&manifest.run_id, &service))?;
+                }
+                if let Some(listen_port) = record.listen_port
+                    && record.capture_api
+                    && Some(listen_port) != record.port
+                {
+                    crate::port::reserve_port(
+                        listen_port,
+                        &capture_backend_port_owner(&manifest.run_id, &service),
+                    )?;
                 }
             }
         }
@@ -397,6 +421,20 @@ pub async fn sync_port_reservations_from_disk(app: &AppContext) -> Result<()> {
 pub fn release_service_port(run_id: &str, service: &str, port: Option<u16>) -> Result<()> {
     if let Some(port) = port {
         crate::port::release_port(port, &port_owner(run_id, service))?;
+    }
+    Ok(())
+}
+
+pub fn release_service_capture_backend_port(
+    run_id: &str,
+    service: &str,
+    port: Option<u16>,
+    public_port: Option<u16>,
+) -> Result<()> {
+    if let Some(port) = port
+        && Some(port) != public_port
+    {
+        crate::port::release_port(port, &capture_backend_port_owner(run_id, service))?;
     }
     Ok(())
 }

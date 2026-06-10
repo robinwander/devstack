@@ -110,5 +110,15 @@ export default defineConfig({
   },
   build: {
     outDir: "dist",
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes("vanilla-jsoneditor")) return "json-editor";
+          if (id.includes("framer-motion")) return "motion";
+          if (id.includes("@tanstack")) return "tanstack";
+          if (id.includes("node_modules")) return "vendor";
+        },
+      },
+    },
   },
 });

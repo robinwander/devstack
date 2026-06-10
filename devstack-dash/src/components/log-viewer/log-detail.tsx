@@ -1,10 +1,15 @@
-import { useState, useMemo, useCallback } from 'react'
+import { useState, useMemo, useCallback, lazy, Suspense } from 'react'
 import { Copy, Check, Share2, Equal } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { toast } from 'sonner'
-import { JsonEditorView } from '@/components/json-editor'
 import type { Content } from 'vanilla-jsoneditor'
 import type { ParsedLog } from './types'
+
+const JsonEditorView = lazy(() =>
+  import('@/components/json-editor').then((module) => ({
+    default: module.JsonEditorView,
+  })),
+)
 
 export type DetailFilterAction = 'include' | 'exclude' | 'only'
 
@@ -39,6 +44,7 @@ export function LogDetail({
     if (!log.json) return null
     return { json: log.json }
   }, [log.json])
+  const apiCapture = useMemo(() => apiCapturePayload(log.json), [log.json])
 
   const actionableFields = useMemo<ActionableField[]>(() => {
     const fields: ActionableField[] = []
@@ -181,11 +187,20 @@ export function LogDetail({
           )}
 
           <div className="px-3 py-2" aria-label="Log detail">
+            {apiCapture && <ApiCaptureDetail payload={apiCapture} />}
             {editorContent ? (
-              <JsonEditorView
-                content={editorContent}
-                className="log-detail-json-editor"
-              />
+              <Suspense
+                fallback={
+                  <pre className="text-[13px] text-ink-secondary log-content-text font-mono leading-relaxed">
+                    {JSON.stringify(log.json, null, 2)}
+                  </pre>
+                }
+              >
+                <JsonEditorView
+                  content={editorContent}
+                  className="log-detail-json-editor"
+                />
+              </Suspense>
             ) : (
               <pre className="text-[13px] text-ink-secondary log-content-text font-mono leading-relaxed">
                 {log.content}
@@ -196,6 +211,113 @@ export function LogDetail({
       </div>
     </div>
   )
+}
+
+function ApiCaptureDetail({ payload }: { payload: Record<string, unknown> }) {
+  const request = objectValue(payload.request)
+  const response = objectValue(payload.response)
+  const method = stringValue(payload.method)
+  const target = stringValue(payload.target)
+  const status = numberValue(payload.status)
+
+  return (
+    <div className="mb-3 rounded-md border border-line bg-surface-sunken/50 overflow-hidden">
+      <div className="flex items-center gap-2 px-3 py-2 border-b border-line-subtle text-[12px] font-mono text-ink-secondary">
+        {method && <span className="font-semibold text-ink">{method}</span>}
+        {target && <span className="truncate">{target}</span>}
+        {typeof status === 'number' && (
+          <span className="ml-auto text-ink-tertiary">{status}</span>
+        )}
+      </div>
+      <div className="grid gap-0 md:grid-cols-2">
+        <ApiBodyPanel title="Request Body" body={objectValue(request?.body)} />
+        <ApiBodyPanel
+          title="Response Body"
+          body={objectValue(response?.body)}
+          borderLeft
+        />
+      </div>
+    </div>
+  )
+}
+
+function ApiBodyPanel({
+  title,
+  body,
+  borderLeft,
+}: {
+  title: string
+  body: Record<string, unknown> | null
+  borderLeft?: boolean
+}) {
+  const bytes = numberValue(body?.bytes)
+  const capturedBytes = numberValue(body?.captured_bytes)
+  const truncated = body?.truncated === true
+  const value = bodyValue(body)
+
+  return (
+    <div
+      className={cn(
+        'min-w-0 p-3',
+        borderLeft && 'md:border-l border-line-subtle',
+      )}
+    >
+      <div className="flex items-center gap-2 mb-2 text-[11px] text-ink-tertiary">
+        <span className="uppercase font-semibold tracking-wider">{title}</span>
+        {typeof bytes === 'number' && (
+          <span className="font-mono">
+            {capturedBytes ?? bytes}/{bytes} bytes
+          </span>
+        )}
+        {truncated && (
+          <span className="rounded-sm bg-status-amber/15 px-1.5 py-0.5 text-status-amber-text">
+            truncated
+          </span>
+        )}
+      </div>
+      {value.kind === 'none' ? (
+        <div className="text-[12px] text-ink-tertiary font-mono">No body</div>
+      ) : (
+        <pre className="max-h-72 overflow-auto rounded-sm border border-line-subtle bg-surface-base p-2 text-[12px] leading-relaxed text-ink-secondary font-mono whitespace-pre-wrap break-words">
+          {value.text}
+        </pre>
+      )}
+    </div>
+  )
+}
+
+function apiCapturePayload(
+  value: Record<string, unknown> | undefined,
+): Record<string, unknown> | null {
+  if (!value || value.event !== 'api_capture') return null
+  return value
+}
+
+function bodyValue(body: Record<string, unknown> | null): {
+  kind: 'json' | 'text' | 'binary' | 'none'
+  text: string
+} {
+  if (!body) return { kind: 'none', text: '' }
+  if ('json' in body) {
+    return { kind: 'json', text: JSON.stringify(body.json, null, 2) }
+  }
+  const text = stringValue(body.text)
+  if (text !== null) return { kind: 'text', text }
+  if (body.binary === true) return { kind: 'binary', text: '<binary body>' }
+  return { kind: 'none', text: '' }
+}
+
+function objectValue(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  return value as Record<string, unknown>
+}
+
+function stringValue(value: unknown): string | null {
+  return typeof value === 'string' ? value : null
+}
+
+function numberValue(value: unknown): number | null {
+  return typeof value === 'number' ? value : null
 }
 
 function DetailActionButton({

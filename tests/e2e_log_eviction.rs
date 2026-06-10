@@ -19,6 +19,7 @@ fn view_query(last: usize) -> LogViewQuery {
         service: None,
         include_entries: true,
         include_facets: false,
+        include_total: true,
     }
 }
 

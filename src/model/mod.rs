@@ -13,4 +13,7 @@ pub use instance_scope::InstanceScope;
 pub use lifecycle::{RunLifecycle, ServiceState};
 pub use readiness::{ReadinessKind, ReadinessSpec};
 pub use run::RunRecord;
-pub use service::{ServiceLaunchPlan, ServiceRecord, ServiceRuntimeState, ServiceSpec};
+pub use service::{
+    DEFAULT_CAPTURE_API_BODY_LIMIT_BYTES, DEFAULT_CAPTURE_API_IGNORE_PATHS, ServiceLaunchPlan,
+    ServiceRecord, ServiceRuntimeState, ServiceSpec,
+};

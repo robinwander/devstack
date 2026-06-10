@@ -94,7 +94,7 @@ pub fn build_router(state: DaemonState) -> Router {
         )
         .route(
             "/v1/sources/{name}",
-            delete(handlers::sources::remove_source),
+            get(handlers::sources::source_status).delete(handlers::sources::remove_source),
         )
         .route(
             "/v1/sources/{name}/logs",

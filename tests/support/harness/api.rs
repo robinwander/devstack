@@ -175,6 +175,9 @@ impl ApiHandle {
         if query.include_facets {
             params.push("include_facets=true".to_string());
         }
+        if !query.include_total {
+            params.push("include_total=false".to_string());
+        }
         let suffix = if params.is_empty() {
             String::new()
         } else {
@@ -270,6 +273,7 @@ impl ApiHandle {
             &AddSourceRequest {
                 name: name.to_string(),
                 paths,
+                retention: None,
             },
         )
         .await
@@ -304,6 +308,9 @@ impl ApiHandle {
         }
         if query.include_facets {
             params.push("include_facets=true".to_string());
+        }
+        if !query.include_total {
+            params.push("include_total=false".to_string());
         }
         let suffix = if params.is_empty() {
             String::new()

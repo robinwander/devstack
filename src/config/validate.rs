@@ -20,6 +20,7 @@ impl ConfigFile {
                     anyhow!("invalid service name in stack '{stack_name}': {err}")
                 })?;
                 validate_service_port(stack_name, svc_name, svc)?;
+                validate_service_capture(stack_name, svc_name, svc, true)?;
                 validate_service_readiness(stack_name, svc_name, svc)?;
                 validate_service_tasks(stack_name, svc_name, svc)?;
                 validate_service_init_tasks(stack_name, svc_name, svc, self.tasks.as_ref())?;
@@ -49,6 +50,7 @@ impl ConfigFile {
                 validate_name_for_path_component("service", svc_name)
                     .map_err(|err| anyhow!("invalid global service name: {err}"))?;
                 validate_service_port("globals", svc_name, svc)?;
+                validate_service_capture("globals", svc_name, svc, false)?;
                 validate_service_readiness("globals", svc_name, svc)?;
                 validate_service_tasks("globals", svc_name, svc)?;
                 validate_service_init_tasks("globals", svc_name, svc, self.tasks.as_ref())?;
@@ -78,6 +80,43 @@ fn validate_service_port(stack: &str, service: &str, svc: &ServiceConfig) -> Res
             }
             _ => {}
         }
+    }
+    Ok(())
+}
+
+fn validate_service_capture(
+    stack: &str,
+    service: &str,
+    svc: &ServiceConfig,
+    allowed: bool,
+) -> Result<()> {
+    if !svc.capture_api_requested() {
+        return Ok(());
+    }
+    if !allowed {
+        if svc.capture_api_explicitly_enabled() {
+            return Err(anyhow!(
+                "service {service} in stack {stack}: capture_api is only supported for stack services"
+            ));
+        }
+        return Ok(());
+    }
+    if !svc.has_service_port() {
+        if svc.capture_api_explicitly_enabled() {
+            return Err(anyhow!(
+                "service {service} in stack {stack}: capture_api requires a service port"
+            ));
+        }
+        return Ok(());
+    }
+    let scheme = svc.scheme();
+    if scheme != "http" {
+        if svc.capture_api_explicitly_enabled() {
+            return Err(anyhow!(
+                "service {service} in stack {stack}: capture_api only supports http services"
+            ));
+        }
+        return Ok(());
     }
     Ok(())
 }

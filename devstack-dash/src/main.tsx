@@ -1,11 +1,20 @@
-import { StrictMode } from "react";
+import { StrictMode, Suspense, lazy } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/sonner";
-import { Dashboard } from "@/components/dashboard";
 import { ErrorBoundary } from "@/components/error-boundary";
-import { LogAnimationTest } from "@/components/log-animation-test";
 import "./styles.css";
+
+const Dashboard = lazy(() =>
+  import("@/components/dashboard").then((module) => ({
+    default: module.Dashboard,
+  })),
+);
+const LogAnimationTest = lazy(() =>
+  import("@/components/log-animation-test").then((module) => ({
+    default: module.LogAnimationTest,
+  })),
+);
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -22,9 +31,11 @@ createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
       <ErrorBoundary>
-        {showTestHarness ? <LogAnimationTest /> : <Dashboard />}
+        <Suspense fallback={<div className="min-h-dvh bg-surface-base" />}>
+          {showTestHarness ? <LogAnimationTest /> : <Dashboard />}
+        </Suspense>
         <Toaster position="bottom-right" />
       </ErrorBoundary>
     </QueryClientProvider>
-  </StrictMode>
+  </StrictMode>,
 );

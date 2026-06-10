@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
 use utoipa::ToSchema;
 
 use crate::model::{RunLifecycle, ServiceState};
@@ -188,6 +189,12 @@ pub struct RunListResponse {
 pub struct ServiceResponse {
     pub port: Option<u16>,
     pub url: Option<String>,
+    #[serde(default)]
+    pub capture_api: bool,
+    #[serde(default)]
+    pub capture_api_body_limit: usize,
+    #[serde(default)]
+    pub capture_api_ignore: Vec<String>,
     pub state: ServiceState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_failure: Option<String>,
@@ -469,6 +476,8 @@ pub struct DaemonLogEvent {
     pub level: String,
     pub message: String,
     pub raw: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub json: Option<JsonValue>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub attributes: BTreeMap<String, String>,
 }
@@ -601,16 +610,19 @@ pub struct LogEntry {
     pub level: String,
     pub message: String,
     pub raw: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub json: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub attributes: std::collections::BTreeMap<String, String>,
 }
 
-#[derive(Clone, Debug, Default, ToSchema)]
+#[derive(Clone, Debug, ToSchema)]
 pub struct LogViewQuery {
     pub filter: LogFilterQuery,
     pub service: Option<String>,
     pub include_entries: bool,
     pub include_facets: bool,
+    pub include_total: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -631,6 +643,20 @@ struct LogViewQueryWire {
     include_entries: bool,
     #[serde(default)]
     include_facets: bool,
+    #[serde(default = "default_true")]
+    include_total: bool,
+}
+
+impl Default for LogViewQuery {
+    fn default() -> Self {
+        Self {
+            filter: LogFilterQuery::default(),
+            service: None,
+            include_entries: true,
+            include_facets: false,
+            include_total: true,
+        }
+    }
 }
 
 impl From<LogViewQueryWire> for LogViewQuery {
@@ -646,6 +672,7 @@ impl From<LogViewQueryWire> for LogViewQuery {
             service: value.service,
             include_entries: value.include_entries,
             include_facets: value.include_facets,
+            include_total: value.include_total,
         }
     }
 }
@@ -661,6 +688,7 @@ impl From<&LogViewQuery> for LogViewQueryWire {
             service: value.service.clone(),
             include_entries: value.include_entries,
             include_facets: value.include_facets,
+            include_total: value.include_total,
         }
     }
 }
@@ -701,6 +729,8 @@ pub struct LogViewResponse {
     pub entries: Vec<LogEntry>,
     pub truncated: bool,
     pub total: usize,
+    #[serde(default = "default_true")]
+    pub total_exact: bool,
     pub filters: Vec<FacetFilter>,
 }
 
@@ -738,6 +768,9 @@ pub struct SourceSummary {
     pub name: String,
     pub paths: Vec<String>,
     pub created_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention_seconds: Option<u64>,
+    pub effective_retention_seconds: u64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
@@ -746,9 +779,17 @@ pub struct SourcesResponse {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+pub struct SourceStatusResponse {
+    pub source: SourceSummary,
+    pub index: Option<crate::sources::SourceIndexState>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct AddSourceRequest {
     pub name: String,
     pub paths: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]

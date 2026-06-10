@@ -11,10 +11,11 @@ use crate::app::error::AppError;
 use crate::app::launch::{
     ExistingServiceSnapshot, PreparedService, apply_prepared_to_runtime, build_base_env,
     build_post_init_context, prepare_service, resolve_ports_for_refresh, start_prepared_service,
-    sync_service_auto_restart_watcher,
+    sync_service_api_capture_proxy, sync_service_auto_restart_watcher,
 };
 use crate::app::runtime::{
-    find_latest_run_for_project_stack, persist_manifest, release_service_port, run_created_event,
+    capture_backend_port_owner, find_latest_run_for_project_stack, persist_manifest,
+    release_service_capture_backend_port, release_service_port, run_created_event,
     run_removed_event, run_response, run_state_changed_event, sync_port_reservations_from_disk,
 };
 use crate::config::{ConfigFile, StackPlan, TaskConfig};
@@ -22,7 +23,7 @@ use crate::ids::RunId;
 use crate::model::{InstanceScope, RunRecord, ServiceRecord};
 use crate::model::{RunLifecycle, ServiceState};
 use crate::paths;
-use crate::port::allocate_ports;
+use crate::port::{allocate_ports, reserve_ephemeral_port, reserve_port};
 use crate::projects::ProjectsLedger;
 use crate::stores::{recompute_run_state, service_state_changed_event, set_service_state};
 use crate::util::{atomic_write, now_rfc3339};
@@ -31,6 +32,7 @@ struct LaunchResources {
     config_dir: PathBuf,
     tasks_map: BTreeMap<String, TaskConfig>,
     port_map: BTreeMap<String, Option<u16>>,
+    listen_port_map: BTreeMap<String, Option<u16>>,
     service_schemes: BTreeMap<String, String>,
     base_env: BTreeMap<String, String>,
     global_env: BTreeMap<String, String>,
@@ -110,16 +112,86 @@ fn resolve_service_tasks(
     tasks
 }
 
+fn resolve_listen_ports_for_launch(
+    run_id: &str,
+    services: &BTreeMap<String, crate::config::ServiceConfig>,
+    port_map: &BTreeMap<String, Option<u16>>,
+    existing: &BTreeMap<String, ExistingServiceSnapshot>,
+    reuse_ports: bool,
+) -> anyhow::Result<BTreeMap<String, Option<u16>>> {
+    let mut listen_port_map = BTreeMap::new();
+
+    for (name, service) in services {
+        let public_port = port_map.get(name).copied().flatten();
+        let scheme = service.scheme();
+        let capture_api = service.capture_api_enabled(true, public_port.is_some(), &scheme);
+        let listen_port = if capture_api {
+            match public_port {
+                Some(_) => {
+                    if reuse_ports
+                        && let Some(existing_port) =
+                            existing.get(name).and_then(|record| record.listen_port)
+                        && Some(existing_port) != public_port
+                    {
+                        reserve_port(existing_port, &capture_backend_port_owner(run_id, name))?;
+                        Some(existing_port)
+                    } else {
+                        Some(reserve_ephemeral_port(&capture_backend_port_owner(
+                            run_id, name,
+                        ))?)
+                    }
+                }
+                None => None,
+            }
+        } else {
+            public_port
+        };
+        listen_port_map.insert(name.clone(), listen_port);
+    }
+
+    Ok(listen_port_map)
+}
+
 fn release_unpreserved_stack_ports(
     run_id: &str,
     stack_plan: &StackPlan,
     port_map: &BTreeMap<String, Option<u16>>,
-    preserved: &BTreeMap<String, Option<u16>>,
+    listen_port_map: &BTreeMap<String, Option<u16>>,
+    preserved: &BTreeMap<String, ExistingServiceSnapshot>,
 ) {
     for service_name in stack_plan.services.keys() {
         let port = port_map.get(service_name).copied().flatten();
+        let listen_port = listen_port_map.get(service_name).copied().flatten();
+        let preserved_port = preserved
+            .get(service_name)
+            .and_then(|snapshot| snapshot.port);
+        let preserved_listen_port = preserved
+            .get(service_name)
+            .and_then(|snapshot| snapshot.listen_port);
+        if preserved_listen_port.is_some()
+            && preserved_listen_port != preserved_port
+            && preserved_listen_port != listen_port
+            && let Err(err) = release_service_capture_backend_port(
+                run_id,
+                service_name,
+                preserved_listen_port,
+                preserved_port,
+            )
+        {
+            eprintln!(
+                "devstack: failed to release previous capture backend port for {service_name}: {err}"
+            );
+        }
+        if listen_port.is_some()
+            && listen_port != port
+            && preserved_listen_port != listen_port
+            && let Err(err) =
+                release_service_capture_backend_port(run_id, service_name, listen_port, port)
+        {
+            eprintln!("devstack: failed to release capture backend port for {service_name}: {err}");
+        }
         if port.is_some()
-            && preserved.get(service_name).copied().flatten() != port
+            && preserved_port != port
             && let Err(err) = release_service_port(run_id, service_name, port)
         {
             eprintln!("devstack: failed to release port for {service_name}: {err}");
@@ -138,12 +210,28 @@ async fn release_unrecorded_stack_ports(
         .with_run(run_id.as_str(), |run| {
             run.services
                 .iter()
-                .map(|(name, service)| (name.clone(), service.launch.port))
+                .map(|(name, service)| {
+                    (
+                        name.clone(),
+                        ExistingServiceSnapshot {
+                            watch_hash: Some(service.launch.watch_hash.clone()),
+                            state: service.runtime.state.clone(),
+                            port: service.launch.port,
+                            listen_port: service.launch.listen_port,
+                        },
+                    )
+                })
                 .collect::<BTreeMap<_, _>>()
         })
         .await
         .unwrap_or_default();
-    release_unpreserved_stack_ports(run_id.as_str(), stack_plan, &resources.port_map, &recorded);
+    release_unpreserved_stack_ports(
+        run_id.as_str(),
+        stack_plan,
+        &resources.port_map,
+        &resources.listen_port_map,
+        &recorded,
+    );
 }
 
 async fn initialize_new_run_layout(
@@ -202,6 +290,7 @@ async fn build_new_launch_resources(
                 stack_plan,
                 &port_map,
                 &BTreeMap::new(),
+                &BTreeMap::new(),
             );
             return Err(AppError::from(err));
         }
@@ -210,15 +299,35 @@ async fn build_new_launch_resources(
     for (name, port) in global_ports {
         port_map.entry(name).or_insert(port);
     }
+    let mut listen_port_map = resolve_listen_ports_for_launch(
+        run_id.as_str(),
+        &stack_plan.services,
+        &port_map,
+        &BTreeMap::new(),
+        false,
+    )
+    .map_err(AppError::from)?;
+    for name in globals.keys() {
+        if let Some(port) = port_map.get(name).copied() {
+            listen_port_map.entry(name.clone()).or_insert(port);
+        }
+    }
 
     let scope = InstanceScope::run(run_id.clone(), stack_plan.name.clone());
-    let base_env = match build_base_env(&scope, project_dir, &port_map, &service_schemes) {
+    let base_env = match build_base_env(
+        &scope,
+        project_dir,
+        &port_map,
+        &listen_port_map,
+        &service_schemes,
+    ) {
         Ok(env) => env,
         Err(err) => {
             release_unpreserved_stack_ports(
                 run_id.as_str(),
                 stack_plan,
                 &port_map,
+                &listen_port_map,
                 &BTreeMap::new(),
             );
             return Err(AppError::from(err));
@@ -229,6 +338,7 @@ async fn build_new_launch_resources(
         config_dir: config_dir.to_path_buf(),
         tasks_map,
         port_map,
+        listen_port_map,
         service_schemes,
         base_env,
         global_env: config.env.clone(),
@@ -254,11 +364,7 @@ async fn build_refresh_launch_resources(
     let globals = inputs.config.globals_map();
     let config_dir = inputs.config_path.parent().unwrap_or(inputs.project_dir);
     let preserved = if inputs.reuse_ports {
-        inputs
-            .existing
-            .iter()
-            .map(|(service, snapshot)| (service.clone(), snapshot.port))
-            .collect::<BTreeMap<_, _>>()
+        inputs.existing.clone()
     } else {
         BTreeMap::new()
     };
@@ -278,6 +384,7 @@ async fn build_refresh_launch_resources(
                 inputs.run_id.as_str(),
                 inputs.stack_plan,
                 &port_map,
+                &BTreeMap::new(),
                 &preserved,
             );
             return Err(AppError::from(err));
@@ -287,15 +394,35 @@ async fn build_refresh_launch_resources(
     for (name, port) in global_ports {
         port_map.entry(name).or_insert(port);
     }
+    let mut listen_port_map = resolve_listen_ports_for_launch(
+        inputs.run_id.as_str(),
+        &inputs.stack_plan.services,
+        &port_map,
+        inputs.existing,
+        inputs.reuse_ports,
+    )
+    .map_err(AppError::from)?;
+    for name in globals.keys() {
+        if let Some(port) = port_map.get(name).copied() {
+            listen_port_map.entry(name.clone()).or_insert(port);
+        }
+    }
 
     let scope = InstanceScope::run(inputs.run_id.clone(), inputs.stack_plan.name.clone());
-    let base_env = match build_base_env(&scope, inputs.project_dir, &port_map, &service_schemes) {
+    let base_env = match build_base_env(
+        &scope,
+        inputs.project_dir,
+        &port_map,
+        &listen_port_map,
+        &service_schemes,
+    ) {
         Ok(env) => env,
         Err(err) => {
             release_unpreserved_stack_ports(
                 inputs.run_id.as_str(),
                 inputs.stack_plan,
                 &port_map,
+                &listen_port_map,
                 &preserved,
             );
             return Err(AppError::from(err));
@@ -306,6 +433,7 @@ async fn build_refresh_launch_resources(
         config_dir: config_dir.to_path_buf(),
         tasks_map,
         port_map,
+        listen_port_map,
         service_schemes,
         base_env,
         global_env: inputs.config.env.clone(),
@@ -380,6 +508,7 @@ async fn remove_services_missing_from_stack(
                 if let Some(mut service) = run.services.remove(service_name) {
                     service.stop_health_monitor();
                     service.stop_watch();
+                    service.stop_api_capture();
                 }
             }
             recompute_run_state(run).into_iter().collect::<Vec<_>>()
@@ -387,14 +516,19 @@ async fn remove_services_missing_from_stack(
         .await
         .map_err(AppError::from)?;
     for service_name in removed {
-        release_service_port(
+        let public_port = existing
+            .get(service_name)
+            .and_then(|snapshot| snapshot.port);
+        release_service_capture_backend_port(
             run_id.as_str(),
             service_name,
             existing
                 .get(service_name)
-                .and_then(|snapshot| snapshot.port),
+                .and_then(|snapshot| snapshot.listen_port),
+            public_port,
         )
         .map_err(AppError::from)?;
+        release_service_port(run_id.as_str(), service_name, public_port).map_err(AppError::from)?;
     }
     app.emit_events(events);
     Ok(())
@@ -523,6 +657,7 @@ pub async fn refresh_run(
                         watch_hash: Some(service.launch.watch_hash.clone()),
                         state: service.runtime.state.clone(),
                         port: service.launch.port,
+                        listen_port: service.launch.listen_port,
                     },
                 );
             }
@@ -583,17 +718,25 @@ pub async fn down(
         .with_run(run_id, |run| {
             run.services
                 .iter()
-                .map(|(name, service)| (name.clone(), service.launch.port))
+                .map(|(name, service)| {
+                    (
+                        name.clone(),
+                        service.launch.port,
+                        service.launch.listen_port,
+                    )
+                })
                 .collect::<Vec<_>>()
         })
         .await
         .map_err(|_| AppError::not_found(format!("run {run_id} not found")))?;
 
-    for (service, _) in &services {
+    for (service, _, _) in &services {
         let unit_name = crate::app::launch::unit_name_for_run(run_id, service);
         let _ = app.systemd.stop_unit(&unit_name).await;
     }
-    for (service, port) in &services {
+    for (service, port, listen_port) in &services {
+        release_service_capture_backend_port(run_id, service, *listen_port, *port)
+            .map_err(AppError::from)?;
         release_service_port(run_id, service, *port).map_err(AppError::from)?;
     }
 
@@ -645,18 +788,26 @@ pub async fn kill(app: &AppContext, run_id: &str) -> AppResult<crate::api::RunRe
         .with_run(run_id, |run| {
             run.services
                 .iter()
-                .map(|(name, service)| (name.clone(), service.launch.port))
+                .map(|(name, service)| {
+                    (
+                        name.clone(),
+                        service.launch.port,
+                        service.launch.listen_port,
+                    )
+                })
                 .collect::<Vec<_>>()
         })
         .await
         .map_err(|_| AppError::not_found(format!("run {run_id} not found")))?;
 
-    for (service, _) in &services {
+    for (service, _, _) in &services {
         let unit_name = crate::app::launch::unit_name_for_run(run_id, service);
         let _ = app.systemd.kill_unit(&unit_name, 9).await;
         let _ = app.systemd.stop_unit(&unit_name).await;
     }
-    for (service, port) in &services {
+    for (service, port, listen_port) in &services {
+        release_service_capture_backend_port(run_id, service, *listen_port, *port)
+            .map_err(AppError::from)?;
         release_service_port(run_id, service, *port).map_err(AppError::from)?;
     }
 
@@ -719,6 +870,9 @@ async fn sync_unchanged_service(
     if let Err(err) = sync_service_auto_restart_watcher(app, run_id.as_str(), service_name).await {
         eprintln!("devstack: failed to sync watcher for {service_name}: {err}");
     }
+    if let Err(err) = sync_service_api_capture_proxy(app, run_id.as_str(), service_name).await {
+        eprintln!("devstack: failed to sync API capture proxy for {service_name}: {err}");
+    }
     Ok(())
 }
 
@@ -733,6 +887,7 @@ fn replace_service_record(
     if let Some(mut previous) = previous {
         previous.stop_health_monitor();
         previous.stop_watch();
+        previous.stop_api_capture();
     }
 
     run.services.insert(service_name.to_string(), record);
@@ -837,6 +992,7 @@ async fn launch_service(
         service_name,
         service,
         &resources.port_map,
+        &resources.listen_port_map,
         &resources.service_schemes,
         &resources.base_env,
         &resources.global_env,
@@ -879,8 +1035,38 @@ async fn launch_service(
         release_service_port(run_id.as_str(), service_name, Some(previous_port))
             .map_err(AppError::from)?;
     }
+    if let Some(previous_listen_port) = existing
+        .get(service_name)
+        .and_then(|snapshot| snapshot.listen_port)
+        && Some(previous_listen_port) != prepared.listen_port
+        && Some(previous_listen_port)
+            != existing
+                .get(service_name)
+                .and_then(|snapshot| snapshot.port)
+    {
+        release_service_capture_backend_port(
+            run_id.as_str(),
+            service_name,
+            Some(previous_listen_port),
+            existing
+                .get(service_name)
+                .and_then(|snapshot| snapshot.port),
+        )
+        .map_err(AppError::from)?;
+    }
 
     store_service_launch_result(app, run_id, service_name, &prepared, &start_result).await?;
+
+    if start_result.is_ok()
+        && let Err(err) = sync_service_api_capture_proxy(app, run_id.as_str(), service_name).await
+    {
+        let reason = format!("API capture proxy failed: {err}");
+        crate::app::launch::mark_service_failed(app, run_id.as_str(), service_name, &reason)
+            .await
+            .map_err(AppError::from)?;
+        let _ = persist_manifest(app, run_id.as_str()).await;
+        return Err(AppError::Internal(anyhow::anyhow!(reason)));
+    }
 
     if start_result.is_ok()
         && let Err(err) = crate::app::launch::handle_readiness(
@@ -942,15 +1128,25 @@ async fn launch_services(
 }
 
 async fn stop_service_handles(app: &AppContext, run_id: &str) {
-    let _ = app
+    let handles = app
         .runs
         .with_run_mut(run_id, |run| {
+            let mut api_capture_handles = Vec::new();
             for service in run.services.values_mut() {
                 service.stop_health_monitor();
                 service.stop_watch();
+                if let Some(handle) = service.handles.api_capture.take() {
+                    api_capture_handles.push(handle);
+                }
             }
+            api_capture_handles
         })
         .await;
+    if let Ok(handles) = handles {
+        for handle in handles {
+            handle.stop_and_wait().await;
+        }
+    }
 }
 
 fn generate_run_id(stack: &str) -> String {

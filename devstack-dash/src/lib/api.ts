@@ -22,6 +22,9 @@ export interface RunSummary {
 export interface ServiceManifest {
   port: number | null
   url: string | null
+  capture_api?: boolean
+  capture_api_body_limit?: number
+  capture_api_ignore?: string[]
   state: ServiceState
   watch_hash: string | null
 }
@@ -72,6 +75,8 @@ export interface SourceSummary {
   name: string
   paths: string[]
   created_at: string
+  retention_seconds?: number | null
+  effective_retention_seconds: number
 }
 
 export type TaskExecutionState = 'running' | 'completed' | 'failed'
@@ -107,6 +112,7 @@ export interface LogEntry {
   level: string
   message: string
   raw: string
+  json?: Record<string, unknown>
   attributes?: Record<string, string>
 }
 
@@ -156,6 +162,7 @@ export interface LogViewResponse {
   entries: LogEntry[]
   truncated: boolean
   total: number
+  total_exact: boolean
   filters: FacetFilter[]
 }
 
@@ -188,6 +195,7 @@ export interface LogFilterParams {
   service?: string
   include_entries?: boolean
   include_facets?: boolean
+  include_total?: boolean
 }
 
 export interface NavigationIntent {
@@ -294,6 +302,7 @@ export const api = {
         service: params.service,
         include_entries: params.include_entries,
         include_facets: params.include_facets,
+        include_total: params.include_total,
       })}`,
     ),
 
@@ -308,6 +317,7 @@ export const api = {
         service: params.service,
         include_entries: params.include_entries,
         include_facets: params.include_facets,
+        include_total: params.include_total,
       })}`,
     ),
 

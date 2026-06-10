@@ -20,6 +20,9 @@ mod config_tests {
                 scheme: None,
                 port_env: None,
                 port: None,
+                capture_api: None,
+                capture_api_body_limit: None,
+                capture_api_ignore: Vec::new(),
                 readiness: None,
                 env_file: None,
                 env: BTreeMap::new(),
@@ -40,6 +43,9 @@ mod config_tests {
                 scheme: None,
                 port_env: None,
                 port: None,
+                capture_api: None,
+                capture_api_body_limit: None,
+                capture_api_ignore: Vec::new(),
                 readiness: None,
                 env_file: None,
                 env: BTreeMap::new(),
@@ -64,6 +70,9 @@ mod config_tests {
             scheme: None,
             port_env: None,
             port: None,
+            capture_api: None,
+            capture_api_body_limit: None,
+            capture_api_ignore: Vec::new(),
             readiness: None,
             env_file: None,
             env: BTreeMap::new(),
@@ -87,6 +96,9 @@ mod config_tests {
             scheme: None,
             port_env: None,
             port: None,
+            capture_api: None,
+            capture_api_body_limit: None,
+            capture_api_ignore: Vec::new(),
             readiness: None,
             env_file: None,
             env: BTreeMap::new(),
@@ -110,6 +122,9 @@ mod config_tests {
             scheme: None,
             port_env: None,
             port: None,
+            capture_api: None,
+            capture_api_body_limit: None,
+            capture_api_ignore: Vec::new(),
             readiness: Some(ReadinessConfig {
                 tcp: None,
                 http: Some(ReadinessHttp {
@@ -155,6 +170,9 @@ mod config_tests {
             scheme: None,
             port_env: None,
             port: None,
+            capture_api: None,
+            capture_api_body_limit: None,
+            capture_api_ignore: Vec::new(),
             readiness: Some(ReadinessConfig {
                 tcp: None,
                 http: None,
@@ -191,6 +209,9 @@ mod config_tests {
             scheme: None,
             port_env: None,
             port: None,
+            capture_api: None,
+            capture_api_body_limit: None,
+            capture_api_ignore: Vec::new(),
             readiness: Some(ReadinessConfig {
                 tcp: None,
                 http: None,
@@ -276,6 +297,102 @@ readiness = { delay_ms = 5000 }
         let svc = plan.services.get("worker").unwrap();
         let kind = svc.readiness_kind(false).unwrap();
         assert!(matches!(kind, ReadinessKind::Delay { .. }));
+    }
+
+    #[test]
+    fn parses_api_capture_controls() {
+        let toml_str = r#"
+version = 1
+
+[stacks.app.services.api]
+cmd = "echo api"
+capture_api = true
+capture_api_body_limit = "2mb"
+capture_api_ignore = ["/health", "/assets/*"]
+"#;
+        let config: ConfigFile = toml::from_str(toml_str).unwrap();
+        let plan = config.stack_plan("app").unwrap();
+        let svc = plan.services.get("api").unwrap();
+        assert_eq!(svc.capture_api, Some(true));
+        assert_eq!(svc.capture_api_body_limit(), 2 * 1024 * 1024);
+        let expected = [
+            "/health",
+            "/healthz",
+            "/api/health",
+            "/api/healthz",
+            "/ready",
+            "/readyz",
+            "/live",
+            "/livez",
+            "/ping",
+            "/metrics",
+            "/assets/*",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect::<Vec<_>>();
+        assert_eq!(svc.capture_api_ignore_paths(), expected);
+    }
+
+    #[test]
+    fn api_capture_defaults_to_enabled_for_http_stack_services() {
+        let toml_str = r#"
+version = 1
+
+[stacks.app.services.api]
+cmd = "echo api"
+readiness = { http = { path = "/health" } }
+
+[stacks.app.services.worker]
+cmd = "echo worker"
+port = "none"
+
+[stacks.app.services.db]
+cmd = "echo db"
+readiness = { tcp = {} }
+
+[stacks.app.services.web]
+cmd = "echo web"
+readiness = { http = { path = "/" } }
+capture_api = false
+"#;
+        let config: ConfigFile = toml::from_str(toml_str).unwrap();
+        config.validate().unwrap();
+        let plan = config.stack_plan("app").unwrap();
+
+        let api = plan.services.get("api").unwrap();
+        assert!(api.capture_api_enabled(true, api.has_service_port(), &api.scheme()));
+        assert_eq!(
+            api.capture_api_body_limit(),
+            crate::model::DEFAULT_CAPTURE_API_BODY_LIMIT_BYTES
+        );
+
+        let worker = plan.services.get("worker").unwrap();
+        assert!(!worker.capture_api_enabled(true, worker.has_service_port(), &worker.scheme()));
+
+        let db = plan.services.get("db").unwrap();
+        assert!(!db.capture_api_enabled(true, db.has_service_port(), &db.scheme()));
+
+        let web = plan.services.get("web").unwrap();
+        assert!(!web.capture_api_enabled(true, web.has_service_port(), &web.scheme()));
+    }
+
+    #[test]
+    fn explicit_capture_true_still_requires_eligible_service() {
+        let toml_str = r#"
+version = 1
+
+[stacks.app.services.worker]
+cmd = "echo worker"
+port = "none"
+capture_api = true
+"#;
+        let config: ConfigFile = toml::from_str(toml_str).unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("capture_api requires a service port")
+        );
     }
 
     #[test]

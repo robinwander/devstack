@@ -506,6 +506,7 @@ export function LogViewer({
       ...filterParams,
       include_entries: true,
       include_facets: false,
+      include_total: false,
     }),
     [filterParams],
   )
@@ -640,7 +641,7 @@ export function LogViewer({
       stream: entry.stream,
       level: (entry.level as ParsedLog['level']) || 'info',
       raw: stripAnsi(entry.raw),
-      json: buildStructuredJson(entry),
+      json: entry.json ?? buildStructuredJson(entry),
       attributes: entry.attributes,
     }))
 

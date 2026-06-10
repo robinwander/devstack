@@ -212,8 +212,20 @@ fn parse_log_tail_event(run_id: &str, service: &str, raw_line: &str) -> Option<D
         level: classify_line_level(&raw),
         message,
         raw: raw.clone(),
+        json: extract_log_json(&raw),
         attributes: extract_log_attributes(&raw),
     })
+}
+
+fn extract_log_json(line: &str) -> Option<JsonValue> {
+    let trimmed = line.trim();
+    if !trimmed.starts_with('{') {
+        return None;
+    }
+    let Ok(value) = serde_json::from_str::<JsonValue>(trimmed) else {
+        return None;
+    };
+    value.is_object().then_some(value)
 }
 
 fn extract_log_attributes(line: &str) -> BTreeMap<String, String> {

@@ -228,6 +228,10 @@ Notes:
 {
   "port": 5432,
   "url": "http://... | null",
+  "listen_port": 5433,
+  "capture_api": true,
+  "capture_api_body_limit": 262144,
+  "capture_api_ignore": ["/health", "/healthz", "/api/health", "/api/healthz", "/ready", "/readyz", "/live", "/livez", "/ping", "/metrics"],
   "state": "starting | ready | degraded | stopped | failed",
   "watch_hash": "string | null"
 }

@@ -36,6 +36,10 @@ pub fn reserve_available_port(port: u16, owner: &str) -> Result<()> {
     reserve_available_port_in_registry(&registry_path(), port, owner)
 }
 
+pub fn reserve_ephemeral_port(owner: &str) -> Result<u16> {
+    reserve_ephemeral_port_in_registry(&registry_path(), owner)
+}
+
 pub fn release_port(port: u16, owner: &str) -> Result<()> {
     release_port_in_registry(&registry_path(), port, owner)
 }
@@ -110,6 +114,10 @@ fn reserve_port_in_registry(path: &Path, port: u16, owner: &str) -> Result<()> {
 
 fn reserve_available_port_in_registry(path: &Path, port: u16, owner: &str) -> Result<()> {
     reserve_specific_port_in_registry(path, port, owner, true)
+}
+
+fn reserve_ephemeral_port_in_registry(path: &Path, owner: &str) -> Result<u16> {
+    with_registry(path, |registry| allocate_ephemeral_port(registry, owner))
 }
 
 fn reserve_specific_port_in_registry(
@@ -247,6 +255,9 @@ mod tests {
             scheme: None,
             port_env: None,
             port,
+            capture_api: None,
+            capture_api_body_limit: None,
+            capture_api_ignore: Vec::new(),
             readiness: None,
             env_file: None,
             env: BTreeMap::new(),

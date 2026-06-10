@@ -35,6 +35,7 @@ fn log_view_query(
         service: service.map(str::to_string),
         include_entries,
         include_facets,
+        include_total: true,
     }
 }
 

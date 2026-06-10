@@ -359,6 +359,9 @@ pub enum SourcesAction {
     Ls,
     /// Register a source name with one or more file paths/globs.
     Add {
+        /// Retention window for this source (e.g. 1d, 7d, 30d); defaults to the daemon log retention.
+        #[arg(long, help = "Retention window for this source (e.g. 1d, 7d, 30d)")]
+        retention: Option<String>,
         /// Source name.
         #[arg(help = "Source name")]
         name: String,

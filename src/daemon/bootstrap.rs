@@ -16,13 +16,17 @@ use tokio::sync::Mutex;
 
 use crate::app::AppContext;
 use crate::app::commands::ensure_globals::ensure_globals;
-use crate::app::launch::{sync_global_auto_restart_watcher, sync_service_auto_restart_watcher};
+use crate::app::launch::{
+    sync_global_auto_restart_watcher, sync_service_api_capture_proxy,
+    sync_service_auto_restart_watcher,
+};
 use crate::app::runtime::sync_port_reservations_from_disk;
 use crate::infra::logs::index::LogIndex;
 use crate::paths;
 use crate::persistence::daemon_state::{load_globals_from_disk, load_state_from_disk};
 use crate::persistence::global_manifest_is_restorable;
 use crate::projects::ProjectsLedger;
+use crate::sources::SourceRegistry;
 use crate::stores::{AgentSessionStore, GlobalStore, NavigationStore, RunStore, TaskStore};
 use crate::systemd::SystemdManager;
 
@@ -35,7 +39,7 @@ use sd_notify::notify;
 
 use super::log_tailing::RunLogTailRegistry;
 use super::router::{DaemonState, build_router};
-use super::source_ingest::{retention_cutoff_nanos, spawn_registered_source_backfill};
+use super::source_ingest::spawn_registered_source_backfill;
 
 pub async fn run_daemon() -> Result<()> {
     paths::ensure_base_layout()?;
@@ -48,6 +52,7 @@ pub async fn run_daemon() -> Result<()> {
     let agent_sessions = Arc::new(AgentSessionStore::new());
     let navigation = Arc::new(NavigationStore::new());
     let log_index = Arc::new(LogIndex::open_or_create()?);
+    let sources = Arc::new(SourceRegistry::load()?);
     let (event_tx, _) = tokio::sync::broadcast::channel(1024);
 
     let app = AppContext {
@@ -59,6 +64,7 @@ pub async fn run_daemon() -> Result<()> {
         navigation,
         binary_path,
         log_index,
+        sources,
         event_tx,
     };
 
@@ -70,10 +76,11 @@ pub async fn run_daemon() -> Result<()> {
 
     sync_port_reservations_from_disk(&app).await?;
     restore_active_globals(&app).await?;
+    restore_api_capture_proxies(&app).await;
     restore_auto_restart_watchers(&app).await;
     let max_age = log_index_max_age();
     spawn_log_index_maintenance_task(app.log_index.clone(), max_age);
-    spawn_registered_source_backfill(app.log_index.clone(), Some(retention_cutoff_nanos(max_age)));
+    spawn_registered_source_backfill(app.log_index.clone(), app.sources.clone(), max_age);
 
     if let Ok(runs_dir) = paths::runs_dir()
         && let Ok(mut ledger) = ProjectsLedger::load()
@@ -193,6 +200,24 @@ async fn restore_auto_restart_watchers(app: &crate::app::context::AppContext) {
                 "devstack: failed to restore watcher for global {}.{}: {}",
                 global.key, global.name, err
             );
+        }
+    }
+}
+
+async fn restore_api_capture_proxies(app: &crate::app::context::AppContext) {
+    let runs = app.runs.list_runs().await;
+    for run in runs {
+        for service_name in run.services.keys() {
+            if let Err(err) =
+                sync_service_api_capture_proxy(app, run.run_id.as_str(), service_name).await
+            {
+                eprintln!(
+                    "devstack: failed to restore API capture proxy for {}.{}: {}",
+                    run.run_id.as_str(),
+                    service_name,
+                    err
+                );
+            }
         }
     }
 }

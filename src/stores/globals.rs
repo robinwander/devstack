@@ -27,6 +27,7 @@ impl GlobalStore {
         if let Some(mut previous) = guard.remove(&record.key) {
             previous.service.stop_health_monitor();
             previous.service.stop_watch();
+            previous.service.stop_api_capture();
         }
         guard.insert(record.key.clone(), record);
     }

@@ -65,6 +65,7 @@ const logSearchResponse = {
   entries: [],
   truncated: false,
   total: 0,
+  total_exact: true,
   filters: [],
 }
 
@@ -85,11 +86,13 @@ const detailLogSearchResponse = {
   ],
   truncated: false,
   total: 1,
+  total_exact: true,
   filters: [],
 }
 
 const facetsResponse = {
   total: 0,
+  total_exact: true,
   filters: [],
 }
 

@@ -175,6 +175,10 @@ pub fn sources_path() -> Result<PathBuf> {
     Ok(base_dir()?.join("sources.json"))
 }
 
+pub fn sources_state_path() -> Result<PathBuf> {
+    Ok(base_dir()?.join("sources_state.json"))
+}
+
 pub fn ensure_base_layout() -> Result<()> {
     std::fs::create_dir_all(daemon_dir()?)?;
     std::fs::create_dir_all(runs_dir()?)?;

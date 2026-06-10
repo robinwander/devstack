@@ -260,6 +260,9 @@ Service fields:
 | `scheme` | string | `http` | Used for generated URLs |
 | `port` | int or `"none"` | auto-allocate | Fixed port, dynamic port, or no port |
 | `port_env` | string | `PORT` | Env var receiving allocated port |
+| `capture_api` | bool | `true` | Proxy eligible stack HTTP services through devstack and log request/response payloads; set `false` to opt out |
+| `capture_api_body_limit` | int/string | `"256kb"` | Max request/response body bytes captured per API log entry |
+| `capture_api_ignore` | string[] | health/readiness endpoints | Additional API request paths to proxy without capture; `*` suffix matches a prefix |
 | `readiness` | table | inferred | See readiness options above |
 | `env_file` | path | `<cwd>/.env` | Optional dotenv file (templated) |
 | `env` | map | `{}` | Inline env vars (templated values) |
@@ -267,6 +270,23 @@ Service fields:
 | `ignore` | string[] | `[]` | Extra ignore patterns on top of ignore files |
 | `auto_restart` | bool | `false` | Live file watching + automatic restart (requires `watch`) |
 | `init` | string[] | none | Tasks to run before service start |
+
+### API Capture
+
+For stack services using `scheme = "http"`, devstack publishes the normal service URL through a local capture proxy by default. Set `capture_api = false` on a service to opt out. The app still receives its listen port through `port_env` (default `$PORT`), while `{{ services.<name>.url }}`, `DEV_URL_<SERVICE>`, and dependent services use the proxied URL.
+
+Captured requests are written into the service log as structured JSON with method, path, status, duration, redacted headers, request body, and response body. JSON bodies are parsed so `devstack logs --all` and the dashboard detail panel can show them as navigable JSON.
+
+```toml
+[stacks.dev.services.api]
+cmd = "pnpm api"
+capture_api_ignore = ["/assets/*"]
+readiness = { http = { path = "/health" } }
+```
+
+Capture is skipped automatically for the service HTTP readiness path and health-style endpoints (`/health`, `/healthz`, `/api/health`, `/api/healthz`, `/ready`, `/readyz`, `/live`, `/livez`, `/ping`, `/metrics`). Browser document/static requests are proxied without capture, while XHR/fetch-style requests are captured, which keeps web app dev servers useful without logging every asset or HMR request.
+
+`capture_api` only applies to stack services using `scheme = "http"` and with a service port. With capture enabled, fixed `port` values remain the public URL for browsers, callbacks, and dependent services; the app receives a separate backend listen port through `port_env` (default `$PORT`). Logged bodies default to a 256 KiB cap; large or streaming responses are forwarded as they arrive, with the capture entry written when the response stream finishes or is dropped. If capture logging falls behind, devstack drops capture entries instead of slowing requests and writes a compact dropped-event summary.
 
 ### Globals
 
@@ -279,15 +299,16 @@ Minijinja templates work in `cmd`, `cwd`, `env_file`, `env` values, `watch`, and
 - `{{ run.id }}` — unique run identifier
 - `{{ project.dir }}` — absolute path to project directory
 - `{{ stack.name }}` — current stack name
-- `{{ services.<name>.port }}` — allocated port for service
-- `{{ services.<name>.url }}` — full URL (scheme://host:port)
+- `{{ services.<name>.port }}` — public service port
+- `{{ services.<name>.listen_port }}` — backend port the service process should bind, useful when a command needs a templated listen port while API capture keeps `port` public
+- `{{ services.<name>.url }}` — public full URL (scheme://host:port)
 
 ### Environment Injection Order
 
 All services receive these automatically:
 
 - `DEV_RUN_ID`, `DEV_STACK`, `DEV_PROJECT_DIR`
-- `DEV_PORT_<SERVICE>`, `DEV_URL_<SERVICE>` for every service with a port
+- `DEV_PORT_<SERVICE>`, `DEV_LISTEN_PORT_<SERVICE>`, `DEV_URL_<SERVICE>` for every service with a port
 - `DEV_DEP_<DEP>_PORT`, `DEV_DEP_<DEP>_URL` shortcuts for direct dependencies
 
 Merge order (later entries may override earlier ones):

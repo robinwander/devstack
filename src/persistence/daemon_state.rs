@@ -152,9 +152,14 @@ fn convert_manifest_to_run_record(
         .iter()
         .map(|(name, service)| (name.clone(), service.port))
         .collect::<BTreeMap<_, _>>();
+    let mut listen_port_map = services
+        .iter()
+        .map(|(name, service)| (name.clone(), service.listen_port.or(service.port)))
+        .collect::<BTreeMap<_, _>>();
     let globals = config.globals_map();
     for (name, port) in global_port_map(&project_dir, &globals)? {
-        port_map.entry(name).or_insert(port);
+        port_map.entry(name.clone()).or_insert(port);
+        listen_port_map.entry(name).or_insert(port);
     }
 
     let mut service_schemes = stack_plan
@@ -199,6 +204,7 @@ fn convert_manifest_to_run_record(
             service_name,
             service_config,
             &port_map,
+            &listen_port_map,
             &service_schemes,
             &env,
             &config.env,
@@ -249,8 +255,15 @@ fn convert_manifest_to_global_record(
         .unwrap_or_default();
     let scope = InstanceScope::global(key.clone(), project_dir.clone(), name.clone());
     let port_map = BTreeMap::from([(name.clone(), service.port)]);
+    let listen_port_map = BTreeMap::from([(name.clone(), service.listen_port.or(service.port))]);
     let service_schemes = BTreeMap::from([(name.clone(), service_config.scheme())]);
-    let base_env = build_base_env(&scope, &project_dir, &port_map, &service_schemes)?;
+    let base_env = build_base_env(
+        &scope,
+        &project_dir,
+        &port_map,
+        &listen_port_map,
+        &service_schemes,
+    )?;
     let config_dir = config_path.parent().unwrap_or(&project_dir);
     let global_env_file_path = config.env_file.as_ref().map(|p| {
         if p.is_absolute() {
@@ -266,6 +279,7 @@ fn convert_manifest_to_global_record(
         &name,
         &service_config,
         &port_map,
+        &listen_port_map,
         &service_schemes,
         &base_env,
         &config.env,

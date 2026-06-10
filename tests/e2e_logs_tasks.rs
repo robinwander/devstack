@@ -68,6 +68,7 @@ async fn combined_logs_view_can_filter_by_service_level_stream() -> Result<()> {
                 service: Some("worker".to_string()),
                 include_entries: true,
                 include_facets: false,
+                include_total: true,
             },
         )
         .await?;
@@ -93,6 +94,7 @@ async fn combined_logs_view_can_filter_by_service_level_stream() -> Result<()> {
                 service: Some("worker".to_string()),
                 include_entries: true,
                 include_facets: false,
+                include_total: true,
             },
         )
         .await?;
@@ -272,6 +274,7 @@ async fn logs_facets_returns_filter_metadata() -> Result<()> {
                 service: None,
                 include_entries: true,
                 include_facets: false,
+                include_total: true,
             },
         )
         .await?;
@@ -290,6 +293,7 @@ async fn logs_facets_returns_filter_metadata() -> Result<()> {
                 service: None,
                 include_entries: false,
                 include_facets: true,
+                include_total: true,
             },
         )
         .await?;

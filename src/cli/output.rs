@@ -330,6 +330,7 @@ mod tests {
             entries: Vec::new(),
             truncated: false,
             total: 1756,
+            total_exact: true,
             filters: vec![
                 crate::api::FacetFilter {
                     field: "service".to_string(),
@@ -457,6 +458,7 @@ mod tests {
             level: "info".to_string(),
             message: "GET /health HTTP/1.1 200".to_string(),
             raw: "[2025-01-01T00:00:00Z] [stdout] GET /health HTTP/1.1 200".to_string(),
+            json: None,
             attributes: Default::default(),
         };
 

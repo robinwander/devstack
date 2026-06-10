@@ -5,7 +5,9 @@ use anyhow::{Result, anyhow};
 use serde::de::{self, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 
-use crate::model::ReadinessKind;
+use crate::model::{
+    DEFAULT_CAPTURE_API_BODY_LIMIT_BYTES, DEFAULT_CAPTURE_API_IGNORE_PATHS, ReadinessKind,
+};
 
 #[derive(Clone, Debug)]
 pub struct UniqueMap<K, V>(pub BTreeMap<K, V>);
@@ -94,6 +96,12 @@ pub struct ServiceConfig {
     pub scheme: Option<String>,
     pub port_env: Option<String>,
     pub port: Option<PortConfig>,
+    #[serde(default)]
+    pub capture_api: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_capture_api_body_limit")]
+    pub capture_api_body_limit: Option<usize>,
+    #[serde(default)]
+    pub capture_api_ignore: Vec<String>,
     pub readiness: Option<ReadinessConfig>,
     pub env_file: Option<PathBuf>,
     #[serde(default)]
@@ -191,6 +199,55 @@ impl ServiceConfig {
         self.port_env.clone().unwrap_or_else(|| "PORT".to_string())
     }
 
+    pub fn capture_api_body_limit(&self) -> usize {
+        self.capture_api_body_limit
+            .unwrap_or(DEFAULT_CAPTURE_API_BODY_LIMIT_BYTES)
+    }
+
+    pub fn capture_api_requested(&self) -> bool {
+        self.capture_api.unwrap_or(true)
+    }
+
+    pub fn capture_api_explicitly_enabled(&self) -> bool {
+        self.capture_api == Some(true)
+    }
+
+    pub fn has_service_port(&self) -> bool {
+        self.port
+            .as_ref()
+            .map(|port| !port.is_none())
+            .unwrap_or(true)
+    }
+
+    pub fn capture_api_enabled(&self, allowed: bool, has_port: bool, scheme: &str) -> bool {
+        if !allowed || !self.capture_api_requested() || !has_port || scheme != "http" {
+            return false;
+        }
+        self.capture_api_explicitly_enabled() || self.http_capture_by_default()
+    }
+
+    fn http_capture_by_default(&self) -> bool {
+        self.scheme.as_deref() == Some("http")
+            || self
+                .readiness
+                .as_ref()
+                .and_then(|readiness| readiness.http.as_ref())
+                .is_some()
+    }
+
+    pub fn capture_api_ignore_paths(&self) -> Vec<String> {
+        let mut paths = DEFAULT_CAPTURE_API_IGNORE_PATHS
+            .iter()
+            .map(|pattern| (*pattern).to_string())
+            .collect::<Vec<_>>();
+        for pattern in &self.capture_api_ignore {
+            if !paths.iter().any(|existing| existing == pattern) {
+                paths.push(pattern.clone());
+            }
+        }
+        paths
+    }
+
     pub fn cwd_or(&self, project_dir: &Path) -> PathBuf {
         self.cwd
             .clone()
@@ -278,6 +335,64 @@ impl ServiceConfig {
             .map(std::time::Duration::from_millis)
             .unwrap_or_else(|| std::time::Duration::from_secs(30));
         Ok(crate::model::ReadinessSpec { kind, timeout })
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum CaptureApiBodyLimitConfig {
+    Bytes(usize),
+    Text(String),
+}
+
+fn deserialize_capture_api_body_limit<'de, D>(deserializer: D) -> Result<Option<usize>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let Some(value) = Option::<CaptureApiBodyLimitConfig>::deserialize(deserializer)? else {
+        return Ok(None);
+    };
+    parse_capture_api_body_limit(value)
+        .map(Some)
+        .map_err(de::Error::custom)
+}
+
+fn parse_capture_api_body_limit(value: CaptureApiBodyLimitConfig) -> Result<usize> {
+    match value {
+        CaptureApiBodyLimitConfig::Bytes(bytes) => Ok(bytes),
+        CaptureApiBodyLimitConfig::Text(text) => {
+            let text = text.trim();
+            if text.is_empty() {
+                return Err(anyhow!("capture_api_body_limit cannot be empty"));
+            }
+            let digit_end = text
+                .find(|ch: char| !ch.is_ascii_digit())
+                .unwrap_or(text.len());
+            if digit_end == 0 {
+                return Err(anyhow!(
+                    "capture_api_body_limit must start with a byte count"
+                ));
+            }
+            let count = text[..digit_end].parse::<usize>()?;
+            let unit = text[digit_end..]
+                .trim()
+                .to_ascii_lowercase()
+                .replace(' ', "");
+            let multiplier = match unit.as_str() {
+                "" | "b" | "byte" | "bytes" => 1usize,
+                "k" | "kb" | "kib" => 1024usize,
+                "m" | "mb" | "mib" => 1024usize * 1024,
+                "g" | "gb" | "gib" => 1024usize * 1024 * 1024,
+                _ => {
+                    return Err(anyhow!(
+                        "unsupported capture_api_body_limit unit {unit:?}; use bytes, kb, mb, or gb"
+                    ));
+                }
+            };
+            count
+                .checked_mul(multiplier)
+                .ok_or_else(|| anyhow!("capture_api_body_limit is too large"))
+        }
     }
 }
 

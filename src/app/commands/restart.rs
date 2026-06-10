@@ -52,7 +52,7 @@ async fn restart_service_inner(
             let snapshot = (
                 record.launch.unit_name.clone(),
                 record.spec.readiness.clone(),
-                record.launch.port,
+                record.launch.listen_port,
                 record.launch.scheme.clone(),
                 record.launch.log_path.clone(),
                 record.launch.cwd.clone(),

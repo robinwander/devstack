@@ -2,6 +2,7 @@ mod support;
 
 use anyhow::{Result, anyhow};
 use devstack::model::ServiceState;
+use devstack::persistence::PersistedRun;
 use support::TestHarness;
 use support::fixtures;
 
@@ -16,6 +17,17 @@ fn service_port(url: &str) -> Result<u16> {
 fn available_port() -> Result<u16> {
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
     Ok(listener.local_addr()?.port())
+}
+
+async fn http_get(url: &str, path: &str) -> Result<String> {
+    let port = service_port(url)?;
+    let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port)).await?;
+    let request =
+        format!("GET {path} HTTP/1.1\r\nHost: localhost:{port}\r\nConnection: close\r\n\r\n");
+    tokio::io::AsyncWriteExt::write_all(&mut stream, request.as_bytes()).await?;
+    let mut response = Vec::new();
+    tokio::io::AsyncReadExt::read_to_end(&mut stream, &mut response).await?;
+    Ok(String::from_utf8_lossy(&response).to_string())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -92,6 +104,53 @@ async fn fixed_port_is_reserved_across_daemons_until_run_stops() -> Result<()> {
     run2.down().await?;
     daemon1.stop().await?;
     daemon2.stop().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn api_capture_fixed_port_remains_public_callback_port() -> Result<()> {
+    let port = available_port()?;
+    let t = TestHarness::new().await?;
+    let project = t
+        .fixture(fixtures::simple_http())
+        .with_config_patch(|config| {
+            config
+                .service("dev", "api")?
+                .port_fixed(port)
+                .capture_api(true);
+            Ok(())
+        })?
+        .create()
+        .await?;
+
+    let daemon = t.daemon().start().await?;
+    let run = t.cli().up(&project).await?;
+    run.assert_ready().await?;
+
+    let url = run.service("api").url().await?;
+    assert_eq!(service_port(&url)?, port);
+    let manifest = PersistedRun::load_from_path(&run.manifest_path())?;
+    let listen_port = manifest.services["api"]
+        .listen_port
+        .expect("captured service should have a backend listen port");
+    assert_ne!(listen_port, port);
+    run.service("api")
+        .assert_log_contains(&format!("service-started name=api port={listen_port}"))
+        .await?;
+
+    let response = http_get(&url, "/callback").await?;
+    assert!(response.contains("200 OK"));
+    assert!(response.contains(&format!(r#""host": "localhost:{port}""#)));
+    assert!(response.contains(&format!(r#""x_forwarded_host": "localhost:{port}""#)));
+    assert!(response.contains(&format!(r#""x_forwarded_port": "{port}""#)));
+    assert!(response.contains(r#""x_forwarded_proto": "http""#));
+    assert!(!response.contains(&format!("localhost:{listen_port}")));
+    run.service("api")
+        .assert_log_contains(r#""target":"/callback""#)
+        .await?;
+
+    run.down().await?;
+    daemon.stop().await?;
     Ok(())
 }
 

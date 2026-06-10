@@ -8,12 +8,13 @@ use crate::api::{
     LogFilterQuery, LogViewQuery, LogViewResponse, LogsQuery, LogsResponse, NavigationIntent,
     NavigationIntentResponse, PingResponse, RestartServiceRequest, RunListResponse, RunResponse,
     RunStatusResponse, RunSummary, RunWatchResponse, ServiceResponse, ServiceStatus,
-    SetNavigationIntentRequest, ShareAgentMessageRequest, ShareAgentMessageResponse, SourceSummary,
-    SourcesResponse, StartTaskRequest, StartTaskResponse, SystemdStatus, TaskExecutionState,
-    TaskExecutionSummary, TaskStatusResponse, TasksResponse, UpRequest, WatchControlRequest,
-    WatchServiceStatus,
+    SetNavigationIntentRequest, ShareAgentMessageRequest, ShareAgentMessageResponse,
+    SourceStatusResponse, SourceSummary, SourcesResponse, StartTaskRequest, StartTaskResponse,
+    SystemdStatus, TaskExecutionState, TaskExecutionSummary, TaskStatusResponse, TasksResponse,
+    UpRequest, WatchControlRequest, WatchServiceStatus,
 };
 use crate::model::{RunLifecycle, ServiceState};
+use crate::sources::{SourceFileIndexState, SourceIndexState, SourceIndexStatus};
 
 #[derive(OpenApi)]
 #[openapi(
@@ -44,6 +45,7 @@ use crate::model::{RunLifecycle, ServiceState};
         crate::daemon::handlers::sources::add_source,
         crate::daemon::handlers::sources::remove_source,
         crate::daemon::handlers::sources::source_logs_view,
+        crate::daemon::handlers::sources::source_status,
         crate::daemon::handlers::navigation::set_navigation_intent,
         crate::daemon::handlers::navigation::get_navigation_intent,
         crate::daemon::handlers::navigation::clear_navigation_intent,
@@ -98,6 +100,10 @@ use crate::model::{RunLifecycle, ServiceState};
             LogViewResponse,
             SourceSummary,
             SourcesResponse,
+            SourceStatusResponse,
+            SourceIndexStatus,
+            SourceFileIndexState,
+            SourceIndexState,
             AddSourceRequest,
             AddSourceResponse,
             ErrorResponse,

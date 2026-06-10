@@ -2,6 +2,9 @@ use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
 };
+use std::time::Duration;
+
+use tokio::sync::watch;
 
 #[derive(Clone)]
 pub(crate) struct HealthHandle {
@@ -56,8 +59,72 @@ impl ServiceWatchHandle {
     }
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct ApiCaptureHandle {
+    pub(crate) stop_flag: Arc<AtomicBool>,
+    drain_complete: watch::Receiver<bool>,
+    drain_timeout: Duration,
+}
+
+impl ApiCaptureHandle {
+    pub(crate) fn new(drain_complete: watch::Receiver<bool>, drain_timeout: Duration) -> Self {
+        Self {
+            stop_flag: Arc::new(AtomicBool::new(false)),
+            drain_complete,
+            drain_timeout,
+        }
+    }
+
+    pub(crate) fn stop(&self) {
+        self.stop_flag.store(true, Ordering::SeqCst);
+        self.spawn_drain_wait();
+    }
+
+    pub(crate) async fn stop_and_wait(&self) {
+        self.stop_flag.store(true, Ordering::SeqCst);
+        self.wait_for_drain().await;
+    }
+
+    fn spawn_drain_wait(&self) {
+        if *self.drain_complete.borrow() {
+            return;
+        }
+        let mut drain_complete = self.drain_complete.clone();
+        let drain_timeout = self.drain_timeout;
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                let _ = tokio::time::timeout(drain_timeout, async move {
+                    while !*drain_complete.borrow() {
+                        if drain_complete.changed().await.is_err() {
+                            break;
+                        }
+                    }
+                })
+                .await;
+            });
+        }
+    }
+
+    async fn wait_for_drain(&self) {
+        if *self.drain_complete.borrow() {
+            return;
+        }
+        let mut drain_complete = self.drain_complete.clone();
+        let drain_timeout = self.drain_timeout;
+        let _ = tokio::time::timeout(drain_timeout, async move {
+            while !*drain_complete.borrow() {
+                if drain_complete.changed().await.is_err() {
+                    break;
+                }
+            }
+        })
+        .await;
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ServiceHandles {
     pub(crate) health: Option<HealthHandle>,
     pub(crate) watch: Option<ServiceWatchHandle>,
+    pub(crate) api_capture: Option<ApiCaptureHandle>,
 }

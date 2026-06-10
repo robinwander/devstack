@@ -396,6 +396,7 @@ async fn source_logs_can_be_queried() -> Result<()> {
                 service: None,
                 include_entries: true,
                 include_facets: false,
+                include_total: true,
             },
         )
         .await?;
@@ -442,6 +443,7 @@ async fn removing_source_makes_it_unqueryable() -> Result<()> {
                 service: None,
                 include_entries: true,
                 include_facets: false,
+                include_total: true,
             },
         )
         .await?;
@@ -463,6 +465,7 @@ async fn removing_source_makes_it_unqueryable() -> Result<()> {
                 service: None,
                 include_entries: true,
                 include_facets: false,
+                include_total: true,
             },
         )
         .await
@@ -509,6 +512,7 @@ async fn readding_source_refreshes_searchable_entries() -> Result<()> {
                 service: None,
                 include_entries: true,
                 include_facets: false,
+                include_total: true,
             },
         )
         .await?;
@@ -541,6 +545,7 @@ async fn readding_source_refreshes_searchable_entries() -> Result<()> {
                 service: None,
                 include_entries: true,
                 include_facets: false,
+                include_total: true,
             },
         )
         .await?;
@@ -562,6 +567,7 @@ async fn readding_source_refreshes_searchable_entries() -> Result<()> {
                 service: None,
                 include_entries: true,
                 include_facets: false,
+                include_total: true,
             },
         )
         .await?;

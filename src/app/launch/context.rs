@@ -12,6 +12,7 @@ pub fn build_base_env(
     scope: &InstanceScope,
     project_dir: &Path,
     port_map: &BTreeMap<String, Option<u16>>,
+    listen_port_map: &BTreeMap<String, Option<u16>>,
     schemes: &BTreeMap<String, String>,
 ) -> Result<BTreeMap<String, String>> {
     let mut env = BTreeMap::new();
@@ -42,6 +43,12 @@ pub fn build_base_env(
             env.insert(format!("DEV_URL_{key}"), readiness_url(&scheme, *port));
         }
     }
+    for (service, listen_port) in listen_port_map {
+        if let Some(listen_port) = listen_port {
+            let key = sanitize_env_key(service);
+            env.insert(format!("DEV_LISTEN_PORT_{key}"), listen_port.to_string());
+        }
+    }
 
     Ok(env)
 }
@@ -69,11 +76,13 @@ pub fn build_template_context(
     scope: &InstanceScope,
     project_dir: &Path,
     port_map: &BTreeMap<String, Option<u16>>,
+    listen_port_map: &BTreeMap<String, Option<u16>>,
     schemes: &BTreeMap<String, String>,
 ) -> Result<serde_json::Value> {
     let mut services = serde_json::Map::new();
     for (service, port) in port_map {
         let mut entry = serde_json::Map::new();
+        let listen_port = listen_port_map.get(service).copied().flatten();
         if let Some(port) = port {
             entry.insert("port".to_string(), serde_json::json!(port));
             let scheme = schemes
@@ -87,6 +96,11 @@ pub fn build_template_context(
         } else {
             entry.insert("port".to_string(), serde_json::Value::Null);
             entry.insert("url".to_string(), serde_json::Value::Null);
+        }
+        if let Some(listen_port) = listen_port {
+            entry.insert("listen_port".to_string(), serde_json::json!(listen_port));
+        } else {
+            entry.insert("listen_port".to_string(), serde_json::Value::Null);
         }
         let entry_value = serde_json::Value::Object(entry);
         let underscore_key = service.replace('-', "_");
@@ -207,7 +221,11 @@ pub fn build_watch_fingerprint(
     rendered_cmd: &str,
     rendered_cwd: &Path,
     port: Option<u16>,
+    listen_port: Option<u16>,
     scheme: &str,
+    capture_api: bool,
+    capture_api_body_limit: usize,
+    capture_api_ignore: &[String],
     readiness: &ReadinessSpec,
     env_file_path: &Path,
     env: &BTreeMap<String, String>,
@@ -218,7 +236,11 @@ pub fn build_watch_fingerprint(
         "cmd": rendered_cmd,
         "cwd": rendered_cwd.to_string_lossy(),
         "port": port,
+        "listen_port": listen_port,
         "scheme": scheme,
+        "capture_api": capture_api,
+        "capture_api_body_limit": capture_api_body_limit,
+        "capture_api_ignore": capture_api_ignore,
         "deps": svc.deps,
         "port_env": svc.port_env(),
         "readiness": format!("{:?}", readiness),

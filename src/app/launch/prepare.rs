@@ -24,8 +24,12 @@ pub struct PreparedService {
     pub name: String,
     pub unit_name: String,
     pub port: Option<u16>,
+    pub listen_port: Option<u16>,
     pub scheme: String,
     pub url: Option<String>,
+    pub capture_api: bool,
+    pub capture_api_body_limit: usize,
+    pub capture_api_ignore: Vec<String>,
     pub deps: Vec<String>,
     pub readiness: ReadinessSpec,
     pub log_path: PathBuf,
@@ -62,8 +66,12 @@ impl PreparedService {
             cmd: self.cmd,
             log_path: self.log_path,
             port: self.port,
+            listen_port: self.listen_port,
             scheme: self.scheme,
             url: self.url,
+            capture_api: self.capture_api,
+            capture_api_body_limit: self.capture_api_body_limit,
+            capture_api_ignore: self.capture_api_ignore,
             watch_hash: self.watch_hash,
             watch_fingerprint: self.watch_fingerprint,
             watch_extra_files: self.watch_extra_files,
@@ -84,16 +92,39 @@ pub fn prepare_service(
     svc_name: &str,
     svc: &ServiceConfig,
     port_map: &BTreeMap<String, Option<u16>>,
+    listen_port_map: &BTreeMap<String, Option<u16>>,
     service_schemes: &BTreeMap<String, String>,
     base_env: &BTreeMap<String, String>,
     global_env: &BTreeMap<String, String>,
     global_env_file: Option<&Path>,
 ) -> Result<PreparedService> {
     let port = *port_map.get(svc_name).unwrap_or(&None);
+    let listen_port = *listen_port_map.get(svc_name).unwrap_or(&port);
     let scheme = svc.scheme();
     let url = port.map(|value| readiness_url(&scheme, value));
+    let capture_api = svc.capture_api_enabled(
+        matches!(scope, InstanceScope::Run { .. }),
+        port.is_some(),
+        &scheme,
+    );
+    let capture_api_body_limit = svc.capture_api_body_limit();
+    let mut capture_api_ignore = svc.capture_api_ignore_paths();
+    if let Some(readiness) = &svc.readiness
+        && let Some(http) = &readiness.http
+        && !capture_api_ignore
+            .iter()
+            .any(|pattern| pattern == &http.path)
+    {
+        capture_api_ignore.push(http.path.clone());
+    }
 
-    let template_context = build_template_context(scope, project_dir, port_map, service_schemes)?;
+    let template_context = build_template_context(
+        scope,
+        project_dir,
+        port_map,
+        listen_port_map,
+        service_schemes,
+    )?;
     let rendered_cwd = resolve_cwd_path(
         &svc.cwd_or(project_dir).to_string_lossy(),
         &template_context,
@@ -113,15 +144,15 @@ pub fn prepare_service(
     let file_env = load_env_file(&env_file_path)?;
     merge_env_file(&mut env, file_env);
     inject_dep_env(&mut env, svc, port_map, service_schemes);
-    if let Some(port) = port {
-        env.insert(svc.port_env(), port.to_string());
+    if let Some(listen_port) = listen_port {
+        env.insert(svc.port_env(), listen_port.to_string());
     }
     let rendered_env = render_env(&svc.env, &template_context)?;
     env.extend(rendered_env);
     env = crate::config::resolve_env_map(&env);
     env.insert("DEV_GRACE_MS".to_string(), "2000".to_string());
 
-    let readiness = svc.readiness_spec(port.is_some())?;
+    let readiness = svc.readiness_spec(listen_port.is_some())?;
     let unit_name = unit_name_for_scope(scope, svc_name);
     let log_path = log_path_for_scope(scope, project_dir, svc_name)?;
     let cmd = render_template(&svc.cmd, &template_context)?;
@@ -143,7 +174,11 @@ pub fn prepare_service(
         &cmd,
         &rendered_cwd,
         port,
+        listen_port,
         &scheme,
+        capture_api,
+        capture_api_body_limit,
+        &capture_api_ignore,
         &readiness,
         &env_file_path,
         &env,
@@ -168,8 +203,12 @@ pub fn prepare_service(
         name: svc_name.to_string(),
         unit_name,
         port,
+        listen_port,
         scheme,
         url,
+        capture_api,
+        capture_api_body_limit,
+        capture_api_ignore,
         deps: svc.deps.clone(),
         readiness,
         log_path,
@@ -190,6 +229,7 @@ pub struct ExistingServiceSnapshot {
     pub watch_hash: Option<String>,
     pub state: ServiceState,
     pub port: Option<u16>,
+    pub listen_port: Option<u16>,
 }
 
 pub fn resolve_ports_for_refresh(

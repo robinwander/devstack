@@ -5,6 +5,7 @@ use tokio::sync::broadcast;
 
 use crate::api::DaemonEvent;
 use crate::infra::logs::index::LogIndex;
+use crate::sources::SourceRegistry;
 use crate::stores::{AgentSessionStore, GlobalStore, NavigationStore, RunStore, TaskStore};
 use crate::systemd::SystemdManager;
 
@@ -22,6 +23,7 @@ pub struct AppContext {
     pub(crate) navigation: Arc<NavigationStore>,
     pub(crate) binary_path: PathBuf,
     pub(crate) log_index: Arc<LogIndex>,
+    pub(crate) sources: Arc<SourceRegistry>,
     pub(crate) event_tx: broadcast::Sender<DaemonEvent>,
 }
 

@@ -4,6 +4,20 @@ use std::path::PathBuf;
 use crate::app::handles::ServiceHandles;
 use crate::model::{ReadinessSpec, ServiceState};
 
+pub const DEFAULT_CAPTURE_API_BODY_LIMIT_BYTES: usize = 256 * 1024;
+pub const DEFAULT_CAPTURE_API_IGNORE_PATHS: &[&str] = &[
+    "/health",
+    "/healthz",
+    "/api/health",
+    "/api/healthz",
+    "/ready",
+    "/readyz",
+    "/live",
+    "/livez",
+    "/ping",
+    "/metrics",
+];
+
 #[derive(Clone, Debug)]
 pub struct ServiceSpec {
     pub name: String,
@@ -22,8 +36,12 @@ pub struct ServiceLaunchPlan {
     pub cmd: String,
     pub log_path: PathBuf,
     pub port: Option<u16>,
+    pub listen_port: Option<u16>,
     pub scheme: String,
     pub url: Option<String>,
+    pub capture_api: bool,
+    pub capture_api_body_limit: usize,
+    pub capture_api_ignore: Vec<String>,
     pub watch_hash: String,
     pub watch_fingerprint: Vec<u8>,
     pub watch_extra_files: Vec<PathBuf>,
@@ -75,6 +93,12 @@ impl ServiceRecord {
 
     pub fn stop_watch(&mut self) {
         if let Some(handle) = self.handles.watch.take() {
+            handle.stop();
+        }
+    }
+
+    pub fn stop_api_capture(&mut self) {
+        if let Some(handle) = self.handles.api_capture.take() {
             handle.stop();
         }
     }

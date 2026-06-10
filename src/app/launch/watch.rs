@@ -11,6 +11,7 @@ use crate::app::commands::restart::restart_service_no_wait;
 use crate::app::context::AppContext;
 use crate::app::handles::ServiceWatchHandle;
 use crate::model::{GlobalRecord, RunLifecycle, ServiceRecord, ServiceState};
+use crate::services::api_capture::{ApiCaptureProxyConfig, start_api_capture_proxy};
 use crate::watch::compute_watch_hash;
 
 use super::prepare::PreparedService;
@@ -65,20 +66,33 @@ pub fn apply_prepared_to_runtime(
     service.spec.watch_patterns = prepared.watch_patterns.clone();
     service.spec.ignore_patterns = prepared.ignore_patterns.clone();
 
+    let capture_config_changed = service.launch.capture_api != prepared.capture_api
+        || service.launch.capture_api_body_limit != prepared.capture_api_body_limit
+        || service.launch.capture_api_ignore != prepared.capture_api_ignore
+        || service.launch.port != prepared.port
+        || service.launch.listen_port != prepared.listen_port;
+
     service.launch.unit_name = prepared.unit_name.clone();
     service.launch.cwd = prepared.cwd.clone();
     service.launch.env = prepared.env.clone();
     service.launch.cmd = prepared.cmd.clone();
     service.launch.log_path = prepared.log_path.clone();
     service.launch.port = prepared.port;
+    service.launch.listen_port = prepared.listen_port;
     service.launch.scheme = prepared.scheme.clone();
     service.launch.url = prepared.url.clone();
+    service.launch.capture_api = prepared.capture_api;
+    service.launch.capture_api_body_limit = prepared.capture_api_body_limit;
+    service.launch.capture_api_ignore = prepared.capture_api_ignore.clone();
     service.launch.watch_hash = prepared.watch_hash.clone();
     service.launch.watch_fingerprint = prepared.watch_fingerprint.clone();
     service.launch.watch_extra_files = prepared.watch_extra_files.clone();
 
     if service.spec.auto_restart != prepared.auto_restart {
         service.runtime.watch_paused = false;
+    }
+    if capture_config_changed {
+        service.stop_api_capture();
     }
 }
 
@@ -288,6 +302,68 @@ pub async fn sync_service_auto_restart_watcher(
         }
     }
 
+    Ok(())
+}
+
+pub async fn sync_service_api_capture_proxy(
+    app: &AppContext,
+    run_id: &str,
+    service: &str,
+) -> Result<()> {
+    let start_config = app
+        .runs
+        .with_run_mut(run_id, |run| {
+            let Some(record) = run.services.get_mut(service) else {
+                return None;
+            };
+            if !record.launch.capture_api
+                || matches!(record.runtime.state, ServiceState::Stopped)
+                || record.runtime.last_started_at.is_none()
+            {
+                record.stop_api_capture();
+                return None;
+            }
+            if record.handles.api_capture.is_some() {
+                return None;
+            }
+            let (Some(public_port), Some(target_port)) =
+                (record.launch.port, record.launch.listen_port)
+            else {
+                return None;
+            };
+            Some(ApiCaptureProxyConfig {
+                run_id: run_id.to_string(),
+                service: service.to_string(),
+                public_port,
+                target_port,
+                log_path: record.launch.log_path.clone(),
+                body_limit: record.launch.capture_api_body_limit,
+                ignore_paths: record.launch.capture_api_ignore.clone(),
+            })
+        })
+        .await
+        .ok()
+        .flatten();
+
+    let Some(config) = start_config else {
+        return Ok(());
+    };
+
+    let handle = start_api_capture_proxy(config).await?;
+    let mut pending = Some(handle);
+    app.runs
+        .with_run_mut(run_id, |run| {
+            if let Some(record) = run.services.get_mut(service)
+                && record.launch.capture_api
+                && record.handles.api_capture.is_none()
+            {
+                record.handles.api_capture = pending.take();
+            }
+        })
+        .await?;
+    if let Some(handle) = pending {
+        handle.stop();
+    }
     Ok(())
 }
 

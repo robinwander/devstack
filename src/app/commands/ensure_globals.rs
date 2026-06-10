@@ -292,8 +292,15 @@ fn prepare_global_service(
         InstanceScope::Run { .. } => unreachable!("global scope required"),
     };
     let port_map = BTreeMap::from([(name.clone(), port)]);
+    let listen_port_map = BTreeMap::from([(name.clone(), port)]);
     let service_schemes = BTreeMap::from([(name.clone(), service_config.scheme())]);
-    let base_env = build_base_env(scope, project_dir, &port_map, &service_schemes)?;
+    let base_env = build_base_env(
+        scope,
+        project_dir,
+        &port_map,
+        &listen_port_map,
+        &service_schemes,
+    )?;
     prepare_service(
         scope,
         project_dir,
@@ -301,6 +308,7 @@ fn prepare_global_service(
         &name,
         service_config,
         &port_map,
+        &listen_port_map,
         &service_schemes,
         &base_env,
         &BTreeMap::new(),
@@ -346,8 +354,12 @@ fn prepared_service_from_global(global: &GlobalRecord) -> PreparedService {
         name: global.service.spec.name.clone(),
         unit_name: global.service.launch.unit_name.clone(),
         port: global.service.launch.port,
+        listen_port: global.service.launch.listen_port,
         scheme: global.service.launch.scheme.clone(),
         url: global.service.launch.url.clone(),
+        capture_api: global.service.launch.capture_api,
+        capture_api_body_limit: global.service.launch.capture_api_body_limit,
+        capture_api_ignore: global.service.launch.capture_api_ignore.clone(),
         deps: global.service.spec.deps.clone(),
         readiness: global.service.spec.readiness.clone(),
         log_path: global.service.launch.log_path.clone(),

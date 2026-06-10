@@ -1,9 +1,9 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde_json::Value as JsonValue;
-use tantivy::schema::{FAST, INDEXED, STORED, STRING, TEXT, TextOptions};
+use tantivy::schema::{FAST, INDEXED, JsonObjectOptions, STORED, STRING, TEXT, TextOptions};
 use tantivy::{Index, ReloadPolicy};
 
 use crate::paths;
@@ -114,7 +114,6 @@ impl LogIndex {
             fields,
             writer_state: std::sync::Mutex::new(LogIndexWriterState {
                 writer: Some(writer),
-                dynamic_fields: HashMap::new(),
             }),
             ingest_state_path: ingest_state_path.to_path_buf(),
             ingest_gate: std::sync::Mutex::new(()),
@@ -159,6 +158,10 @@ impl LogIndex {
         schema.add_u64_field("seq", INDEXED | FAST | STORED);
         schema.add_text_field("message", TEXT | STORED);
         schema.add_text_field("raw", stored_text);
+        schema.add_json_field(
+            "attrs",
+            JsonObjectOptions::default().set_stored().set_fast(None),
+        );
         schema.build()
     }
 
@@ -190,6 +193,9 @@ impl LogIndex {
         let raw = schema
             .get_field("raw")
             .context("tantivy schema missing field raw")?;
+        let attrs = schema
+            .get_field("attrs")
+            .context("tantivy schema missing field attrs")?;
         Ok(LogIndexFields {
             run_id,
             service,
@@ -200,71 +206,8 @@ impl LogIndex {
             seq,
             message,
             raw,
+            attrs,
         })
-    }
-
-    pub(super) fn ensure_dynamic_fields(
-        &self,
-        state: &mut LogIndexWriterState,
-        field_names: &BTreeSet<String>,
-    ) -> Result<()> {
-        let schema = self.index.read().unwrap().schema();
-        let mut missing = Vec::new();
-        for field_name in field_names {
-            if state.dynamic_fields.contains_key(field_name) {
-                continue;
-            }
-            if let Ok(field) = schema.get_field(field_name) {
-                state.dynamic_fields.insert(field_name.clone(), field);
-                continue;
-            }
-            missing.push(field_name.clone());
-        }
-
-        if missing.is_empty() {
-            return Ok(());
-        }
-
-        let mut schema_builder = tantivy::schema::Schema::builder();
-        for (_, field_entry) in schema.fields() {
-            schema_builder.add_field(field_entry.clone());
-        }
-        let dynamic_field_options = TextOptions::default().set_stored().set_fast(None);
-        for field_name in &missing {
-            schema_builder.add_text_field(field_name, dynamic_field_options.clone());
-        }
-
-        if let Some(writer) = state.writer.take() {
-            writer.wait_merging_threads()?;
-        }
-
-        let mut metas = self.index.read().unwrap().load_metas()?;
-        metas.schema = schema_builder.build();
-        let bytes = serde_json::to_vec_pretty(&metas)?;
-        atomic_write(&self.index_dir.join("meta.json"), &bytes)?;
-
-        let index = Index::open_in_dir(&self.index_dir)?;
-        let schema = index.schema();
-        let reader = index
-            .reader_builder()
-            .reload_policy(ReloadPolicy::OnCommitWithDelay)
-            .try_into()?;
-        let writer = Self::open_writer_with_retry(&index)?;
-        writer.set_merge_policy(Box::new(Self::merge_policy()));
-        Self::resolve_fields(&schema)?;
-        let cached_names: Vec<String> = state.dynamic_fields.keys().cloned().collect();
-
-        *self.index.write().unwrap() = index;
-        *self.reader.write().unwrap() = reader;
-        state.writer = Some(writer);
-        state.dynamic_fields.clear();
-        for field_name in cached_names.into_iter().chain(missing.into_iter()) {
-            if let Ok(field) = schema.get_field(&field_name) {
-                state.dynamic_fields.insert(field_name, field);
-            }
-        }
-
-        Ok(())
     }
 
     pub(crate) fn extract_dynamic_json_fields_from_map(

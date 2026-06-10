@@ -182,7 +182,7 @@ impl LogIndex {
         )?;
         view_query = Self::add_level_filter(fields.level, view_query, level_filter)?;
 
-        let (all_dynamic_fields, facet_fields) = {
+        let facet_fields = {
             let index = self.index.read().unwrap();
             view_query = Self::add_text_query(
                 &index,
@@ -190,66 +190,75 @@ impl LogIndex {
                 view_query,
                 query.filter.search.as_deref(),
             )?;
-            let all_dynamic_fields = if query.include_entries || query.include_facets {
-                Self::dynamic_attribute_fields(&index.schema())
-            } else {
-                Vec::new()
-            };
-            let facet_fields = if query.include_facets {
+            if query.include_facets {
                 self.facet_fields_for_scope(run_id, service_filter)
             } else {
                 Vec::new()
-            };
-            (all_dynamic_fields, facet_fields)
-        };
-        let attribute_fields = if query.include_entries {
-            all_dynamic_fields.clone()
-        } else {
-            Vec::new()
+            }
         };
 
         let searcher = self.reader.read().unwrap().searcher();
+        let include_entries = query.include_entries && tail > 0;
+        let include_facets = query.include_facets && !facet_fields.is_empty();
 
-        let (total, top_docs, facet_counts) = match (
-            query.include_entries && tail > 0,
-            query.include_facets && !facet_fields.is_empty(),
-        ) {
-            (true, true) => {
-                let (total, top_docs, facet_counts) = searcher.search(
-                    view_query.as_ref(),
-                    &(
-                        Count,
-                        TopDocs::with_limit(tail)
+        let (total, total_exact, top_docs, facet_counts, truncated) =
+            match (include_entries, include_facets, query.include_total) {
+                (true, true, _) => {
+                    let (total, top_docs, facet_counts) = searcher.search(
+                        view_query.as_ref(),
+                        &(
+                            Count,
+                            TopDocs::with_limit(tail)
+                                .order_by_fast_field::<i64>("ts_nanos", tantivy::Order::Desc),
+                            FacetCountCollector::new(&facet_fields),
+                        ),
+                    )?;
+                    (total, true, top_docs, facet_counts, total > tail)
+                }
+                (true, false, true) => {
+                    let (total, top_docs) = searcher.search(
+                        view_query.as_ref(),
+                        &(
+                            Count,
+                            TopDocs::with_limit(tail)
+                                .order_by_fast_field::<i64>("ts_nanos", tantivy::Order::Desc),
+                        ),
+                    )?;
+                    (total, true, top_docs, HashMap::new(), total > tail)
+                }
+                (true, false, false) => {
+                    let mut top_docs = searcher.search(
+                        view_query.as_ref(),
+                        &TopDocs::with_limit(tail.saturating_add(1))
                             .order_by_fast_field::<i64>("ts_nanos", tantivy::Order::Desc),
-                        FacetCountCollector::new(&facet_fields),
-                    ),
-                )?;
-                (total, top_docs, facet_counts)
-            }
-            (true, false) => {
-                let (total, top_docs) = searcher.search(
-                    view_query.as_ref(),
-                    &(
-                        Count,
-                        TopDocs::with_limit(tail)
-                            .order_by_fast_field::<i64>("ts_nanos", tantivy::Order::Desc),
-                    ),
-                )?;
-                (total, top_docs, HashMap::new())
-            }
-            (false, true) => {
-                let (total, facet_counts) = searcher.search(
-                    view_query.as_ref(),
-                    &(Count, FacetCountCollector::new(&facet_fields)),
-                )?;
-                (total, Vec::new(), facet_counts)
-            }
-            (false, false) => (
-                searcher.search(view_query.as_ref(), &Count)?,
-                Vec::new(),
-                HashMap::new(),
-            ),
-        };
+                    )?;
+                    let truncated = top_docs.len() > tail;
+                    if truncated {
+                        top_docs.truncate(tail);
+                    }
+                    let total = if truncated {
+                        tail.saturating_add(1)
+                    } else {
+                        top_docs.len()
+                    };
+                    (total, false, top_docs, HashMap::new(), truncated)
+                }
+                (false, true, _) => {
+                    let (total, facet_counts) = searcher.search(
+                        view_query.as_ref(),
+                        &(Count, FacetCountCollector::new(&facet_fields)),
+                    )?;
+                    (total, true, Vec::new(), facet_counts, false)
+                }
+                (false, false, true) => (
+                    searcher.search(view_query.as_ref(), &Count)?,
+                    true,
+                    Vec::new(),
+                    HashMap::new(),
+                    false,
+                ),
+                (false, false, false) => (0, false, Vec::new(), HashMap::new(), false),
+            };
 
         let mut entries: Vec<(i64, u64, LogEntry)> = Vec::new();
         if query.include_entries && tail > 0 {
@@ -285,6 +294,7 @@ impl LogIndex {
                     .and_then(|value| value.as_str())
                     .unwrap_or_default()
                     .to_string();
+                let json = parse_raw_json_object(&raw);
                 let ts_nanos = doc
                     .get_first(fields.ts_nanos)
                     .and_then(|value| value.as_i64())
@@ -294,16 +304,10 @@ impl LogIndex {
                     .and_then(|value| value.as_u64())
                     .unwrap_or(0);
 
-                let mut attributes = BTreeMap::new();
-                for (field_name, field_handle) in &attribute_fields {
-                    if let Some(value) = doc
-                        .get_first(*field_handle)
-                        .and_then(|value| value.as_str())
-                        && !value.is_empty()
-                    {
-                        attributes.insert(field_name.clone(), value.to_string());
-                    }
-                }
+                let attributes = doc
+                    .get_first(fields.attrs)
+                    .map(Self::attributes_from_value)
+                    .unwrap_or_default();
 
                 entries.push((
                     ts_nanos,
@@ -315,6 +319,7 @@ impl LogIndex {
                         level,
                         message,
                         raw,
+                        json,
                         attributes,
                     },
                 ));
@@ -324,14 +329,14 @@ impl LogIndex {
 
         let mut filters = Vec::new();
         if query.include_facets {
-            for field_name in facet_fields {
-                let values = Self::facet_values_from_counts(facet_counts.get(&field_name));
+            for spec in facet_fields {
+                let values = Self::facet_values_from_counts(facet_counts.get(&spec.field));
                 if values.is_empty() {
                     continue;
                 }
                 filters.push(FacetFilter {
-                    field: field_name.clone(),
-                    kind: Self::facet_kind_for(&field_name).to_string(),
+                    field: spec.field.clone(),
+                    kind: Self::facet_kind_for(&spec.field).to_string(),
                     values,
                 });
             }
@@ -344,8 +349,9 @@ impl LogIndex {
 
         let response = LogViewResponse {
             entries: entries.into_iter().map(|(_, _, entry)| entry).collect(),
-            truncated: query.include_entries && total > tail && tail > 0,
+            truncated: query.include_entries && truncated,
             total,
+            total_exact,
             filters,
         };
         if let Some(cache_key) = facet_cache_key {
@@ -376,12 +382,60 @@ impl LogIndex {
                 service: None,
                 include_entries: false,
                 include_facets: true,
+                include_total: true,
             },
         );
     }
 
     pub(crate) fn clear_facet_cache(&self) {
         self.facet_cache.lock().unwrap().clear();
+    }
+
+    pub(crate) fn count_run(&self, run_id: &str) -> Result<usize> {
+        let query = Self::build_scope_query(&self.fields, run_id, None, None, None, None, None)?;
+        let searcher = self.reader.read().unwrap().searcher();
+        searcher.search(query.as_ref(), &Count).map_err(Into::into)
+    }
+
+    fn attributes_from_value<'a, V>(value: V) -> BTreeMap<String, String>
+    where
+        V: Value<'a>,
+    {
+        let mut attributes = BTreeMap::new();
+        let Some(fields) = value.as_object() else {
+            return attributes;
+        };
+
+        for (field, value) in fields {
+            if let Some(value) = Self::attribute_value_to_string(value)
+                && !value.is_empty()
+            {
+                attributes.insert(field.to_string(), value);
+            }
+        }
+        attributes
+    }
+
+    fn attribute_value_to_string<'a, V>(value: V) -> Option<String>
+    where
+        V: Value<'a>,
+    {
+        if let Some(value) = value.as_str() {
+            return Some(value.to_string());
+        }
+        if let Some(value) = value.as_u64() {
+            return Some(value.to_string());
+        }
+        if let Some(value) = value.as_i64() {
+            return Some(value.to_string());
+        }
+        if let Some(value) = value.as_f64() {
+            return Some(value.to_string());
+        }
+        if let Some(value) = value.as_bool() {
+            return Some(value.to_string());
+        }
+        None
     }
 
     fn build_scope_query(
@@ -519,4 +573,13 @@ impl LogIndex {
             (Occur::Must, parsed),
         ])))
     }
+}
+
+fn parse_raw_json_object(raw: &str) -> Option<serde_json::Value> {
+    let trimmed = raw.trim();
+    if !trimmed.starts_with('{') {
+        return None;
+    }
+    let value = serde_json::from_str::<serde_json::Value>(trimmed).ok()?;
+    value.is_object().then_some(value)
 }
